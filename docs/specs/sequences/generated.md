@@ -50,6 +50,7 @@ Some caveats:
 * [system_mode_restart](#system_mode_restart): Restart and connect to same endpoint and expect it returns.
 * [valid_serial_no](#valid_serial_no)
 * [writeback_failure](#writeback_failure)
+* [writeback_invalid](#writeback_invalid)
 * [writeback_success](#writeback_success)
 
 ## broken_config
@@ -387,6 +388,13 @@ Restart and connect to same endpoint and expect it returns.
 1. Update config before point filter_alarm_pressure_status to have value_state failure:
     * Add `pointset.points.filter_alarm_pressure_status.set_value` = `false`
 1. Wait for point filter_alarm_pressure_status to have value_state failure
+
+## writeback_invalid
+
+1. Wait for point filter_differential_pressure_sensor to have value_state default (null)
+1. Update config before point filter_differential_pressure_sensor to have value_state invalid:
+    * Add `pointset.points.filter_differential_pressure_sensor.set_value` = `15`
+1. Wait for point filter_differential_pressure_sensor to have value_state invalid
 
 ## writeback_success
 
