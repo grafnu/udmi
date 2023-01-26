@@ -9,9 +9,16 @@ test development and system sanity checking (not against actual devices).
 ## Overview
 
 Optional to clean out the filesystem before doing a run, to remove any inconsistencies with
-upstream or other development environments:
+upstream or other development environments. Note that it will _not_ clean any site repos that
+are properly managed (checked out through git):
 
-`git clean -x -f -d`
+```
+~/udmi$ git clean -x -f -d
+Skipping repository sites/IN-BLR-BCPEK
+Skipping repository sites/sg-sin-mbc2
+Skipping repository sites/zz-top-example
+Skipping repository sites/udmi_site_model
+```
 
 Running the entire test sequence requires a properly setup and configured cloud project. The overal
 run should take about 15min (as of this writing).
@@ -20,10 +27,7 @@ run should take about 15min (as of this writing).
 
 The results end up in `/tmp/sequencer.out`, and are automatically compared against `etc/sequencer.out`.
 
-To just one run (or a few) tests, explicitly indicate them on the command line. Useful for either
-iterative debugging, or else re-running a test to see if it's flaky or not.
+If necessary, to run just one (or a few) tests, explicitly indicate them on the command line.
+Useful for either iterative debugging, or else re-running a test to see if it's flaky or not.
 
 `bin/test_sequencer ${project_id} ${test_name}...`
-
-
-
