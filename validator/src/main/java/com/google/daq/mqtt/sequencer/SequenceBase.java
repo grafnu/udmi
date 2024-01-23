@@ -788,7 +788,7 @@ public class SequenceBase {
 
     recordSequence("Force reset config");
     withRecordSequence(false, () -> {
-      debug("Starting reset_config full reset " + fullReset);
+      info("Starting reset_config full reset " + fullReset);
       if (fullReset) {
         expectedSystemStatus = null;
         resetDeviceConfig(true);
