@@ -1126,6 +1126,7 @@ public class SequenceBase {
   }
 
   private void updateConfig(String reason, boolean force) {
+    trace("Updating device config:", stringify(deviceConfig));
     assertConfigIsNotPending();
     // Add a forced sleep to make sure second-quantized timestamps are unique.
     safeSleep(CONFIG_BARRIER_MS);
@@ -1153,9 +1154,8 @@ public class SequenceBase {
   private boolean updateConfig(SubFolder subBlock, Object data) {
     try {
       String messageData = stringify(data);
-      String sentBlockConfig = String.valueOf(
-          sentConfig.get(requireNonNull(subBlock, "subBlock not defined")));
-      boolean updated = !messageData.equals(sentBlockConfig);
+      String subConfig = sentConfig.get(requireNonNull(subBlock, "subBlock not defined"));
+      boolean updated = !messageData.equals(subConfig);
       trace(format("updated check %s_%s: %s", CONFIG_SUBTYPE, subBlock, updated));
       if (updated) {
         String augmentedMessage = actualize(stringify(data));
