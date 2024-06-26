@@ -6,6 +6,9 @@ The Universal Device Management Interface (UDMI) provides a high-level specifica
 management and operation of physical IoT systems. This data is typically exchanged
 with a cloud entity that can maintain a "digital twin" or "shadow device" in the cloud.
 
+<script>console.log("hello")</script>
+<a href='hello.html' onclick='error'>hello</a>
+
 * [Core UDMI documentation](docs/) for tools and specifications
 * [Message schema definition](https://github.com/faucetsdn/udmi/tree/master/schema) with ([_🧬Interactive Viewer_](gencode/docs/))
 * [udmi-discuss@googlegroups.com](https://groups.google.com/forum/#!forum/udmi-discuss) email discussion list
