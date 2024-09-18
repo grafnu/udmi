@@ -21,6 +21,3 @@ cd $MODEL_DIR
 git fetch $MODEL_REPO $MODEL_VER
 git checkout -q $MODEL_VER
 git log -n 1
-
-target=devices/AHU-1/metadata.json
-jq '.features."endpoint.config".stage = "disabled"' $target | sponge $target

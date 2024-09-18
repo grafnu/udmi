@@ -134,7 +134,9 @@ fi
 bin/augment_metadata $site_path $device_id $pubber_opts
 
 echo Feature enable map:
-jq .features $site_path/devices/$device_id/metadata.json
+features_target=$site_path/out/devices/$device_id/metadata_mod.json
+jq '.features."endpoint.config".stage = "disabled"' $features_target | sponge $features_target
+jq .features $features_target
 
 # Run in debug mode for fail-fast when things go wrong!
 echo bin/sequencer $debug_opts $seq_opts $site_path $project_id $device_id $serial_no $targets
