@@ -133,6 +133,9 @@ fi
 # Augment the device metadata to that tests know what to expect...
 bin/augment_metadata $site_path $device_id $pubber_opts
 
+echo Feature enable map:
+jq .features $site_path/devices/$device_id/metadata.json
+
 # Run in debug mode for fail-fast when things go wrong!
 echo bin/sequencer $debug_opts $seq_opts $site_path $project_id $device_id $serial_no $targets
 seq_fail=0
