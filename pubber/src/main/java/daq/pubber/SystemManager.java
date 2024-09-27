@@ -226,7 +226,12 @@ public class SystemManager extends ManagerBase {
   }
 
   public void setPersistentData(DevicePersistent persistentData) {
-    systemState.operation.restart_count = persistentData.restart_count;
+    StateSystemOperation operation = systemState.operation;
+    if (operation instanceof ExtraStateSystemOperation extraStateSystemOperation) {
+      extraStateSystemOperation.restart_count = persistentData.restart_count;
+    } else {
+      operation.restart_count = persistentData.restart_count;
+    }
   }
 
   void updateConfig(SystemConfig system, Date timestamp) {
@@ -329,6 +334,7 @@ public class SystemManager extends ManagerBase {
     public String extraField;
   }
 
+  @SuppressWarnings("MemberName")
   class ExtraStateSystemOperation extends StateSystemOperation {
     public double restart_count;
   }
