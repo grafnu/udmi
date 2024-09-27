@@ -225,6 +225,9 @@ public class SystemManager extends ManagerBase {
     setHardwareSoftware(metadata);
   }
 
+  /**
+   * Set the persistent data part of state.
+   */
   public void setPersistentData(DevicePersistent persistentData) {
     StateSystemOperation operation = systemState.operation;
     if (operation instanceof ExtraStateSystemOperation extraStateSystemOperation) {
