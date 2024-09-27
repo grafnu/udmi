@@ -91,7 +91,7 @@ public class SystemManager extends ManagerBase {
     info("Device start time is " + isoConvert(DEVICE_START_TIME));
 
     systemState = new ExtraSystemState();
-    systemState.operation = new StateSystemOperation();
+    systemState.operation = new ExtraStateSystemOperation();
 
     if (!isTrue(options.noLastStart)) {
       systemState.operation.last_start = DEVICE_START_TIME;
@@ -327,5 +327,9 @@ public class SystemManager extends ManagerBase {
   class ExtraSystemState extends SystemState {
 
     public String extraField;
+  }
+
+  class ExtraStateSystemOperation extends StateSystemOperation {
+    public double restart_count;
   }
 }
