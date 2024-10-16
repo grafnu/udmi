@@ -23,7 +23,7 @@
         return path.substring(path.lastIndexOf('/'));
       }
 
-      function formattedLink(cell) {
+      function formattedLink(cell, options) {
         return "<a href='" + cell.getValue() + "'>" + shortenPath(cell.getValue()) + "</a>";
       }
 
@@ -34,21 +34,19 @@
           {
             title: "Datasheet",
             field: "datasheet",
-            formatter: formattedLink(cell)
+            formatter: formattedLink
           },
           { title: "UDMI Score", field: "udmi_score" },
           {
             title: "UDMI Report",
             field: "udmi_report",
-            formatter: function(cell, formatterParams) {
-              return "<a href='" + cell.getValue() + "'>" + cell.getValue() + "</a>";
-            }
+            formatter: formattedLink
           },
           { title: "TestRun Result", field: "testrun_score", default: "n/a" },
           {
             title: "TestRun Report",
             field: "testrun_report",
-            formatter: formattedLink(cell)
+            formatter: formattedLink
           }
         ],
         data: tabledata,
