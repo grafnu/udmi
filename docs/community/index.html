@@ -24,7 +24,8 @@
       }
 
       function formattedLink(cell, options) {
-        return "<a href='" + cell.getValue() + "'>" + shortenPath(cell.getValue()) + "</a>";
+        let value = cell.getValue();
+        return !value ? "n/a" : "<a href='" + value + "'>" + shortenPath(value) + "</a>";
       }
 
       var table = new Tabulator("#device-table", {
