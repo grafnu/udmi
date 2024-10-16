@@ -13,12 +13,19 @@
 
       var tabledata = [
         {make: "ACME", model: "ACE-1", datasheet: "make/ACME/ACE-1.html", udmi_score: 281, udmi_report: "make/ACME/ACE-1_sequencer.pdf"},
-        {make: "ACME", model: "AM-23", datasheet: "make/ACME/ACE-1.html", udmi_score: 281, udmi_report: "make/ACME/ACE-1_sequencer.pdf"},
-        {make: "BERT", model: "BRT-1", datasheet: "make/BERT/ACE-1.html", udmi_score: 281, udmi_report: "make/BERT/ACE-1_sequencer.pdf"},
+        {make: "ACME", model: "AM-23", datasheet: "make/ACME/ACE-1.html", udmi_score: 272, udmi_report: "make/ACME/ACE-1_sequencer.pdf"},
+        {make: "BERT", model: "BRT-1", datasheet: "make/BERT/ACE-1.html", udmi_score: 279, udmi_report: "make/BERT/ACE-1_sequencer.pdf"},
         {make: "AJAX", model: "AJX-1", datasheet: "make/AJAX/AJX-1.html", udmi_score: 231, udmi_report: "make/AJAX/AJX-1_sequencer.pdf"}
       ];
 
 
+      function shortenPath(path) {
+        return path.substring(path.lastIndexOf('/'));
+      }
+
+      function formattedLink(cell) {
+        return "<a href='" + cell.getValue() + "'>" + shortenPath(cell.getValue()) + "</a>";
+      }
 
       var table = new Tabulator("#device-table", {
         columns: [
@@ -27,9 +34,7 @@
           {
             title: "Datasheet",
             field: "datasheet",
-            formatter: function(cell, formatterParams) {
-              return "<a href='" + cell.getValue() + "'>" + cell.getValue() + "</a>";
-            }
+            formatter: formattedLink(cell)
           },
           { title: "UDMI Score", field: "udmi_score" },
           {
@@ -39,13 +44,11 @@
               return "<a href='" + cell.getValue() + "'>" + cell.getValue() + "</a>";
             }
           },
-          { title: "TestRun Result", field: "testrun_score" },
+          { title: "TestRun Result", field: "testrun_score", default: "n/a" },
           {
             title: "TestRun Report",
             field: "testrun_report",
-            formatter: function(cell, formatterParams) {
-              return !cell.getValue() ? "n/a" : "<a href='" + cell.getValue() + "'>" + cell.getValue() + "</a>";
-            }
+            formatter: formattedLink(cell)
           }
         ],
         data: tabledata,
