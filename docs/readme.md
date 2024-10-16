@@ -13,7 +13,8 @@
 - [**Schema**](https://github.com/faucetsdn/udmi/tree/master/schema)
   ([_🧬Interactive viewer_](../gencode/docs/))
 - [**Device Testing Results**](device_testing/)
-- [**Community Testing**](community/index.html)
+
+hello
 
 
 ## About UDMI
