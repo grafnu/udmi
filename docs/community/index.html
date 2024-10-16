@@ -9,7 +9,7 @@
     <script type="text/javascript" src="https://unpkg.com/tabulator-tables@6.3.0/dist/js/tabulator.min.js"></script>
     <script>
       var tabledata = [
-        {id:1, name:"Oli Bob", progress:12, gender:"male", rating:1, col:"red", dob:"19/02/1984", car:1},
+        {id:1, name:"ACME", datasheet: "hello", gender:"male", rating:1, col:"red", dob:"19/02/1984", car:1},
         {id:2, name:"Mary May", progress:1, gender:"female", rating:2, col:"blue", dob:"14/05/1982", car:true},
         {id:3, name:"Christine Lobowski", progress:42, gender:"female", rating:0, col:"green", dob:"22/05/1982", car:"true"},
         {id:4, name:"Brendon Philips", progress:100, gender:"male", rating:1, col:"orange", dob:"01/08/1980"},
@@ -18,8 +18,21 @@
       ];
 
       var table = new Tabulator("#device-table", {
-        data:tabledata, //assign data to table
-        autoColumns:true, //create columns from data field names
+        columns: [
+          { title: "Name", field: "name" },
+          { 
+            title: "Datasheet", 
+            field: "datasheet", 
+            formatter: function(cell, formatterParams) {
+              return "<a href='" + cell.getValue() + "'>" + cell.getValue() + "</a>";
+            }
+          }
+        ],
+        data: tabledata,
       });
-      </script>
+
+    ],
+    });
+
+    </script>
 </body>
