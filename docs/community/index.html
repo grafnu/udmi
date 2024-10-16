@@ -38,6 +38,14 @@
             formatter: function(cell, formatterParams) {
               return "<a href='" + cell.getValue() + "'>" + cell.getValue() + "</a>";
             }
+          },
+          { title: "TestRun Result", field: "testrun_score" },
+          {
+            title: "TestRun Report",
+            field: "testrun_report",
+            formatter: function(cell, formatterParams) {
+              return !cell.getValue() ? "n/a" : "<a href='" + cell.getValue() + "'>" + cell.getValue() + "</a>";
+            }
           }
         ]
         data: tabledata,
