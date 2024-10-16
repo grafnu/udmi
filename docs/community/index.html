@@ -32,7 +32,8 @@
       }
 
       function checkForNa(value) {
-        return value.getValue() || "n/a";
+        let value = cell.getValue();
+        return !value ? "n/a" : "<b>" + value.getValue() + "</b>";
       }
 
       function formattedLink(cell, options) {
