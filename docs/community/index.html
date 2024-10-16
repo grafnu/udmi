@@ -31,9 +31,9 @@
         return path.substring(path.lastIndexOf('/') + 1);
       }
 
-      function checkForNa(value) {
+      function checkForNa(cell) {
         let value = cell.getValue();
-        return !value ? "n/a" : "<b>" + value.getValue() + "</b>";
+        return !value ? "n/a" : "<b>" + value + "</b>";
       }
 
       function formattedLink(cell, options) {
