@@ -40,10 +40,14 @@
         return !value ? "n/a" : "<a href='" + value + "'>" + shortenPath(value) + "</a>";
       }
 
+      function formattedMake(cell, options) {
+        console.log(cell, options);
+        return cell.getValue();
+      }
 
       var table = new Tabulator("#device-table", {
         columns: [
-          { title: "Make", field: "make" },
+          { title: "Make", field: "make", formatter: formattedMake },
           { title: "Model", field: "model" },
           { title: "Datasheet", field: "datasheet", formatter: formattedLink },
           { title: "UDMI Score", field: "udmi_score", formatter: checkForNa },
