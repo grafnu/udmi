@@ -13,14 +13,18 @@
 
       var tabledata = [
         {make: "ACME", model: "ACE-1", datasheet: "make/ACME/ACE-1.html", udmi_score: 281, udmi_report: "make/ACME/ACE-1_sequencer.pdf"},
-        {make: "ACME", model: "AM-23", datasheet: "make/ACME/ACE-1.html", udmi_score: 272, udmi_report: "make/ACME/ACE-1_sequencer.pdf"},
-        {make: "BERT", model: "BRT-1", datasheet: "make/BERT/ACE-1.html", udmi_score: 279, udmi_report: "make/BERT/ACE-1_sequencer.pdf"},
-        {make: "AJAX", model: "AJX-1", datasheet: "make/AJAX/AJX-1.html", udmi_score: 231, udmi_report: "make/AJAX/AJX-1_sequencer.pdf"}
+        {make: "ACME", model: "AM-23", datasheet: "make/ACME/ACE-1.html" },
+        {make: "BERT", model: "BRT-1", datasheet: "make/BERT/ACE-1.html", udmi_score: 279, udmi_report: "make/BERT/ACE-1_sequencer.pdf", testrun_result: "pass", testrun_report: "make/BERT/BRT-1_testrun.pdf" },
+        {make: "AJAX", model: "AJX-1", datasheet: "make/AJAX/AJX-1.html", testrun_result: "fail", testrun_report: "make/AJAX/AJX-1_testrun.pdf"}
       ];
 
 
       function shortenPath(path) {
-        return path.substring(path.lastIndexOf('/'));
+        return path.substring(path.lastIndexOf('/') + 1);
+      }
+
+      function checkForNa(value) {
+        return value || "n/a";
       }
 
       function formattedLink(cell, options) {
@@ -28,27 +32,16 @@
         return !value ? "n/a" : "<a href='" + value + "'>" + shortenPath(value) + "</a>";
       }
 
+
       var table = new Tabulator("#device-table", {
         columns: [
           { title: "Make", field: "make" },
           { title: "Model", field: "model" },
-          {
-            title: "Datasheet",
-            field: "datasheet",
-            formatter: formattedLink
-          },
-          { title: "UDMI Score", field: "udmi_score" },
-          {
-            title: "UDMI Report",
-            field: "udmi_report",
-            formatter: formattedLink
-          },
-          { title: "TestRun Result", field: "testrun_score", default: "n/a" },
-          {
-            title: "TestRun Report",
-            field: "testrun_report",
-            formatter: formattedLink
-          }
+          { title: "Datasheet", field: "datasheet", formatter: formattedLink },
+          { title: "UDMI Score", field: "udmi_score", formatter: checkForNa },
+          { title: "UDMI Report", field: "udmi_report", formatter: formattedLink },
+          { title: "TestRun Result", field: "testrun_result", formatter: checkForNa },
+          { title: "TestRun Report", field: "testrun_report", formatter: formattedLink }
         ],
         data: tabledata,
       });
