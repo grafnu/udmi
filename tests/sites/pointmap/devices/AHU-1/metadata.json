@@ -1,15 +1,12 @@
 {
   "pointset": {
+    "resolve_points": true,
     "points": {
       "filter_alarm_pressure_status": {
-        "units": "No-units",
         "ref": "BV11.present_value"
       },
       "filter_differential_pressure_sensor": {
-        "units": "Degrees-Celsius",
-        "ref": "FAXLE12.present_value",
-        "baseline_value": 10,
-        "baseline_tolerance": 2
+        "ref": "FAXLE12.present_value"
       },
       "filter_differential_pressure_setpoint": {
         "units": "Bars",
