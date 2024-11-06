@@ -174,12 +174,13 @@ public class SequenceBase {
   public static final String SCHEMA_PASS_DETAIL = "No schema violations found";
   public static final String STATE_UPDATE_MESSAGE_TYPE = "state_update";
   public static final String RESET_CONFIG_MARKER = "reset_config";
-  public static final String SYSTEM_STATUS_MESSAGE = "system status level is n0t >= WARNING (400)";
   public static final String SCHEMA_BUCKET = "schemas";
   public static final int SCHEMA_SCORE_TOTAL = 10;
   public static final int CAPABILITY_SCORE = 1;
   public static final String STATUS_LEVEL_VIOLATION = "STATUS_LEVEL";
+  public static final String RECEIVED_STATE_VIOLATION = "RECEIVED_STATE";
   public static final String DEVICE_STATE_SCHEMA = "device_state";
+  private static final String STATUS_MESSAGE = "system status level is n0t >= `WARNING` (400)";
   private static final String ALL_CHANGES = "";
   private static final int SEQUENCER_FUNCTIONS_VERSION = Validator.TOOLS_FUNCTIONS_VERSION;
   private static final int SEQUENCER_FUNCTIONS_ALPHA = SEQUENCER_FUNCTIONS_VERSION;
@@ -212,7 +213,7 @@ public class SequenceBase {
   private static final String CONFIG_SUBTYPE = SubType.CONFIG.value();
   private static final String LOCAL_CONFIG_UPDATE = LOCAL_PREFIX + UPDATE_SUBFOLDER;
   private static final String SEQUENCER_LOG = "sequencer.log";
-  private static final String SYSTEM_LOG = "system.log";
+  private static final String DEVICE_SYSTEM_LOG = "device_system.log";
   private static final String SEQUENCE_MD = "sequence.md";
   private static final int LOG_TIMEOUT_SEC = 10;
   private static final long ONE_SECOND_MS = 1000;
@@ -314,7 +315,7 @@ public class SequenceBase {
   private File testDir;
   private PrintWriter sequencerLog;
   private PrintWriter sequenceMd;
-  private PrintWriter systemLog;
+  private PrintWriter deviceSystemLog;
   private boolean recordMessages;
   private boolean recordSequence;
   private int previousEventCount;
@@ -330,6 +331,7 @@ public class SequenceBase {
   private static Scoring scoringResult;
   private Date configStateStart;
   protected boolean pretendStateUpdated;
+  private Boolean stateSupported;
 
   private static void setupSequencer() {
     exeConfig = ofNullable(exeConfig).orElseGet(SequenceRunner::ensureExecutionConfig);
@@ -711,6 +713,11 @@ public class SequenceBase {
     sequenceMd.flush();
   }
 
+  private void writeSequenceMdFooter(String message) {
+    sequenceMd.printf("%n%s%n", message);
+    sequenceMd.flush();
+  }
+
   private String getTestSummary(Description summary) {
     Summary annotation = summary.getAnnotation(Summary.class);
     return annotation == null ? null : annotation.value();
@@ -817,7 +824,9 @@ public class SequenceBase {
   }
 
   private boolean deviceSupportsState() {
-    return !isTrue(catchToNull(() -> deviceMetadata.testing.nostate));
+    ifNullThen(stateSupported,
+        () -> stateSupported = !isTrue(catchToNull(() -> deviceMetadata.testing.nostate)));
+    return stateSupported;
   }
 
   protected boolean isBucketEnabled(Bucket bucket) {
@@ -877,10 +886,10 @@ public class SequenceBase {
         return configIsPending(false);
       });
       Duration between = Duration.between(lastConfigUpdate, CleanDateFormat.clean(Instant.now()));
-      debug(format("Configuration sync took %ss", between.getSeconds()));
+      debug(format("Config sync took %ss", between.getSeconds()));
     } finally {
       waitingForConfigSync.set(false);
-      debug("wait for config sync pending " + configIsPending(true));
+      debug("Finished wait for config sync pending: " + configIsPending(true));
     }
   }
 
@@ -1142,20 +1151,21 @@ public class SequenceBase {
       return;
     }
     for (Entry logEntry : message.logentries) {
-      writeSystemLog(logEntry);
+      writeDeviceSystemLog(logEntry);
     }
   }
 
-  private String writeSystemLog(Entry logEntry) {
-    return writeLogEntry(logEntry, systemLog);
+  private String writeDeviceSystemLog(Entry logEntry) {
+    return writeLogEntry(logEntry, deviceSystemLog, logEntry.category);
   }
 
-  private String writeLogEntry(Entry logEntry, PrintWriter printWriter) {
+  private String writeLogEntry(Entry logEntry, PrintWriter printWriter, String category) {
     if (logEntry.timestamp == null) {
       throw new RuntimeException("log entry timestamp is null");
     }
-    String messageStr = format("%s %s %s", isoConvert(logEntry.timestamp),
-        levelFromValue(logEntry.level).name(), logEntry.message);
+    String categoryStr = ifNotNullGet(category, c -> format("%-22s ", c), "");
+    String messageStr = format("%s %-7s %s%s", isoConvert(logEntry.timestamp),
+        levelFromValue(logEntry.level).name(), categoryStr, logEntry.message);
 
     PrintWriter output = ofNullable(printWriter).orElse(new PrintWriter(System.err));
     output.println(messageStr);
@@ -1442,7 +1452,9 @@ public class SequenceBase {
         recordSequence("Wait until", description);
       }, detail::get);
     } catch (Exception e) {
-      recordSequence("Failed waiting until", sanitizedDescription);
+      String message = "Failed waiting until " + sanitizedDescription;
+      recordSequence(message);
+      throw new RuntimeException(message);
     }
   }
 
@@ -1541,7 +1553,9 @@ public class SequenceBase {
       Supplier<String> detailer) {
     final Instant startTime = Instant.now();
 
-    waitingConditionStart(description);
+    String suffix = ofNullable(capabilityName(activeCap.get()))
+        .map(x -> " for capability " + x).orElse("");
+    waitingConditionStart(description + suffix);
 
     try {
       try {
@@ -1553,9 +1567,9 @@ public class SequenceBase {
       } catch (Exception e) {
         catcher.accept(e);
         String detail = ifNotNullGet(detailer, Supplier::get);
-        ifNotNullThen(detail, this::waitingConditionDetail);
-        // Don't include the caught exception in order to preserve the detail as base cause.
-        throw ifNotNullGet(detail, message -> new RuntimeException("Because " + message), e);
+        // Don't include e in the new exception in order to preserve the detail as base cause.
+        throw ifNotNullGet(detail,
+            message -> new RuntimeException(e.getMessage() + " because " + message), e);
       }
     } catch (Exception e) {
       throw new RuntimeException("While " + description, e);
@@ -1575,18 +1589,9 @@ public class SequenceBase {
 
   private void waitingConditionStart(String condition) {
     ifTrueThen(!waitingCondition.isEmpty(),
-        () -> trace(format("stage suspend %s at %s", currentWaitingCondition(), timeSinceStart())));
-    waitingConditionPush(condition);
-    info(format("Stage start %s at %s", currentWaitingCondition(), timeSinceStart()));
-  }
-
-  private void waitingConditionDetail(String detail) {
-    notice("Adding waiting condition detail: " + detail);
-    waitingConditionPush(detail);
-  }
-
-  private void waitingConditionPush(String condition) {
+        () -> trace(format("Stage suspend %s at %s", currentWaitingCondition(), timeSinceStart())));
     waitingCondition.push("waiting for " + condition);
+    info(format("Stage start %s at %s", currentWaitingCondition(), timeSinceStart()));
   }
 
   private String currentWaitingCondition() {
@@ -1637,7 +1642,7 @@ public class SequenceBase {
   protected void recordSequence(String message) {
     if (recordSequence) {
       String capability = ifNotNullGet(activeCap.get(), SequenceBase::capabilityName);
-      String wrapped = ifNotNullGet(capability, c -> format("[%s] ", capability), "");
+      String wrapped = ifNotNullGet(capability, c -> format("_%s_ ", capability), "");
       String line = format("1. %s%s", wrapped, message.trim());
       sequenceMd.println(line);
       sequenceMd.flush();
@@ -1807,7 +1812,8 @@ public class SequenceBase {
       String subFolderRaw, String transactionId) {
     debug(format("Handling device message %s_%s %s", subTypeRaw, subFolderRaw, transactionId));
     SubType subType = SubType.fromValue(requireNonNull(subTypeRaw, "missing subType"));
-    SubFolder subFolder = SubFolder.fromValue(requireNonNull(subFolderRaw, "missing subFolder"));
+    SubFolder subFolder = ifNotNullGet(subFolderRaw,
+        rawFolder -> SubFolder.fromValue(requireNonNull(rawFolder, "missing subFolder")));
     switch (subType) {
       // These are echos of sent partial config messages, so do nothing.
       case CONFIG -> trace("Ignoring echo configTransaction " + transactionId);
@@ -1879,7 +1885,12 @@ public class SequenceBase {
               isoConvert(stateCutoffThreshold), lastStart, txnId));
           return;
         }
-        checkState(deviceSupportsState(), "Received state update with no-state device");
+        if (!deviceSupportsState()) {
+          String violation = "Received state update with no-state device";
+          warning(violation);
+          deviceStateViolations.put(RECEIVED_STATE_VIOLATION, violation);
+          return;
+        }
         boolean deltaState = RECV_STATE_DIFFERNATOR.isInitialized();
         List<DiffEntry> stateChanges = RECV_STATE_DIFFERNATOR.computeChanges(converted);
         Instant start = ofNullable(convertedState.timestamp).orElseGet(Date::new).toInstant();
@@ -2000,7 +2011,7 @@ public class SequenceBase {
   }
 
   private void handleEventMessage(SubFolder subFolder, Map<String, Object> message) {
-    getReceivedEvents(subFolder).add(message);
+    getReceivedEvents(ofNullable(subFolder).orElse(SubFolder.INVALID)).add(message);
     if (SubFolder.SYSTEM.equals(subFolder)) {
       writeSystemLogs(convertTo(SystemEvents.class, message));
     }
@@ -2111,7 +2122,7 @@ public class SequenceBase {
   }
 
   private void writeSequencerLog(Entry logEntry) {
-    String entry = writeLogEntry(logEntry, sequencerLog);
+    String entry = writeLogEntry(logEntry, sequencerLog, null);
     if (logEntry.level >= logLevel) {
       System.err.println(entry);
     }
@@ -2257,14 +2268,14 @@ public class SequenceBase {
     if (!deviceSupportsState()) {
       return;
     }
-    checkThat(SYSTEM_STATUS_MESSAGE, significantStatusDetail());
+    checkThat(STATUS_MESSAGE, significantStatusDetail());
   }
 
   protected void checkThatHasNoInterestingStatus() {
     if (!deviceSupportsState()) {
       return;
     }
-    checkThatNot(SYSTEM_STATUS_MESSAGE, notSignificantStatusDetail());
+    checkThatNot(STATUS_MESSAGE, notSignificantStatusDetail());
   }
 
   protected void waitUntilNoSystemStatus() {
@@ -2280,7 +2291,7 @@ public class SequenceBase {
       return;
     }
     expectedInterestingStatus = null;
-    String message = convertN0t(interesting, SYSTEM_STATUS_MESSAGE);
+    String message = convertN0t(interesting, STATUS_MESSAGE);
     Supplier<String> detailer =
         interesting ? this::notSignificantStatusDetail : this::significantStatusDetail;
     waitUntil(message, detailer);
@@ -2420,9 +2431,8 @@ public class SequenceBase {
     }
   }
 
-  @NotNull
   static String capabilityName(Class<? extends Capability> capability) {
-    return convertToSnakeCase(capability.getSimpleName());
+    return ifNotNullGet(capability, c -> convertToSnakeCase(c.getSimpleName()));
   }
 
   private static String convertToSnakeCase(String camelCase) {
@@ -2509,7 +2519,8 @@ public class SequenceBase {
         info("Cleaning test output dir " + testDir.getAbsolutePath());
         FileUtils.deleteDirectory(testDir);
         testDir.mkdirs();
-        systemLog = new PrintWriter(newOutputStream(new File(testDir, SYSTEM_LOG).toPath()));
+        deviceSystemLog = new PrintWriter(
+            newOutputStream(new File(testDir, DEVICE_SYSTEM_LOG).toPath()));
         sequencerLog = new PrintWriter(newOutputStream(new File(testDir, SEQUENCER_LOG).toPath()));
         sequenceMd = new PrintWriter(newOutputStream(new File(testDir, SEQUENCE_MD).toPath()));
 
@@ -2564,7 +2575,7 @@ public class SequenceBase {
       if (deviceConfig != null) {
         deviceConfig.system.testing = null;
       }
-      systemLog.close();
+      deviceSystemLog.close();
       sequencerLog.close();
       sequenceMd.close();
 
@@ -2574,6 +2585,7 @@ public class SequenceBase {
     @Override
     protected void succeeded(Description description) {
       recordCompletion(PASS, description, "Sequence complete");
+      writeSequenceMdFooter("Test passed.");
     }
 
     @Override
@@ -2611,7 +2623,7 @@ public class SequenceBase {
       trace("ending stack trace", stackTraceString(e));
       recordCompletion(failureType, description, message);
       String action = failureType == SKIP ? "skipped" : "failed";
-      withRecordSequence(true, () -> recordSequence("Test " + action + ": " + message));
+      writeSequenceMdFooter("Test " + action + ": " + message);
       if (failureType != SKIP) {
         resetRequired = true;
         if (debugLogLevel()) {
@@ -2634,7 +2646,7 @@ public class SequenceBase {
         logEntry.level = RESULT_LEVEL_MAP.get(result).value();
         logEntry.timestamp = cleanDate();
         writeSequencerLog(logEntry);
-        writeSystemLog(logEntry);
+        writeDeviceSystemLog(logEntry);
         setSequenceStatus(description, result, logEntry);
       } catch (Exception e) {
         error("Error while recording completion: " + friendlyStackTrace(e));
