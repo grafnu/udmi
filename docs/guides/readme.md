@@ -1,7 +1,8 @@
 [**UDMI**](../../) / [**Docs**](../) / [Guides](#)
 
 # Guides
-  
+
+- [UDMI Quickstart Guide](quickstart.md) - A shotgun quickstart guide to get going with the basic tools.
 - [Device Testing with Sequencer](device_testing.md) - A guide on how to use Sequencer for device testing
 - [Development](development.md) - Information on contribution to the UDMI specification
 - [Sequencing](sequencing.md) - Additional notes about (developing) sequence tests
