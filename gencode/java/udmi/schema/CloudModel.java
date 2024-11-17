@@ -228,8 +228,8 @@ public class CloudModel {
      */
     public enum Connection_type {
 
-        GATEWAY("GATEWAY"),
         DIRECT("DIRECT"),
+        GATEWAY("GATEWAY"),
         PROXIED("PROXIED");
         private final java.lang.String value;
         private final static Map<java.lang.String, CloudModel.Connection_type> CONSTANTS = new HashMap<java.lang.String, CloudModel.Connection_type>();
@@ -268,11 +268,11 @@ public class CloudModel {
 
     public enum Operation {
 
-        ERROR("ERROR"),
         CREATE("CREATE"),
         READ("READ"),
         UPDATE("UPDATE"),
         DELETE("DELETE"),
+        ERROR("ERROR"),
         MODIFY("MODIFY"),
         BIND("BIND"),
         ALLOW("ALLOW"),

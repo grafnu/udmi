@@ -109,7 +109,9 @@
         "DELETE",
         "ERROR",
         "MODIFY",
-        "BIND"
+        "BIND",
+        "ALLOW",
+        "BLOCK"
       ]
     },
     "metadata": {
