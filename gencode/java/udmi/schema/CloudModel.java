@@ -274,6 +274,7 @@ public class CloudModel {
         DELETE("DELETE"),
         ERROR("ERROR"),
         MODIFY("MODIFY"),
+        PREVIEW("PREVIEW"),
         BIND("BIND"),
         ALLOW("ALLOW"),
         BLOCK("BLOCK");
