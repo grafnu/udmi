@@ -7,24 +7,25 @@ import static java.util.Optional.ofNullable;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.udmi.util.SiteModel;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import udmi.lib.base.ManagerBase;
 import udmi.lib.client.LocalnetManager;
-import udmi.lib.intf.FamilyProvider;
 import udmi.lib.intf.ManagerHost;
 import udmi.schema.FamilyLocalnetState;
 
 /**
  * Wrapper for family of IP-based protocols.
  */
-public class IpProvider extends ManagerBase implements FamilyProvider {
+public class PubberIpProvider extends ManagerBase implements PubberFamilyProvider {
 
   public static final int DEFAULT_METRIC = 0;
   private static final List<Pattern> familyPatterns = ImmutableList.of(
@@ -39,13 +40,15 @@ public class IpProvider extends ManagerBase implements FamilyProvider {
   );
 
   private final LocalnetManager localnetHost;
+  private final String family;
 
   /**
    * Create a basic provider instance.
    */
-  public IpProvider(ManagerHost host, String family, String deviceId) {
+  public PubberIpProvider(ManagerHost host, String family, String deviceId) {
     super(host, deviceId);
     localnetHost = (LocalnetManager) host;
+    this.family = family;
     populateInterfaceAddresses();
   }
 
@@ -127,16 +130,19 @@ public class IpProvider extends ManagerBase implements FamilyProvider {
    */
   private void populateInterfaceAddresses() {
     String defaultInterface = getDefaultInterface();
-    info("Using addresses from default interface " + defaultInterface);
+    info("Using addresses from default interface: " + defaultInterface + " for family: " + family);
     Map<String, String> interfaceAddresses = ofNullable(
         getInterfaceAddresses(defaultInterface)).orElse(ImmutableMap.of());
     interfaceAddresses.entrySet().forEach(this::addStateMapEntry);
   }
 
   private void addStateMapEntry(Entry<String, String> entry) {
+    String family = entry.getKey();
+    if (!Objects.equals(this.family, family)) {
+      return;
+    }
     FamilyLocalnetState stateEntry = new FamilyLocalnetState();
     stateEntry.addr = entry.getValue();
-    String family = entry.getKey();
     info("Family " + family + " address is " + stateEntry.addr);
     localnetHost.update(family, stateEntry);
   }
@@ -161,4 +167,7 @@ public class IpProvider extends ManagerBase implements FamilyProvider {
     }
   }
 
+  @Override
+  public void setSiteModel(SiteModel siteModel) {
+  }
 }

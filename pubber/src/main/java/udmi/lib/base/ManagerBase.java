@@ -13,7 +13,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import udmi.lib.client.SubblockManager;
+import udmi.lib.client.SubBlockManager;
 import udmi.lib.intf.ManagerHost;
 import udmi.schema.Config;
 import udmi.schema.DiscoveryState;
@@ -28,7 +28,7 @@ import udmi.util.SchemaVersion;
 /**
  * Base class for UDMI Publisher subsystem managers.
  */
-public abstract class ManagerBase implements SubblockManager {
+public abstract class ManagerBase implements SubBlockManager {
 
   public static final int DISABLED_INTERVAL = 0;
   protected static final int DEFAULT_REPORT_SEC = 10;
@@ -41,7 +41,9 @@ public abstract class ManagerBase implements SubblockManager {
   protected final AtomicBoolean stateDirty = new AtomicBoolean();
   protected final String deviceId;
   protected ScheduledFuture<?> periodicSender;
-  private AtomicInteger eventCount = new AtomicInteger();
+  protected ScheduledFuture<?> initialUpdate;
+  private final AtomicInteger eventCount = new AtomicInteger();
+
 
   /**
    * New instance.
@@ -136,6 +138,15 @@ public abstract class ManagerBase implements SubblockManager {
     host.error(message, null);
   }
 
+  protected int getIntervalSec(Integer sampleRateSec) {
+    return ofNullable(sampleRateSec).orElse(DEFAULT_REPORT_SEC);
+  }
+
+  @Override
+  public void periodicUpdate() {
+    throw new IllegalStateException("No periodic update handler defined");
+  }
+
   /**
    * Updates the interval for periodic updates based on the provided sample rate.
    */
@@ -147,22 +158,13 @@ public abstract class ManagerBase implements SubblockManager {
           intervalSec));
       return;
     }
-    if (periodicSender == null || intervalSec != sendRateSec.get()) {
+    int previous = sendRateSec.getAndSet(intervalSec);
+    if (previous != intervalSec || periodicSender == null) {
       cancelPeriodicSend();
-      sendRateSec.set(intervalSec);
       if (intervalSec > DISABLED_INTERVAL) {
         startPeriodicSend();
       }
     }
-  }
-
-  protected int getIntervalSec(Integer sampleRateSec) {
-    return ofNullable(sampleRateSec).orElse(DEFAULT_REPORT_SEC);
-  }
-
-  @Override
-  public void periodicUpdate() {
-    throw new IllegalStateException("No periodic update handler defined");
   }
 
   protected synchronized void startPeriodicSend() {
@@ -171,7 +173,10 @@ public abstract class ManagerBase implements SubblockManager {
     warn(format("Starting %s %s sender with delay %ds",
         deviceId, this.getClass().getSimpleName(), sec));
     if (sec != 0) {
-      periodicUpdate(); // Do this now to synchronously raise any obvious exceptions.
+      if (sec > WAIT_TIME_SEC) {
+        // Do this sooner to raise any obvious exceptions.
+        initialUpdate = executor.schedule(this::periodicUpdate, WAIT_TIME_SEC, SECONDS);
+      }
       periodicSender = schedulePeriodic(sec, this::periodicUpdate);
     }
   }
@@ -186,6 +191,10 @@ public abstract class ManagerBase implements SubblockManager {
       } finally {
         periodicSender = null;
       }
+    }
+    if (initialUpdate != null) {
+      initialUpdate.cancel(false);
+      initialUpdate = null;
     }
   }
 

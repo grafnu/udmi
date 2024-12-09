@@ -1,7 +1,7 @@
 package com.google.daq.mqtt.util;
 
 import static com.google.common.base.Preconditions.checkState;
-import static com.google.daq.mqtt.util.ProtocolFamily.NAMED_FAMILIES;
+import static com.google.daq.mqtt.util.FamilyProvider.NAMED_FAMILIES;
 import static com.google.udmi.util.GeneralUtils.catchToNull;
 import static com.google.udmi.util.GeneralUtils.deepCopy;
 import static com.google.udmi.util.GeneralUtils.ifNotNullGet;
@@ -22,6 +22,9 @@ import java.util.List;
 import org.jetbrains.annotations.NotNull;
 import udmi.lib.ProtocolFamily;
 import udmi.schema.Config;
+import udmi.schema.DiscoveryConfig;
+import udmi.schema.FamilyDiscoveryConfig;
+import udmi.schema.FamilyDiscoveryModel;
 import udmi.schema.FamilyLocalnetConfig;
 import udmi.schema.GatewayConfig;
 import udmi.schema.LocalnetConfig;
@@ -128,6 +131,7 @@ public class ConfigManager {
     config.gateway = getGatewayConfig();
     config.pointset = getDevicePointsetConfig();
     config.localnet = getDeviceLocalnetConfig();
+    config.discovery = getDiscoveryConfig();
     return config;
   }
 
@@ -230,7 +234,8 @@ public class ConfigManager {
     ifNotNullThen(rawFamily, raw ->
         requireNonNull(catchToNull(() -> metadata.localnet.families.get(family).addr),
             format("metadata.localnet.families.[%s].addr not defined", family)));
-    NAMED_FAMILIES.get(family).refValidator(pointRef);
+
+    NAMED_FAMILIES.get(family).validateRef(pointRef);
     return pointRef;
   }
 
@@ -273,6 +278,37 @@ public class ConfigManager {
 
   public String getUpdatedTimestamp() {
     return isoConvert(metadata.timestamp);
+  }
+
+  private DiscoveryConfig getDiscoveryConfig() {
+    if (metadata.discovery == null) {
+      return null;
+    }
+
+    DiscoveryConfig discoveryConfig = new DiscoveryConfig();
+    discoveryConfig.families = ifNotNullGet(metadata.discovery.families,
+        families -> new HashMap<>());
+
+    if (discoveryConfig.families != null) {
+      metadata.discovery.families.keySet().forEach(family -> {
+        FamilyDiscoveryModel familyDiscoveryModel = metadata.discovery.families.get(family);
+        if (familyDiscoveryModel != null) {
+          // for a sporadic scan, supplying generation is invalid
+          checkState(familyDiscoveryModel.scan_interval_sec != null
+                  || familyDiscoveryModel.generation == null,
+              "generation specified without scan_interval_sec parameter");
+
+          FamilyDiscoveryConfig familyDiscoveryConfig = new FamilyDiscoveryConfig();
+          familyDiscoveryConfig.generation = familyDiscoveryModel.generation;
+          familyDiscoveryConfig.scan_interval_sec = familyDiscoveryModel.scan_interval_sec;
+          familyDiscoveryConfig.scan_duration_sec = familyDiscoveryModel.scan_duration_sec;
+
+          discoveryConfig.families.put(family, familyDiscoveryConfig);
+        }
+      });
+    }
+
+    return discoveryConfig;
   }
 
 }
