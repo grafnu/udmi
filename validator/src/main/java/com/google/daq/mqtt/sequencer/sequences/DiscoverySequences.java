@@ -10,7 +10,6 @@ import static com.google.udmi.util.CleanDateFormat.cleanDate;
 import static com.google.udmi.util.CleanDateFormat.cleanInstantDate;
 import static com.google.udmi.util.CleanDateFormat.dateEquals;
 import static com.google.udmi.util.GeneralUtils.CSV_JOINER;
-import static com.google.udmi.util.GeneralUtils.changedLines;
 import static com.google.udmi.util.GeneralUtils.ifNotEmptyThrow;
 import static com.google.udmi.util.GeneralUtils.ifNotNullGet;
 import static com.google.udmi.util.GeneralUtils.ifNotTrueGet;
@@ -20,6 +19,7 @@ import static com.google.udmi.util.JsonUtil.getNowInstant;
 import static com.google.udmi.util.JsonUtil.isoConvert;
 import static com.google.udmi.util.JsonUtil.stringifyTerse;
 import static java.lang.String.format;
+import static java.util.Objects.nonNull;
 import static java.util.Objects.requireNonNull;
 import static java.util.Optional.ofNullable;
 import static org.junit.Assert.assertEquals;
@@ -70,6 +70,9 @@ import udmi.schema.DiscoveryEvents;
 import udmi.schema.FamilyDiscoveryConfig;
 import udmi.schema.FamilyDiscoveryState;
 import udmi.schema.FeatureDiscovery;
+import udmi.schema.Metadata;
+import udmi.schema.PointPointsetModel;
+import udmi.schema.RefDiscovery;
 
 /**
  * Validation tests for discovery scan and enumeration capabilities.
@@ -314,8 +317,8 @@ public class DiscoverySequences extends SequenceBase {
     Integer stateEvents = deviceState.discovery.families.get(scanFamily).active_count;
     List<DiscoveryEvents> events = popReceivedEvents(DiscoveryEvents.class);
     Date generation = deviceConfig.discovery.families.get(scanFamily).generation;
-    Function<DiscoveryEvents, List<String>> invalidator = event -> invalidReasons(event,
-        generation);
+    Function<DiscoveryEvents, List<String>> invalidator = event ->
+        invalidReasons(event, generation);
     checkThat("discovery events were received", events.size() == stateEvents);
     List<String> reasons = events.stream().map(invalidator).flatMap(List::stream)
         .collect(Collectors.toList());
@@ -332,8 +335,7 @@ public class DiscoverySequences extends SequenceBase {
 
     Set<String> discoveredAddresses = events.stream().map(x -> x.scan_addr)
         .collect(Collectors.toSet());
-    Set<String> expectedAddresses = siteModel.metadataStream()
-        .map(e -> catchToNull(() -> e.getValue().localnet.families.get(scanFamily).addr))
+    Set<String> expectedAddresses = siteModel.metadataStream().map(this::scanFamilyAddr)
         .filter(Objects::nonNull).collect(Collectors.toSet());
     SetView<String> differences = symmetricDifference(discoveredAddresses, expectedAddresses);
     checkThat("all expected addresses were found", differences.isEmpty(),
@@ -386,15 +388,45 @@ public class DiscoverySequences extends SequenceBase {
   private List<String> checkEnumeration(List<DiscoveryEvents> receivedEvents,
       DiscoveryScanMode shouldEnumerate) {
     List<String> exceptions = new ArrayList<>();
-    Predicate<DiscoveryEvents> hasRefs = event -> event.refs != null && !event.refs.isEmpty();
     if (shouldEnumerate == PLEASE_ENUMERATE) {
       addIfCaught(exceptions, () ->
-          checkThat("all events have discovered refs", receivedEvents.stream().allMatch(hasRefs)));
+          checkThat("all events have matching refs", mismatchedDetail(receivedEvents)));
     } else {
-      addIfCaught(exceptions, () ->
-          checkThat("no events have discovered refs", receivedEvents.stream().noneMatch(hasRefs)));
+      addIfCaught(exceptions, () -> checkThat("no events have discovered refs",
+              receivedEvents.stream().noneMatch(event -> nonNull(event.refs))));
     }
     return exceptions;
+  }
+
+  private String mismatchedDetail(List<DiscoveryEvents> receivedEvents) {
+    List<String> strings = receivedEvents.stream()
+        .map(this::refsMatch).filter(Objects::nonNull).toList();
+    return strings.isEmpty() ? null : strings.toString();
+  }
+
+  private String refsMatch(DiscoveryEvents discoveryEvents) {
+    Entry<String, Metadata> deviceEntry = targetMetadata(discoveryEvents.scan_addr);
+    HashMap<String, PointPointsetModel> devicePoints = deviceEntry.getValue().pointset.points;
+    Set<String> metadataRefs = devicePoints.values().stream()
+        .map(x -> x.ref).filter(Objects::nonNull).collect(Collectors.toSet());
+    Set<String> discoveredRefs = discoveryEvents.refs.keySet();
+    SetView<String> extraMetadata = Sets.difference(metadataRefs, discoveredRefs);
+    SetView<String> extraDiscovered = Sets.difference(discoveredRefs, metadataRefs);
+    return extraMetadata.isEmpty() && extraDiscovered.isEmpty() ? null
+        : format("Device %s has extra metadata refs %s and/or extra discovered refs %s",
+            deviceEntry.getKey(), extraMetadata, extraDiscovered);
+  }
+
+  private Entry<String, Metadata> targetMetadata(String scanAddr) {
+    return siteModel.allMetadata().entrySet().stream()
+        .filter(entry -> scanAddr.equals(scanFamilyAddr(entry)))
+        .findFirst()
+        .orElseThrow(() -> new IllegalStateException(
+            format("No device match found for %s addr %s", scanFamily, scanAddr)));
+  }
+
+  private String scanFamilyAddr(Entry<String, Metadata> entry) {
+    return catchToNull(() -> entry.getValue().localnet.families.get(scanFamily).addr);
   }
 
   @Test(timeout = TWO_MINUTES_MS)
@@ -411,7 +443,11 @@ public class DiscoverySequences extends SequenceBase {
     checkThat("scan did not terminate prematurely",
         metaFamilies.stream().noneMatch(scanStopped(Date.from(finishTime))));
     List<DiscoveryEvents> receivedEvents = popReceivedEvents(DiscoveryEvents.class);
-    ifNotEmptyThrow(checkEnumeration(receivedEvents, PLEASE_ENUMERATE), CSV_JOINER::join);
+    quietlyCheckThat("discovery events were received", !receivedEvents.isEmpty());
+    Date generation = receivedEvents.get(receivedEvents.size() - 1).generation;
+    List<DiscoveryEvents> lastGenerationEvents = receivedEvents.stream()
+        .filter(event -> event.generation.equals(generation)).toList();
+    ifNotEmptyThrow(checkEnumeration(lastGenerationEvents, PLEASE_ENUMERATE), CSV_JOINER::join);
   }
 
   private void initializeDiscovery() {

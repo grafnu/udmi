@@ -3,6 +3,7 @@ package daq.pubber;
 import static com.google.udmi.util.GeneralUtils.catchToNull;
 import static com.google.udmi.util.GeneralUtils.ifNotNullThen;
 import static com.google.udmi.util.GeneralUtils.ifTrueGet;
+import static java.util.Objects.nonNull;
 import static java.util.Objects.requireNonNull;
 import static java.util.Optional.ofNullable;
 import static java.util.stream.Collectors.toMap;
@@ -10,11 +11,11 @@ import static udmi.lib.ProtocolFamily.VENDOR;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.udmi.util.SiteModel;
+import java.util.AbstractMap.SimpleEntry;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.function.BiConsumer;
 import udmi.lib.base.ManagerBase;
-import udmi.lib.client.DiscoveryManager;
 import udmi.lib.client.LocalnetManager;
 import udmi.lib.intf.ManagerHost;
 import udmi.schema.DiscoveryEvents;
@@ -48,7 +49,14 @@ public class PubberVendorProvider extends ManagerBase implements PubberFamilyPro
   private Map<String, RefDiscovery> getDiscoveredRefs(Metadata entry) {
     Map<String, PointPointsetModel> points = catchToNull(() -> entry.pointset.points);
     return ofNullable(points).orElse(ImmutableMap.of()).entrySet().stream()
-        .collect(toMap(DiscoveryManager::getVendorRefKey, DiscoveryManager::getVendorRefValue));
+        .map(this::pointsetToRef)
+        .filter(ref -> nonNull(ref.getValue().point))
+        .collect(toMap(Entry::getKey, Entry::getValue));
+  }
+
+  private Entry<String, RefDiscovery> pointsetToRef(Entry<String, PointPointsetModel> entry) {
+    return new SimpleEntry<>(PubberDiscoveryManager.getVendorRefKey(entry),
+        PubberDiscoveryManager.getVendorRefValue(entry));
   }
 
   private void updateStateAddress() {
