@@ -1,7 +1,6 @@
 
 package udmi.schema;
 
-import java.util.ArrayList;
 import java.util.List;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -47,9 +46,9 @@ public class GatewayModel {
      */
     @JsonProperty("proxy_ids")
     @JsonPropertyDescription("An array of all the device IDs which are bound to the device")
-    public List<String> proxy_ids = new ArrayList<String>();
+    public List<String> proxy_ids;
     @JsonProperty("group_ids")
-    public List<String> group_ids = new ArrayList<String>();
+    public List<String> group_ids;
     /**
      * Parent device to which the device is physically connected
      * 
