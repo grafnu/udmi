@@ -1,4 +1,5 @@
 """Generated class for model_discovery_family.json"""
+from .events_discovery import DiscoveryEvents
 
 
 class FamilyDiscoveryModel:
@@ -8,6 +9,7 @@ class FamilyDiscoveryModel:
     self.generation = None
     self.scan_interval_sec = None
     self.scan_duration_sec = None
+    self.discovered = None
 
   @staticmethod
   def from_dict(source):
@@ -17,6 +19,7 @@ class FamilyDiscoveryModel:
     result.generation = source.get('generation')
     result.scan_interval_sec = source.get('scan_interval_sec')
     result.scan_duration_sec = source.get('scan_duration_sec')
+    result.discovered = DiscoveryEvents.from_dict(source.get('discovered'))
     return result
 
   @staticmethod
@@ -43,4 +46,6 @@ class FamilyDiscoveryModel:
       result['scan_interval_sec'] = self.scan_interval_sec # 5
     if self.scan_duration_sec:
       result['scan_duration_sec'] = self.scan_duration_sec # 5
+    if self.discovered:
+      result['discovered'] = self.discovered.to_dict() # 4
     return result

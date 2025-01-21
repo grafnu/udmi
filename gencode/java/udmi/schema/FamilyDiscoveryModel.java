@@ -18,7 +18,8 @@ import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 @JsonPropertyOrder({
     "generation",
     "scan_interval_sec",
-    "scan_duration_sec"
+    "scan_duration_sec",
+    "discovered"
 })
 public class FamilyDiscoveryModel {
 
@@ -43,12 +44,22 @@ public class FamilyDiscoveryModel {
     @JsonProperty("scan_duration_sec")
     @JsonPropertyDescription("Scan duration, in seconds")
     public Integer scan_duration_sec;
+    /**
+     * Discovery Events
+     * <p>
+     * [Discovery result](../docs/specs/discovery.md) with implicit discovery
+     * 
+     */
+    @JsonProperty("discovered")
+    @JsonPropertyDescription("[Discovery result](../docs/specs/discovery.md) with implicit discovery")
+    public DiscoveryEvents discovered;
 
     @Override
     public int hashCode() {
         int result = 1;
         result = ((result* 31)+((this.generation == null)? 0 :this.generation.hashCode()));
         result = ((result* 31)+((this.scan_interval_sec == null)? 0 :this.scan_interval_sec.hashCode()));
+        result = ((result* 31)+((this.discovered == null)? 0 :this.discovered.hashCode()));
         result = ((result* 31)+((this.scan_duration_sec == null)? 0 :this.scan_duration_sec.hashCode()));
         return result;
     }
@@ -62,7 +73,7 @@ public class FamilyDiscoveryModel {
             return false;
         }
         FamilyDiscoveryModel rhs = ((FamilyDiscoveryModel) other);
-        return ((((this.generation == rhs.generation)||((this.generation!= null)&&this.generation.equals(rhs.generation)))&&((this.scan_interval_sec == rhs.scan_interval_sec)||((this.scan_interval_sec!= null)&&this.scan_interval_sec.equals(rhs.scan_interval_sec))))&&((this.scan_duration_sec == rhs.scan_duration_sec)||((this.scan_duration_sec!= null)&&this.scan_duration_sec.equals(rhs.scan_duration_sec))));
+        return (((((this.generation == rhs.generation)||((this.generation!= null)&&this.generation.equals(rhs.generation)))&&((this.scan_interval_sec == rhs.scan_interval_sec)||((this.scan_interval_sec!= null)&&this.scan_interval_sec.equals(rhs.scan_interval_sec))))&&((this.discovered == rhs.discovered)||((this.discovered!= null)&&this.discovered.equals(rhs.discovered))))&&((this.scan_duration_sec == rhs.scan_duration_sec)||((this.scan_duration_sec!= null)&&this.scan_duration_sec.equals(rhs.scan_duration_sec))));
     }
 
 }
