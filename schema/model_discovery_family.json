@@ -20,6 +20,9 @@
       "description": "Scan duration, in seconds",
       "type": "integer",
       "minimum": 0
+    },
+    "discovered: {
+      "$ref": "file:events_discovery.json#"
     }
   }
 }
