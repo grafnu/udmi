@@ -81,16 +81,17 @@ for subset in $subsets; do
     fi
 
     for device in $devices; do
-        device_dir=$devices_dir/$device
-        if [[ -d $device_dir/out ]]; then
-            redact_files $device_dir/out/*
-            diffs=$(diff -rq $device_dir/out $device_dir/expected 2>&1) || true
+        devicesout=$devicesdir/$device/out
+        if [[ -d $devicesout ]]; then
+            find $devicesout -name \*.json | xargs -i bash -c "jq -S . {} | sponge {}"
+            redact_files $devicesout/* $site_dir/registration_summary.json
+            diffs=$(diff -rq $devicesout $devicesdir/$device/expected 2>&1) || true
             if [[ -n $diffs ]]; then
                 cat <<< $diffs >> $FAILURES
-                diff -r $device_dir/out $device_dir/expected || true
+                diff -r $devicesout $devicesdir/$device/expected || true
             fi
-        elif [[ -d $device_dir/expected ]]; then
-            echo Missing output directory $device_dir/out
+        elif [[ -d $devicesdir/$device/expected ]]; then
+            echo Missing output directory $devicesout
             false
         fi
     done
