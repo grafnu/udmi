@@ -1,9 +1,11 @@
 package com.google.daq.mqtt.validator;
 
+import static com.google.udmi.util.Common.DEVICE_ID_KEY;
 import static com.google.udmi.util.Common.TIMESTAMP_KEY;
 import static com.google.udmi.util.JsonUtil.getInstant;
 import static com.google.udmi.util.JsonUtil.isoConvert;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static udmi.schema.Level.INFO;
 
@@ -14,14 +16,20 @@ import com.google.udmi.util.SiteModel;
 import java.time.Instant;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import org.junit.Test;
+import udmi.schema.CloudModel;
+import udmi.schema.CloudModel.Operation;
 import udmi.schema.Config;
 import udmi.schema.DeviceValidationEvents;
 import udmi.schema.DiscoveryEvents;
+import udmi.schema.Metadata;
 import udmi.schema.PointPointsetEvents;
 import udmi.schema.PointsetEvents;
 import udmi.schema.PointsetState;
 import udmi.schema.PointsetSummary;
+import udmi.schema.SystemModel;
 import udmi.schema.ValidationEvents;
 import udmi.schema.ValidationState;
 
@@ -33,6 +41,7 @@ public class BasicTest extends TestBase {
   private static final String EVENTS_SUBTYPE = "events";
   private static final String CONFIG_SUBTYPE = "config";
   private static final String STATE_SUBTYPE = "state";
+  private static final String MODEL_SUBTYPE = "model";
   private static final String POINTSET_SUBFOLDER = "pointset";
   private static final String DISCOVERY_SUBFOLDER = "discovery";
   private static final String UPDATE_SUBFOLDER = "update";
@@ -144,6 +153,58 @@ public class BasicTest extends TestBase {
     Date lastSeen = deviceValidationEvents.last_seen;
     Instant parse = getInstant((String) eventBundle.message.get(TIMESTAMP_KEY));
     assertEquals("device last seen", isoConvert(Date.from(parse)), isoConvert(lastSeen));
+  }
+
+  @Test
+  public void deviceMetadataUpdate() {
+    Metadata messageObject = new Metadata();
+    messageObject.version = TestCommon.UDMI_VERSION;
+    messageObject.system = new SystemModel();
+    messageObject.system.description = "Updated description";
+    MessageBundle messageBundle = getMessageBundle(MODEL_SUBTYPE, UPDATE_SUBFOLDER, messageObject);
+
+    validator.validateMessage(messageBundle);
+
+    Map<String, ReportingDevice> reportingDevices = validator.getReportingDevices();
+    assertEquals(messageObject.system.description,
+        reportingDevices.get(TestCommon.DEVICE_ID).getMetadata().system.description);
+  }
+
+  @Test
+  public void deviceDeleteMetadataUpdate() {
+    Metadata messageObject = new Metadata();
+    messageObject.version = TestCommon.UDMI_VERSION;
+    messageObject.system = new SystemModel();
+    messageObject.cloud = new CloudModel();
+    messageObject.cloud.operation = Operation.DELETE;
+    MessageBundle messageBundle = getMessageBundle(MODEL_SUBTYPE, UPDATE_SUBFOLDER, messageObject);
+
+    validator.validateMessage(messageBundle);
+
+    Map<String, ReportingDevice> reportingDevices = validator.getReportingDevices();
+    assertNull(reportingDevices.get(TestCommon.DEVICE_ID));
+  }
+
+  @Test
+  public void addNewDeviceWithModelUpdate() {
+    Metadata messageObject = new Metadata();
+    messageObject.version = TestCommon.UDMI_VERSION;
+    messageObject.system = new SystemModel();
+    messageObject.system.description = "New description";
+    MessageBundle messageBundle = getMessageBundle(MODEL_SUBTYPE, UPDATE_SUBFOLDER, messageObject);
+
+    String newDeviceId = TestCommon.DEVICE_ID + "_1";
+    messageBundle.attributes.put(DEVICE_ID_KEY, newDeviceId);
+
+    validator.validateMessage(messageBundle);
+
+    Map<String, ReportingDevice> reportingDevices = validator.getReportingDevices();
+    Set<String> expectedDevices = validator.getExpectedDevices();
+
+    assertTrue(expectedDevices.contains(newDeviceId));
+    assertTrue(reportingDevices.containsKey(newDeviceId));
+    assertEquals(messageObject.system.description,
+        reportingDevices.get(newDeviceId).getMetadata().system.description);
   }
 
 }
