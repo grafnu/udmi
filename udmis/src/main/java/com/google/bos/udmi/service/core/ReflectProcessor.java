@@ -242,6 +242,7 @@ public class ReflectProcessor extends ProcessorBase {
         isoConvert(env.publishTime), env.transactionId, env.deviceId);
     CloudModel result = getReflectionResult(env, payload);
     ifNotNullThen(result, r -> {
+      env.subType = SubType.REPLY;
       debug("Return reflection result %s %s %s", r.operation, env.subType, env.transactionId);
       ifNullThen(r.operation, () -> error("Reflect call has null return operation type"));
       sendReflectCommand(reflection, env, result);
