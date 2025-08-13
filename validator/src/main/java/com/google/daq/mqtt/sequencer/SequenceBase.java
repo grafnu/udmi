@@ -1937,7 +1937,7 @@ public class SequenceBase {
     }
 
     // Don't process internal reflection operation messages.
-    if (message.get(OPERATION_KEY) instanceof String) {
+    if (isReflectionResult(message)) {
       return;
     }
 
@@ -1982,6 +1982,10 @@ public class SequenceBase {
       writeString(exceptionOutFile, stackTraceString(e));
       throw new AbortMessageLoop(format("While handling %s_%s", subTypeRaw, subFolderRaw), e);
     }
+  }
+
+  private static boolean isReflectionResult(Map<String, Object> message) {
+    return message.get(OPERATION_KEY) instanceof String;
   }
 
   private File exceptionOutFile() {
