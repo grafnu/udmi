@@ -1936,6 +1936,11 @@ public class SequenceBase {
       return;
     }
 
+    // Don't process internal reflection operation messages.
+    if (message.get(OPERATION_KEY) instanceof String) {
+      return;
+    }
+
     if (Validator.isReplySubtype(subTypeRaw)) {
       return;
     }
