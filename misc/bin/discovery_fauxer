@@ -1,0 +1,8 @@
+#!/bin/bash -e
+
+validator/bin/build
+
+JARFILE=validator/build/libs/validator-1.0-SNAPSHOT-all.jar
+MAINCLASS=com.google.daq.mqtt.misc.DiscoveryFauxer
+echo java -cp $JARFILE $MAINCLASS
+java -cp $JARFILE $MAINCLASS

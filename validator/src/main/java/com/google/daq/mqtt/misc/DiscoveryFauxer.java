@@ -1,7 +1,7 @@
 package com.google.daq.mqtt.misc;
 
 /**
- * Simple converer for some foreign setup files into synthetic discovery events.
+ * Simple converter for some foreign setup files into synthetic discovery events.
  */
 public class DiscoveryFauxer {
 
