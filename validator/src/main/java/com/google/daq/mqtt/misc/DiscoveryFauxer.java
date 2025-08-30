@@ -2,6 +2,8 @@ package com.google.daq.mqtt.misc;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.udmi.util.JsonUtil.loadMap;
+import static com.google.udmi.util.JsonUtil.stringify;
+import static com.google.udmi.util.JsonUtil.stringifyTerse;
 import static com.google.udmi.util.JsonUtil.toList;
 import static com.google.udmi.util.JsonUtil.toMap;
 import static java.lang.String.format;
@@ -68,7 +70,7 @@ public class DiscoveryFauxer {
   }
 
   private void emitMessage(Object event) {
-    System.err.println(event);
+    System.err.println(stringifyTerse(event));
   }
 
   private void processPointList(List<Object> pointList) {
