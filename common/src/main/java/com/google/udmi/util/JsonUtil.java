@@ -26,8 +26,10 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -409,6 +411,16 @@ public abstract class JsonUtil {
     } catch (Exception e) {
       throw new RuntimeException("While stringifying object", e);
     }
+  }
+
+  /**
+   * Convert the input object to a list representation.
+   *
+   * @param input input list
+   * @return object-as-list
+   */
+  public static List<Object> toList(Object input) {
+    return new ArrayList<>((List<?>) input);
   }
 
   /**
