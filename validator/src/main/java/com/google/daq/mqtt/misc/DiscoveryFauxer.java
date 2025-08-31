@@ -1,19 +1,27 @@
 package com.google.daq.mqtt.misc;
 
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.udmi.util.GeneralUtils.friendlyStackTrace;
+import static com.google.udmi.util.GeneralUtils.getNow;
+import static com.google.udmi.util.GeneralUtils.stackTraceString;
 import static com.google.udmi.util.JsonUtil.loadMap;
-import static com.google.udmi.util.JsonUtil.stringify;
 import static com.google.udmi.util.JsonUtil.stringifyTerse;
 import static com.google.udmi.util.JsonUtil.toList;
 import static com.google.udmi.util.JsonUtil.toMap;
 import static java.lang.String.format;
+import static java.util.Objects.requireNonNull;
 
+import com.google.common.collect.ImmutableMap;
+import com.google.daq.mqtt.util.RunningAverageBase;
 import com.google.udmi.util.JsonUtil;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import udmi.schema.Category;
 import udmi.schema.DiscoveryEvents;
-import udmi.schema.PointPointsetModel;
+import udmi.schema.Entry;
+import udmi.schema.Level;
+import udmi.schema.RefDiscovery;
 
 /**
  * Simple converter for some foreign setup files into synthetic discovery events.
@@ -31,6 +39,17 @@ public class DiscoveryFauxer {
   public static final String SOURCE_TYPE_KEY = "type";
   private static final Object BACNET_IP_SOURCE_TYPE = "BACnetIP";
   private static final String SOURCE_ID_KEY = "xid";
+  private static final String TAGS_KEY = "tags";
+  private static final String BACNET_TYPE_KEY = "BACnetPropertyName";
+  private static final String POINT_XID_KEY = "xid";
+  public static final String POINT_LOCATOR_KEY = "pointLocator";
+  private static final Map<String, String> BACNET_TYPES = ImmutableMap.of(
+      "ANALOG_INPUT", "AI",
+      "ANALOG_VALUE", "AV",
+      "ANALOG_OUTPUT", "AO",
+      "BINARY_INPUT", "BI",
+      "BINARY_VALUE", "BV",
+      "BINARY_OUTPUT", "BO");
   private Map<String, DiscoveryEvents> discoveryMap = new HashMap<>();
   private String discoveryFamily;
   private String deviceDataSource;
@@ -74,20 +93,41 @@ public class DiscoveryFauxer {
   }
 
   private void processPointList(List<Object> pointList) {
-    pointList.stream().map(JsonUtil::toMap).forEach(this::processPoint);
+    try {
+      pointList.stream().map(JsonUtil::toMap).forEach(this::processPoint);
+    } catch (Exception e) {
+      throw new RuntimeException("While processing points list", e);
+    }
   }
 
   private void processPoint(Map<String, Object> point) {
-    String deviceName = (String) point.get(DEVICE_NAME_KEY);
-    addDevicePoint(discoveryMap.computeIfAbsent(deviceName, this::newDiscoveryEvent), point);
+    String xid = requireNonNull((String) point.get(POINT_XID_KEY));
+    String deviceName = requireNonNull((String) point.get(DEVICE_NAME_KEY), "missing device name");
+    try {
+      addDevicePoint(discoveryMap.computeIfAbsent(deviceName, this::newDiscoveryEvent), point);
+    } catch (Exception e) {
+      System.err.printf("Error processing %s: %s", xid, friendlyStackTrace(e));
+      discoveryMap.get(deviceName).status = discoveryErrorStatus(e);
+    }
+  }
+
+  private Entry discoveryErrorStatus(Exception e) {
+    Entry entry = new Entry();
+    entry.level = Level.ERROR.value();
+    entry.message = "Exception processing point: " + friendlyStackTrace(e);
+    entry.detail = stackTraceString(e);
+    entry.category = Category.DISCOVERY_POINT_DESCRIBE;
+    entry.timestamp = getNow();
+    return entry;
   }
 
   private void addDevicePoint(DiscoveryEvents device, Map<String, Object> point) {
     updateDeviceProperties(device, point);
-    String pointName = (String) point.get(POINT_NAME_KEY);
-    PointPointsetModel model = new PointPointsetModel();
-    model.ref = makePointRef(point);
-    checkState(device.points.put(pointName, model) == null, "duplicate point entry: " + pointName);
+    String pointRef = makePointRef(point);
+    RefDiscovery model = new RefDiscovery();
+    checkState(device.refs.put(pointRef, model) == null, "duplicate ref entry: " + pointRef);
+    model.name = requireNonNull((String) point.get(POINT_NAME_KEY), "missing point name");
+    // model.ancillary = point;
   }
 
   private void updateDeviceProperties(DiscoveryEvents device, Map<String, Object> point) {
@@ -98,15 +138,20 @@ public class DiscoveryFauxer {
   }
 
   private static String makePointRef(Map<String, Object> point) {
-    String objectType = (String) point.get(OBJECT_TYPE_KEY);
-    String instanceNum = (String) point.get(INSTANCE_NUM_KEY);
-    return format("%s:%s", objectType, instanceNum);
+    Map<String, Object> locator = toMap(point.get(POINT_LOCATOR_KEY));
+    String type = requireNonNull((String) locator.get(OBJECT_TYPE_KEY), "missing object type");
+    Integer num = requireNonNull((Integer) locator.get(INSTANCE_NUM_KEY), "missing instance num");
+    return format("%s:%s", convertBacnetType(type), num);
+  }
+
+  private static String convertBacnetType(String type) {
+    return requireNonNull(BACNET_TYPES.get(type), "unknown bacnet type: " + type);
   }
 
   private DiscoveryEvents newDiscoveryEvent(String deviceId) {
     DiscoveryEvents discoveryEvents = new DiscoveryEvents();
     discoveryEvents.family = discoveryFamily;
-    discoveryEvents.points = new HashMap<>();
+    discoveryEvents.refs = new HashMap<>();
     return discoveryEvents;
   }
 }
