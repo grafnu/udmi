@@ -32,7 +32,7 @@ public class Reflector {
 
   private static final int RETRY_COUNT = 2;
   public static final String REFLECTOR_TOOL_NAME = "reflector";
-  private final List<String> reflectCommands;
+  protected final List<String> reflectCommands;
   private String siteDir;
   private ExecutionConfiguration executionConfiguration;
   private File baseDir;
@@ -62,7 +62,7 @@ public class Reflector {
     }
   }
 
-  private void shutdown() {
+  protected void shutdown() {
     client.close();
   }
 
@@ -127,7 +127,7 @@ public class Reflector {
     }
   }
 
-  private void initialize() {
+  protected void initialize() {
     if (executionConfiguration.key_file == null) {
       String keyFile = new File(siteDir, GCP_REFLECT_KEY_PKCS8).getAbsolutePath();
       System.err.println("Using reflector key file " + keyFile);

@@ -12,11 +12,14 @@ import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
 import com.google.common.collect.ImmutableMap;
-import com.google.daq.mqtt.util.RunningAverageBase;
+import com.google.daq.mqtt.validator.Reflector;
 import com.google.udmi.util.JsonUtil;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicInteger;
 import udmi.schema.Category;
 import udmi.schema.DiscoveryEvents;
 import udmi.schema.Entry;
@@ -26,7 +29,7 @@ import udmi.schema.RefDiscovery;
 /**
  * Simple converter for some foreign setup files into synthetic discovery events.
  */
-public class DiscoveryFauxer {
+public class DiscoveryFauxer extends Reflector {
 
   public static final String DATA_POINTS_KEY = "dataPoints";
   public static final String DEVICE_NAME_KEY = "deviceName";
@@ -53,22 +56,37 @@ public class DiscoveryFauxer {
   private Map<String, DiscoveryEvents> discoveryMap = new HashMap<>();
   private String discoveryFamily;
   private String deviceDataSource;
+  private AtomicInteger discoveryEventNo = new AtomicInteger();
 
   /**
    * Let's go.
    */
   public static void main(String[] args) {
-    if (args.length != 1) {
-      throw new IllegalArgumentException("Expecting one arg: input file");
+    DiscoveryFauxer discoveryFauxer = new DiscoveryFauxer(Arrays.asList(args));
+    discoveryFauxer.initialize();
+    try {
+      discoveryFauxer.process();
+    } finally {
+      discoveryFauxer.shutdown();
     }
+  }
 
-    new DiscoveryFauxer().process(loadMap(args[0]));
+  public DiscoveryFauxer(List<String> argsList) {
+    super(argsList);
+  }
+
+  private void process() {
+    checkState(reflectCommands.size() == 1, "expected one input file");
+    process(loadMap(reflectCommands.get(0)));
   }
 
   private void process(Map<String, Object> inputMap) {
     processDataSource(toList(inputMap.get(DATA_SOURCES_KEY)));
     processPointList(toList(inputMap.get(DATA_POINTS_KEY)));
     emitDiscoveryMessages();
+    discoveryMap.forEach((key, value) -> {
+      System.out.printf("%s %s%n", key, value.addr);
+    });
   }
 
   private void processDataSource(List<Object> sourcesList) {
@@ -88,7 +106,8 @@ public class DiscoveryFauxer {
     emitMessage(stopEvent);
   }
 
-  private void emitMessage(Object event) {
+  private void emitMessage(DiscoveryEvents event) {
+    event.event_no = discoveryEventNo.getAndIncrement();
     System.err.println(stringifyTerse(event));
   }
 
@@ -132,9 +151,10 @@ public class DiscoveryFauxer {
 
   private void updateDeviceProperties(DiscoveryEvents device, Map<String, Object> point) {
     checkState(point.get(DATA_SOURCE_KEY).equals(deviceDataSource), "inconsistent device source");
-    String deviceAddr = (String) point.get(DEVICE_ADDR_KEY);
+    Map<String, Object> locator = requireNonNull(toMap(point.get(POINT_LOCATOR_KEY)), "missing point locator info");
+    Integer deviceAddr = (Integer) locator.get(DEVICE_ADDR_KEY);
     checkState(device.addr == null || device.addr.equals(deviceAddr), "inconsistent device addr");
-    device.addr = deviceAddr;
+    device.addr = Objects.toString(deviceAddr);
   }
 
   private static String makePointRef(Map<String, Object> point) {
