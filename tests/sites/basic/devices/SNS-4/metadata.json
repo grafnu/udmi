@@ -6,6 +6,7 @@
         "units": "Degrees-phase"
       },
       "split_threshold": {
+        "ref": "iot://AHU-22/filter_differential_pressure",
         "units": "Imperial-gallons-per-minute"
       }
     }
