@@ -130,7 +130,19 @@ fgrep Rudolph out/mosquitto.sub || fail did not find expected message
 
 echo Checking messages for matching serial no $serial_no
 received_no=$(echo "$operational_line" | sed -E 's/^[^{]+//' | jq -r .system.serial_no)
+echo TAP1
+fgrep operational out/mosquitto.sub)
+echo TAP2
+fgrep operational out/mosquitto.sub | head -n 1
+echo TAP3
+fgrep operational out/mosquitto.sub | head -n 1 | awk '{ print $1 }'
+echo TAP4
+received_topic=$(fgrep operational out/mosquitto.sub)
+echo TAP5
+received_topic=$(fgrep operational out/mosquitto.sub | head -n 1)
+echo TAP6
 received_topic=$(fgrep operational out/mosquitto.sub | head -n 1 | awk '{ print $1 }')
+echo TAP7
 [[ -z $received_topic ]] && fail No matching receive message found.
 
 expected_topic=/r/$registry_id/d/$device_id/state
