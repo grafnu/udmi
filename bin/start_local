@@ -78,6 +78,9 @@ sudo chmod a+r /var/log/mosquitto/mosquitto.log
 echo Starting udmis proper... | tee -a $UDMIS_LOG
 bin/start_udmis
 
+pwd
+ls -l out
+
 echo Done with local server setup.
 
 [[ -z $block ]] || (echo Blocking until termination. && tail -f /dev/null)
