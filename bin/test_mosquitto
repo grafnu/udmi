@@ -131,7 +131,7 @@ fgrep Rudolph out/mosquitto.sub || fail did not find expected message
 echo Checking messages for matching serial no $serial_no
 received_no=$(echo "$operational_line" | sed -E 's/^[^{]+//' | jq -r .system.serial_no)
 echo TAP1
-fgrep operational out/mosquitto.sub)
+fgrep operational out/mosquitto.sub
 echo TAP2
 fgrep operational out/mosquitto.sub | head -n 1
 echo TAP3
