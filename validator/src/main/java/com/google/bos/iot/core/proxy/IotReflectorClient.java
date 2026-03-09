@@ -617,6 +617,13 @@ public class IotReflectorClient implements MessagePublisher {
 
   @Override
   public String publish(String deviceId, String topic, String data) {
+    return publish(deviceId, topic, data, getNextTransactionId());
+  }
+
+  /**
+   * Publish a message with a specific transaction id.
+   */
+  public String publish(String deviceId, String topic, String data, String transactionId) {
     updateLastProgressEvent();
     Envelope envelope = new Envelope();
     envelope.deviceRegistryId = registryId;
@@ -625,7 +632,6 @@ public class IotReflectorClient implements MessagePublisher {
     envelope.subFolder = SubFolder.fromValue(parts[0]);
     envelope.subType = SubType.fromValue(parts[1]);
     envelope.payload = GeneralUtils.encodeBase64(data);
-    String transactionId = getNextTransactionId();
     envelope.transactionId = transactionId;
     envelope.publishTime = new Date();
     publishStats.update();

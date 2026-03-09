@@ -213,9 +213,11 @@ public class IotReflectorClient implements IotProvider {
 
   private Map<String, Object> transaction(String deviceId, String topic,
       String message, QuerySpeed speed) {
-    // TODO: Publish should return future to avoid race conditions.
-    String transactionId = messageClient.publish(deviceId, topic, message);
-    Map<String, Object> objectMap = waitForReply(transactionId, speed);
+    String transactionId = com.google.bos.iot.core.proxy.IotReflectorClient.getNextTransactionId();
+    CompletableFuture<Map<String, Object>> replyFuture = new CompletableFuture<>();
+    futures.put(transactionId, replyFuture);
+    messageClient.publish(deviceId, topic, message, transactionId);
+    Map<String, Object> objectMap = waitForReply(transactionId, speed, replyFuture);
     String error = (String) ofNullable(objectMap).map(x -> x.get(ERROR_KEY)).orElse(null);
     if (error != null) {
       writeErrorDetail(transactionId, error, (String) objectMap.get(DETAIL_KEY));
@@ -242,10 +244,9 @@ public class IotReflectorClient implements IotProvider {
     }
   }
 
-  private Map<String, Object> waitForReply(String sentId, QuerySpeed speed) {
+  private Map<String, Object> waitForReply(String sentId, QuerySpeed speed,
+      CompletableFuture<Map<String, Object>> replyFuture) {
     try {
-      CompletableFuture<Map<String, Object>> replyFuture = new CompletableFuture<>();
-      futures.put(sentId, replyFuture);
       return speed == QuerySpeed.DYNAMIC ? dynamicReplyFutureGet(replyFuture) :
           replyFuture.get(speed.seconds(), TimeUnit.SECONDS);
     } catch (Exception e) {
