@@ -213,10 +213,9 @@ public class IotReflectorClient implements IotProvider {
 
   private Map<String, Object> transaction(String deviceId, String topic,
       String message, QuerySpeed speed) {
-    String transactionId = com.google.bos.iot.core.proxy.IotReflectorClient.getNextTransactionId();
     CompletableFuture<Map<String, Object>> replyFuture = new CompletableFuture<>();
-    futures.put(transactionId, replyFuture);
-    messageClient.publish(deviceId, topic, message, transactionId);
+    String transactionId = messageClient.publish(deviceId, topic, message,
+        publishedId -> futures.put(publishedId, replyFuture));
     Map<String, Object> objectMap = waitForReply(transactionId, speed, replyFuture);
     String error = (String) ofNullable(objectMap).map(x -> x.get(ERROR_KEY)).orElse(null);
     if (error != null) {
