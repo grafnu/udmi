@@ -47,6 +47,12 @@ public interface MessagePublisher {
 
   String publish(String deviceId, String topic, String data);
 
+  default String publish(String deviceId, String topic, String data, java.util.function.Consumer<String> prePublishHook) {
+    String publishedId = publish(deviceId, topic, data);
+    prePublishHook.accept(publishedId);
+    return publishedId;
+  }
+
   default String publish(String deviceId, String topic, String data, PublishPriority priority) {
     return publish(deviceId, topic, data);
   }

@@ -617,6 +617,11 @@ public class IotReflectorClient implements MessagePublisher {
 
   @Override
   public String publish(String deviceId, String topic, String data) {
+    return publish(deviceId, topic, data, (java.util.function.Consumer<String>) null);
+  }
+
+  @Override
+  public String publish(String deviceId, String topic, String data, java.util.function.Consumer<String> prePublishHook) {
     updateLastProgressEvent();
     Envelope envelope = new Envelope();
     envelope.deviceRegistryId = registryId;
@@ -629,6 +634,9 @@ public class IotReflectorClient implements MessagePublisher {
     envelope.transactionId = transactionId;
     envelope.publishTime = new Date();
     publishStats.update();
+    if (prePublishHook != null) {
+      prePublishHook.accept(transactionId);
+    }
     publisher.publish(registryId, getPublishTopic(), stringify(envelope));
     return transactionId;
   }
