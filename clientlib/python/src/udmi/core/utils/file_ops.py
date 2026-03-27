@@ -85,7 +85,7 @@ def mask_secrets(data: Any, sensitive_keys: Iterable[str] = None) -> Any:
         sensitive_keys = {"password", "secret", "key_data", "private_key",
                           "token", "auth"}
     else:
-        sensitive_keys = set(sensitive_keys)
+        sensitive_keys = {s.lower() for s in sensitive_keys}
 
     if isinstance(data, dict):
         new_data: Dict[str, Any] = {}
