@@ -3,3 +3,4 @@ endpoint_connection_retry
 pointset_publish_interval
 extra_config
 system_last_update
+valid_system_block
