@@ -95,10 +95,13 @@ UUFI supports direct operations on the Cloud Model by setting specific attribute
 
 ## 7. Examples
 
-The following examples demonstrate how to format PubSub messages for common UUFI operations.
+The following examples demonstrate how to format PubSub messages for common UUFI operations, grouped by logical exchange.
 
-### 7.1. Publish: Handshake State
-This message is sent by the Client to initiate a session.
+### 7.1. Handshake Exchange
+The handshake synchronizes the Client and the System upon connection.
+
+#### Step 1: Publish Handshake State
+The Client initiates the session.
 
 **PubSub Attributes:**
 ```json
@@ -129,8 +132,8 @@ This message is sent by the Client to initiate a session.
 }
 ```
 
-### 7.2. Receive: Handshake Config
-This message is received from the System to confirm the session is active.
+#### Step 2: Receive Handshake Config
+The System confirms the session is active.
 
 **PubSub Attributes:**
 ```json
@@ -164,8 +167,11 @@ This message is received from the System to confirm the session is active.
 }
 ```
 
-### 7.3. Publish: Update Device Configuration
-Updating the `pointset` configuration for a device named `BLD-1`.
+### 7.2. Pointset Exchange
+Interaction with a device's points (e.g., sensors and setpoints).
+
+#### Action: Publish Config Update
+Updating the `room_temperature` setpoint for device `BLD-1`.
 
 **PubSub Attributes:**
 ```json
@@ -193,8 +199,8 @@ Updating the `pointset` configuration for a device named `BLD-1`.
 }
 ```
 
-### 7.4. Receive: Telemetry Event
-Receiving a telemetry message from a device named `BLD-1`.
+#### Action: Receive Telemetry Event
+Receiving the current `room_temperature` reading from device `BLD-1`.
 
 **PubSub Attributes:**
 ```json
