@@ -1,3 +1,5 @@
+[**UDMI**](../../) / [**Docs**](../) / [**Specs**](./) / [UUFI](#)
+
 # Unified UDMI Functional Interface (UUFI)
 
 The **Unified UDMI Functional Interface (UUFI)** is a specification for external applications to integrate with a UDMI-managed system. It formalizes the communication channel between an external application (the **Client**) and the UDMI cloud infrastructure (the **System**) using a standardized PubSub mechanism.
