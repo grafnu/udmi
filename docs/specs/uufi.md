@@ -35,7 +35,8 @@ You can use optional tags like `user@` and `:port` as necessary within the URL f
 
 **MQTT (`mqtt://`)**
 *   The base `host` and `:port` map as expected.
-*   The `user@` prefix maps to a `username` property that's added to the MQTT topic path.
+*   The `user@` prefix maps to a `username` property that's added to the MQTT topic path (e.g., as the `{source}` identifier in `/uufi/c/{source}/...`).
+*   *Example:* `mqtt://my-user@localhost:8883` maps to the MQTT broker at `localhost:8883` and adds `my-user` into the MQTT topic path (e.g., `/uufi/c/my-user/...`).
 
 ### 2.2. PubSub Transport
 The Client must have access to the GCP project where the UDMI system is deployed.
