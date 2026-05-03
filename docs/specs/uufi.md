@@ -31,6 +31,7 @@ You can use optional tags like `user@` and `:port` as necessary within the URL f
 *   The `user@` prefix maps to a `+user` suffix on the subscription.
 *   The `:port` suffix is invalid and should not be used.
 *   The first URL path part, if present, maps to a `path~` prefix on the topic and subscription.
+*   *Example:* `pubsub://my-user@my-project/my-prefix` maps to the GCP project `my-project`, with the `udmi_uufi` topic prefixed as `my-prefix~udmi_uufi`, and the receive subscription named `my-prefix~udmi_uufi+my-user`.
 
 **MQTT (`mqtt://`)**
 *   The base `host` and `:port` map as expected.
