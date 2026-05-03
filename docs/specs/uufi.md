@@ -19,7 +19,16 @@ UUFI utilizes a messaging transport where the Client interacts with the System v
 
 ## 2. Connectivity and Authentication
 
-### 2.1. PubSub Transport
+### 2.1. Connection String Designator
+To provide a standard way to connect into the system using a single string designator, UUFI interfaces support a URL-like connection string format. The two supported schemes are `mqtt://` and `pubsub://`.
+
+You can use optional tags like `user@` and `:port` as necessary within the URL format.
+
+Examples:
+*   **PubSub:** `pubsub://project-id`
+*   **MQTT:** `mqtt://localhost:1883`, `mqtt://user@localhost:8883`
+
+### 2.2. PubSub Transport
 The Client must have access to the GCP project where the UDMI system is deployed.
 
 *   **Project ID:** The GCP project ID.
@@ -27,7 +36,7 @@ The Client must have access to the GCP project where the UDMI system is deployed
 *   **Receive Subscription:** A subscription to the `udmi_uufi` topic (e.g., `prefix-udmi_uufi-user_id`).
 *   **Authentication:** Standard **GCP IAM**.
 
-### 2.2. MQTT Transport (Local Mosquitto)
+### 2.3. MQTT Transport (Local Mosquitto)
 For local testing or on-premise deployments, a standard MQTT broker (like Mosquitto) can be used.
 
 *   **Broker URL:** Typically `tcp://localhost:1883` or `ssl://localhost:8883`.
