@@ -24,9 +24,17 @@ To provide a standard way to connect into the system using a single string desig
 
 You can use optional tags like `user@` and `:port` as necessary within the URL format.
 
-Examples:
-*   **PubSub:** `pubsub://project-id`
-*   **MQTT:** `mqtt://localhost:1883`, `mqtt://user@localhost:8883`
+#### Protocol Mapping
+
+**PubSub (`pubsub://`)**
+*   The base `host` maps to the GCP project.
+*   The `user@` prefix maps to a `+user` suffix on the subscription.
+*   The `:port` suffix is invalid and should not be used.
+*   The first URL path part, if present, maps to a `path~` prefix on the topic and subscription.
+
+**MQTT (`mqtt://`)**
+*   The base `host` and `:port` map as expected.
+*   The `user@` prefix maps to a `username` property that's added to the MQTT topic path.
 
 ### 2.2. PubSub Transport
 The Client must have access to the GCP project where the UDMI system is deployed.
