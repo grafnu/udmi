@@ -225,3 +225,8 @@ writeable
 Writeback
 writeback
 yaml
+UUFI
+subfolder
+setpoints
+Mosquitto
+mTLS
