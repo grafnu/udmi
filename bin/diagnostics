@@ -1,0 +1,40 @@
+#!/bin/bash
+#
+# Capture environmental diagnostics for debugging CI vs Local discrepancies.
+#
+
+echo "########################################"
+echo "### SYSTEM DIAGNOSTICS"
+echo "########################################"
+
+echo "--- Locale Settings ---"
+locale
+echo "LC_ALL=$LC_ALL"
+echo "LANG=$LANG"
+
+echo -e "\n--- Git Status ---"
+git status -s
+echo "HEAD: $(git rev-parse HEAD)"
+echo "Branch: $(git rev-parse --abbrev-ref HEAD)"
+git log -n 1 --format="%h %ai %s"
+
+echo -e "\n--- Tool Versions ---"
+java -version 2>&1 | head -n 3
+python3 --version
+python3 -m pip --version || pip3 --version
+jq --version
+pylint --version | head -n 3
+sha256sum --version | head -n 1
+
+echo -e "\n--- File State (bin/) ---"
+ls -l bin/
+
+echo -e "\n--- File Types (bin/) ---"
+file bin/* | grep -v "directory"
+
+echo -e "\n--- Environment Variables (subset) ---"
+env | grep -E 'JAVA|PYTHON|PATH|LC_|LANG' | sort
+
+echo "########################################"
+echo "### END DIAGNOSTICS"
+echo "########################################"
