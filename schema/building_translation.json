@@ -10,19 +10,11 @@
       "description": "dotted path to present_value field",
       "type": "string"
     },
-    "units": {
-      "type": "object",
-      "properties": {
-        "key": { "type": "string" },
-        "values": {
-          "type": "object",
-          "additionalProperties": { "type": "string" }
-        }
-      }
-    },
     "states": {
       "type": "object",
-      "additionalProperties": { "type": "string" }
+      "additionalProperties": {
+        "type": "string"
+      }
     }
   }
 }

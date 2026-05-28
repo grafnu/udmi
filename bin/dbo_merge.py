@@ -156,8 +156,16 @@ def merge_dbo_config(yaml_file: Path, site_model_dir: Path):
             if pv != "present_value" and pv != f"points.{pt_name}.present_value":
               pt_udmi["ref"] = pv
           if "units" in pt_dbo and "values" in pt_dbo["units"]:
-            udmi_unit = list(pt_dbo["units"]["values"].keys())[0]
-            pt_udmi["units"] = udmi_unit
+            values = pt_dbo["units"]["values"]
+            if len(values) > 1:
+              raise ValueError(f"Too many unit translations for point {pt_name}: {values}")
+            for udmi_unit, device_unit in values.items():
+              if "units" not in pt_udmi:
+                pt_udmi["units"] = udmi_unit
+              elif pt_udmi["units"] != udmi_unit:
+                raise ValueError(f"Unit mismatch: mapped target unit {udmi_unit} does not match explicit units {pt_udmi['units']}")
+              if device_unit != udmi_unit:
+                pt_udmi["units_as"] = device_unit
           if "states" in pt_dbo:
             pt_udmi["value_map"] = {v: k for k, v in pt_dbo["states"].items()}
           
@@ -167,18 +175,7 @@ def merge_dbo_config(yaml_file: Path, site_model_dir: Path):
             del clean_pt_dbo["present_value"]
           
           if "units" in clean_pt_dbo:
-            u = clean_pt_dbo["units"].copy()
-            if u.get("key") == f"pointset.points.{pt_name}.units":
-              del u["key"]
-            if "values" in u:
-              # Only keep non-identity mappings
-              u["values"] = {v: k for k, v in u["values"].items() if k != v}
-              if not u["values"]:
-                del u["values"]
-            if not u:
-              del clean_pt_dbo["units"]
-            else:
-              clean_pt_dbo["units"] = u
+            del clean_pt_dbo["units"]
 
           # States are already in value_map, so they are redundant here
           if "states" in clean_pt_dbo:
