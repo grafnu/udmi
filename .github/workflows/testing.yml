@@ -34,6 +34,8 @@ jobs:
           bin/setup_base
           bin/clone_model
           bin/start_pubsub
+      - name: bin/environment_diagnostics
+        run: bin/environment_diagnostics
       - name: bin/run_tests all_tests
         run: bin/run_tests all_tests
       - name: all test output
