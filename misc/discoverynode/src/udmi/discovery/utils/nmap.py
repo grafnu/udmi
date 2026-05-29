@@ -2,7 +2,7 @@
 
 import dataclasses
 from typing import Generator
-import xml.etree.ElementTree
+import defusedxml.ElementTree
 
 @dataclasses.dataclass(unsafe_hash=True, order=True)
 class NmapPort:
@@ -43,7 +43,7 @@ def results_reader(nmap_file: str) -> Generator[NmapHost, None, None]:
     NmapHost resu
   """
   hosts = []
-  root = xml.etree.ElementTree.parse(nmap_file).getroot()
+  root = defusedxml.ElementTree.parse(nmap_file).getroot()
   for _host in root.iter('host'):
     host = NmapHost()
 
