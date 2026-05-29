@@ -59,12 +59,22 @@ def test_event_counts():
   mock_publisher = mock.MagicMock()
   numbers = udmi.discovery.numbers.NumberDiscovery(mock_state, mock_publisher)
   numbers._start()
-  time.sleep(5)
+
+  # Wait for 1 start marker + 5 events to be published
+  for _ in range(50):
+      if mock_publisher.call_count == 6:
+          break
+      time.sleep(0.1)
+
   numbers._stop()
-  # Because of "negative" start and end markers
+
+  # wait for thread to exit
+  if numbers.task_thread:
+      numbers.task_thread.join()
+
+  # Because of "negative" start and end markers (1 start + 1 end = 2 markers), and exactly 5 events
   assert mock_publisher.call_count == 7
   
-  #assert [1, 2, 3, 4, 5] == [x[0].event_no for (x, _) in mock_publisher.call_args_list]
   numbers.on_state_update_hook()
 
   assert mock_state.discovery.families["vendor"].active_count == 5

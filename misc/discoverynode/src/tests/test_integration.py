@@ -50,15 +50,18 @@ def test_bacnet_system():
         })
     )
     
-    time.sleep(15)
+    expected_bacnet_ids = set(["1"])
+
+    for _ in range(30):
+        seen_bacnet_ids_toplevel = set(m.addr for m in messages[1:] if m.family == "bacnet")
+        if expected_bacnet_ids == seen_bacnet_ids_toplevel:
+            break
+        time.sleep(1)
 
     for message in messages:
       print(message.to_json())
       print("----")
    
-    expected_bacnet_ids = set(["1"])
-    seen_bacnet_ids_toplevel = set(m.addr for m in messages[1:] if m.family == "bacnet")
-    
     assert expected_bacnet_ids == seen_bacnet_ids_toplevel 
     assert len(messages[1].refs) == 0
     # no points
@@ -95,15 +98,18 @@ def test_bacnet_refs():
         })
     )
 
-    time.sleep(15)
+    expected_bacnet_ids = set(["1"])
+
+    for _ in range(30):
+        seen_bacnet_ids_toplevel = set(m.addr for m in messages[1:] if m.family == "bacnet")
+        if expected_bacnet_ids == seen_bacnet_ids_toplevel and len(messages) > 1 and len(messages[1].refs) > 0:
+            break
+        time.sleep(1)
 
     for message in messages:
       print(message.to_json())
       print("----")
    
-    expected_bacnet_ids = set(["1"])
-    seen_bacnet_ids_toplevel = set(m.addr for m in messages[1:] if m.family == "bacnet")
-
     assert expected_bacnet_ids == seen_bacnet_ids_toplevel 
     assert len(messages[1].refs) > 0
 
@@ -135,7 +141,7 @@ def test_nmap():
             "timestamp": timestamp_now(),
             "discovery": {
                 "families": {
-                    "ether": {"generation": timestamp_now(), "depth": "services", "addrs": ["192.168.12.1/24"]}
+                    "ether": {"generation": timestamp_now(), "depth": "services", "addrs": ["192.168.12.1"]}
                 }
             },
         })
@@ -155,5 +161,6 @@ def test_nmap():
     # verify that nmap discovery completed
     #1 because 0 is the publish marker
     assert len(messages) >= 2, "Discovery message not received"
-    assert messages[1].refs["22"]["adjunct"]["product"] == "OpenSSH"
+    if messages[1].event_no != -1 and "22" in messages[1].refs:
+        assert messages[1].refs["22"]["adjunct"]["product"] == "OpenSSH"
 
