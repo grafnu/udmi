@@ -10,7 +10,7 @@ COPY requirements.txt /requirements.txt
 RUN /venv/bin/pip install --disable-pip-version-check -r /requirements.txt
 
 # Copy the virtualenv into a distroless image
-FROM debian:12
+FROM python:3.12-slim
 RUN apt-get update && \
     apt-get install --no-install-suggests --no-install-recommends --yes python3 coreutils netcat-openbsd ssh openssh-server
 COPY --from=build-venv /venv /venv

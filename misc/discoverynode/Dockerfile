@@ -9,7 +9,7 @@ FROM build AS build-venv
 COPY requirements.txt /requirements.txt
 RUN /venv/bin/pip install --disable-pip-version-check -r /requirements.txt
 
-FROM debian:12-slim
+FROM python:3.12-slim
 RUN apt-get update && \
     apt-get install --no-install-suggests --no-install-recommends --yes python3 coreutils nmap iputils-ping
 COPY --from=build-venv /venv /venv

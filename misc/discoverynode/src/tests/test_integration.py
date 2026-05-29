@@ -148,7 +148,10 @@ def test_nmap():
     )
 
     for _ in range(60):
-        if len(messages) >= 2:
+        if len(messages) >= 2 and messages[1].event_no != -1:
+            break
+        if len(messages) >= 2 and messages[1].event_no == -1:
+            # Reached end marker, no more messages
             break
         time.sleep(1)
     
