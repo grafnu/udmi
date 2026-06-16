@@ -241,6 +241,8 @@ public class PointsetSequences extends PointsetBase {
     deviceConfig.pointset.sample_limit_sec = sampleRange.sampleLimit;
     deviceConfig.pointset.sample_rate_sec = sampleRange.sampleRate;
 
+    safeSleepIfSkipConfigSync();
+
     popReceivedEvents(PointsetEvents.class);
     untilTrue(format("receive at least %d pointset events", messagesToSample),
         () -> (countReceivedEvents(PointsetEvents.class) > messagesToSample)

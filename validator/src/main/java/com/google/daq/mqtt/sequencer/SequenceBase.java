@@ -911,6 +911,12 @@ public class SequenceBase {
     deviceConfig.blobset = null;
   }
 
+  protected void safeSleepIfSkipConfigSync() {
+    if (skipConfigSync) {
+      safeSleep(CONFIG_UPDATE_DELAY_MS);
+    }
+  }
+
   private static boolean deviceSupportsState() {
     ifNullThen(stateSupported,
         () -> stateSupported =
