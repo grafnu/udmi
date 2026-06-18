@@ -70,7 +70,12 @@ public class ModbusFamilyProvider implements FamilyProvider {
   @Override
   public void validateAddr(String scanAddr) {
     requireNonNull(scanAddr, "missing required modbus scan_addr");
+<<<<<<< HEAD
     checkState(startsWithAlpha(scanAddr) || isValidIpv4(scanAddr),
+=======
+    String addrWithoutPort = validatePort(scanAddr);
+    checkState(startsWithAlpha(addrWithoutPort) || isValidIpv4(addrWithoutPort),
+>>>>>>> master
         format("modbus addr %s is invalid; "
             + "must start with an alphabetical character or be a valid IPv4 address", scanAddr));
   }
