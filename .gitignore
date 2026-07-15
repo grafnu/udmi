@@ -28,6 +28,7 @@ credentials.json
 /udmis/profile/
 /udmis/.idea/libraries/
 /udmis/bin/etcd_bin/
+/udmis/bin/influx_bin/
 /selfie/build/
 /pubber/build/
 /pubber/out/
@@ -50,7 +51,7 @@ __pycache__/
 /tests/sites/*/devices/*/out/
 /tests/sites/basic/extras/
 /tests/sites/basic/devices/*/rsa_*.*
-/tests/sites/basic/reflector/
+/tests/sites/*/reflector/
 /udmi_*.log
 
 .vscode
@@ -90,5 +91,6 @@ tests/dbo/basic/test_site_model/
 # UDMI Workbench generated files
 /ui/version.txt
 
-
+# Bridgehead runtime output
+/bridgehead/out
 
