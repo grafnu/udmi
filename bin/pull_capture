@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""Script to parse JSON stream from stdin and save messages to databases.
+
+All pointset events messages should be saved to influx, while everything else
+should be written to postgresql.
+"""
+import sys
+import json
+import subprocess
+import os
+from datetime import datetime
+
+# Database config from environment with defaults
+POSTGRES_PORT = os.environ.get("POSTGRES_PORT", "5432")
+POSTGRES_USER = os.environ.get("POSTGRES_USER", "postgres")
+POSTGRES_DB = os.environ.get("POSTGRES_DB", "postgres")
+
+INFLUXDB_TOKEN = os.environ.get("INFLUXDB_TOKEN", "test-influx-token-12345")
+INFLUXDB_ORG = os.environ.get("INFLUXDB_ORG", "bridgehead")
+INFLUXDB_BUCKET = os.environ.get("INFLUXDB_BUCKET", "home")
+
+# Get project root to locate influxctl
+UDMI_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+INFLUXCTL = os.path.join(UDMI_ROOT, "udmis", "bin", "influxctl")
+
+
+def init_postgres():
+  """Create the postgres table if not exists."""
+  create_table_sql = """
+  CREATE TABLE IF NOT EXISTS udmi_messages (
+      id SERIAL PRIMARY KEY,
+      project_id VARCHAR(255),
+      registry_id VARCHAR(255),
+      device_id VARCHAR(255),
+      sub_folder VARCHAR(50),
+      sub_type VARCHAR(50),
+      publish_time TIMESTAMP,
+      payload JSONB,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+  """
+  cmd = [
+      "psql",
+      "-h", "127.0.0.1",
+      "-p", POSTGRES_PORT,
+      "-U", POSTGRES_USER,
+      "-d", POSTGRES_DB,
+      "-c", create_table_sql
+  ]
+  subprocess.run(
+      cmd,
+      check=True,
+      stdout=subprocess.DEVNULL,
+      stderr=subprocess.DEVNULL
+  )
+
+
+def escape_sql_string(val):
+  """Safely escape strings for raw SQL queries."""
+  if val is None:
+    return "NULL"
+  return "'" + str(val).replace("'", "''") + "'"
+
+
+def save_to_postgres(envelope, payload):
+  """Insert a message into postgres."""
+  project_id = escape_sql_string(envelope.get("projectId"))
+  registry_id = escape_sql_string(envelope.get("deviceRegistryId"))
+  device_id = escape_sql_string(envelope.get("deviceId"))
+  sub_folder = escape_sql_string(envelope.get("subFolder"))
+  sub_type = escape_sql_string(envelope.get("subType"))
+  publish_time = escape_sql_string(envelope.get("publishTime"))
+  payload_str = escape_sql_string(json.dumps(payload))
+
+  sql = f"""
+  INSERT INTO udmi_messages (
+      project_id, registry_id, device_id, sub_folder, sub_type,
+      publish_time, payload
+  )
+  VALUES (
+      {project_id}, {registry_id}, {device_id}, {sub_folder}, {sub_type},
+      {publish_time}, {payload_str}
+  );
+  """
+  cmd = [
+      "psql",
+      "-h", "127.0.0.1",
+      "-p", POSTGRES_PORT,
+      "-U", POSTGRES_USER,
+      "-d", POSTGRES_DB,
+      "-c", sql
+  ]
+  subprocess.run(
+      cmd,
+      check=True,
+      stdout=subprocess.DEVNULL,
+      stderr=subprocess.DEVNULL
+  )
+
+
+class InfluxWriteError(Exception):
+  """Custom exception raised when influxctl write fails."""
+
+
+def save_to_influx(envelope, payload):
+  """Save pointset event metrics to influxdb."""
+  project_id = envelope.get("projectId", "unknown")
+  registry_id = envelope.get("deviceRegistryId", "unknown")
+  device_id = envelope.get("deviceId", "unknown")
+  publish_time = envelope.get("publishTime")
+
+  # Parse timestamp to ns epoch
+  # Default to current time if parsing fails
+  ts_ns = None
+  if publish_time:
+    try:
+      cleaned_time = publish_time.replace("Z", "+00:00")
+      dt = datetime.fromisoformat(cleaned_time)
+      ts_ns = int(dt.timestamp() * 1e9)
+    except ValueError:
+      pass
+
+  if ts_ns is None:
+    ts_ns = int(datetime.utcnow().timestamp() * 1e9)
+
+  points = payload.get("points", {})
+  lines = []
+  for point_name, point_def in points.items():
+    present_value = point_def.get("present_value")
+    if present_value is None:
+      continue
+
+    if isinstance(present_value, bool):
+      val_str = "true" if present_value else "false"
+      field_name = "present_value_bool"
+    elif isinstance(present_value, (int, float)):
+      val_str = str(present_value)
+      field_name = "present_value_num"
+    else:
+      escaped_val = str(present_value).replace('"', '\\"')
+      val_str = f'"{escaped_val}"'
+      field_name = "present_value_str"
+
+    line = (
+        f"point_value,device_id={device_id},registry_id={registry_id},"
+        f"project_id={project_id},point_name={point_name} "
+        f"{field_name}={val_str} {ts_ns}"
+    )
+    lines.append(line)
+
+  if not lines:
+    return
+
+  line_protocol_data = "\n".join(lines)
+
+  cmd = [
+      INFLUXCTL,
+      "write",
+      "--token", INFLUXDB_TOKEN,
+      "--org", INFLUXDB_ORG,
+      "--bucket", INFLUXDB_BUCKET
+  ]
+  res = subprocess.run(
+      cmd,
+      input=line_protocol_data,
+      text=True,
+      capture_output=True,
+      check=False
+  )
+  if res.returncode != 0:
+    raise InfluxWriteError(f"influxctl write failed: {res.stderr.strip()}")
+
+
+def main():
+  """Main entry point."""
+  try:
+    init_postgres()
+  except subprocess.SubprocessError as e:
+    print(
+        f"Warning: Failed to initialize PostgreSQL table: {e}",
+        file=sys.stderr
+    )
+
+  for line in sys.stdin:
+    if not line.strip():
+      continue
+    try:
+      msg = json.loads(line)
+      envelope = msg.get("envelope", {})
+      payload = msg.get("payload", {})
+
+      sub_folder = envelope.get("subFolder")
+      sub_type = envelope.get("subType")
+
+      if sub_folder == "pointset" and sub_type == "events":
+        save_to_influx(envelope, payload)
+      else:
+        save_to_postgres(envelope, payload)
+    except (json.JSONDecodeError, KeyError, subprocess.SubprocessError,
+            InfluxWriteError) as e:
+      print(f"Error processing message: {e}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+  main()
