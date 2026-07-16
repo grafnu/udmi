@@ -11,9 +11,9 @@ project_spec=$1
 shift
 
 if [[ $project_spec =~ //mqtt/ ]]; then
-    $UDMI_ROOT/bin/pull_mqtt $project_spec
+    $UDMI_ROOT/bin/pull_mqtt $project_spec | $UDMI_ROOT/bin/pull_save
 elif [[ $project_spec =~ //pubsub/ ]]; then
-    $UDMI_ROOT/bin/pull_pubsub $project_spec
+    $UDMI_ROOT/bin/pull_pubsub $project_spec | $UDMI_ROOT/bin/pull_save
 else
     fail unknown project spec type $project_spec
 fi

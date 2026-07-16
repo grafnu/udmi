@@ -60,5 +60,6 @@ class Envelope(DataModel):
     principal: Optional[str] = None
     publishTime: Optional[str] = None
     rawFolder: Optional[str] = None
+    msgSource: Optional[str] = None
     subFolder: Optional[SubFolder] = None
     subType: Optional[SubType] = None
