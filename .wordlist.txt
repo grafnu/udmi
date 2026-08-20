@@ -103,6 +103,7 @@ GiB
 github
 Github
 GitLab
+GitOps
 gittools
 GKE
 googlegroups
