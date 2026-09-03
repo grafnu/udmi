@@ -14,10 +14,10 @@ an IoT device.
 sequenceDiagram
   %%{wrap}%%
   participant Devices
-  participant Registry
+  participant Butler as Butler<br/>(Registrar)
   participant Source Repo
   participant Pipeline
-  Registry->>Source Repo: Device Model
-  Registry->>Pipeline: Pipeline Config
+  Butler->>Source Repo: Fetch Model
+  Butler->>Pipeline: Pipeline Config
   Devices-->>Pipeline: Pointset (Telemetry)
 ```
