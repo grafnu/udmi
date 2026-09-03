@@ -31,7 +31,7 @@ flowchart LR
   D[Devices]
   A[Agent]
   P[Pipeline]
-  D -- Pointset --> P
+  D -. "Pointset\n(Telemetry)" .-> P
   D -- Discovery --> A
   A -- Provisioning --> P
   A -- Mapping --> A
