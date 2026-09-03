@@ -446,6 +446,9 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
           cache: 'gradle'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
       - name: Setup prerequisites
         run: |
           sudo bin/setup_base
@@ -579,6 +582,9 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
           cache: 'gradle'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
       - name: Setup Base
         run: sudo bin/setup_base
       - name: Run Bridgehead Test

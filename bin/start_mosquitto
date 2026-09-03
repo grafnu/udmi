@@ -190,6 +190,12 @@ $MOSQUITTO_CTRL addRoleACL service subscribePattern 'state' allow || true
 $MOSQUITTO_CTRL addRoleACL service publishClientSend 'state' allow || true
 $MOSQUITTO_CTRL addRoleACL service subscribePattern 'c/control/#' allow || true
 $MOSQUITTO_CTRL addRoleACL service publishClientSend 'c/control/#' allow || true
+$MOSQUITTO_CTRL addRoleACL service subscribePattern '/r/+/d/+/c/control/#' allow || true
+$MOSQUITTO_CTRL addRoleACL service publishClientSend '/r/+/d/+/c/control/#' allow || true
+$MOSQUITTO_CTRL addRoleACL service subscribePattern '/r/+/d/+/c/#' allow || true
+$MOSQUITTO_CTRL addRoleACL service publishClientSend '/r/+/d/+/c/#' allow || true
+$MOSQUITTO_CTRL addRoleACL service subscribeLiteral '/r/+/d/+/c/control/#' allow || true
+$MOSQUITTO_CTRL addRoleACL service subscribeLiteral '/r/+/d/+/c/#' allow || true
 $MOSQUITTO_CTRL addRoleACL service subscribePattern 'reflect' allow || true
 $MOSQUITTO_CTRL addRoleACL service publishClientSend 'reflect' allow || true
 $MOSQUITTO_CTRL addClientRole $AUTH_USER service || true
