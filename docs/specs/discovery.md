@@ -2,6 +2,8 @@
 
 # Discovery
 
+Discovery is the first part of the overall [Onboarding](onboarding.md) flow.
+
 Discovery consists of two related processes for describing the 'as built'
 state of a system: _scanning_ and _enumeration_. For devices, the overall
 [discovery sequence](sequences/discovery.md) describes the exact sequence
@@ -24,8 +26,8 @@ follow the appropriate [_discovery event schema_](../../gencode/docs/events_disc
 The overall discovery sequence involves multiple components that work together to provide the overall flow:
 * **Devices**: The target things that need to be discovered, configured, and ultimately communicate point data.
 * **Spotter**: Operative node that performs _discovery_, scanning local networks and producing observations.
-* **Provisioning Engine**: Cloud-based agent/Provisioning Engine responsible for managing the overall _discovery_ and _mapping_ process (how often, what color, etc...).
-* **Mapping Agent**: Used at the spotter to coordinate on-prem discovery.
+* **Butler**: Cloud-based agent/service responsible for managing the overall _discovery_ and _mapping_ process (how often, what color, etc...).
+* **Mapper**: Used at the spotter to coordinate on-prem discovery.
 * **Pipeline**: Ultimate recipient of pointset information, The thing that cares about 'temperature' in a room.
 
 (The `*` prefixing a `*term` means that this id/property is being sourced/created at that step.)
@@ -35,20 +37,19 @@ sequenceDiagram
   %%{wrap}%%
   participant Devices
   participant Spotter
-  participant Provisioning Engine
-  participant Mapping Agent
+  participant Butler
+  participant Mapper
   participant Pipeline
-  Note over Devices, Provisioning Engine: Discovery Start
-  activate Provisioning Engine
-  Mapping Agent->>Spotter: Discovery Config
-  loop
-    Devices-->Spotter: fieldbus
-    Spotter->>Provisioning Engine: Discovery Event<br/>(*scan_id)<br/><properties: *refs>
-  end
-  Note over Provisioning Engine: Provisioning<br/>& Mapping
-  Provisioning Engine ->> Pipeline: Pointset Event<br/>After Mapping
-  deactivate Provisioning Engine
-  Devices->>Pipeline: Pointset Event<br/>(device_id, device_num_id, points)<br/><pointset>
+  Note over Devices, Butler: Discovery Start
+  activate Butler
+  Butler->>Spotter: Discovery Config
+  Devices<<-->>Spotter: fieldbus
+  Spotter->>Mapper: Discovery Events
+  Note over Mapper: Mapping
+  Mapper->>Butler: Model (Proposal)
+  Butler->>Pipeline: Provisioning
+  deactivate Butler
+  Devices-->>Pipeline: Pointset (Telemetry)
 ```
 
 ## Scanning
