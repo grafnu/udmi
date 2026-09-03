@@ -2,7 +2,7 @@
 
 # Discovery
 
-Discovery is the first part of the overall [Onboarding](onboarding.md) flow.
+Discovery is the first phase in the overall [Onboarding](onboarding.md) flow, followed by [Mapping](mapping.md).
 
 Discovery consists of two related processes for describing the 'as built'
 state of a system: _scanning_ and _enumeration_. For devices, the overall
@@ -41,14 +41,12 @@ sequenceDiagram
   participant Mapper
   participant Pipeline
   Note over Devices, Butler: Discovery Start
-  activate Butler
   Butler->>Spotter: Discovery Config
   Devices<<-->>Spotter: fieldbus
   Spotter->>Mapper: Discovery Events
   Note over Mapper: Mapping
   Mapper->>Butler: Model (Proposal)
   Butler->>Pipeline: Provisioning
-  deactivate Butler
   Devices-->>Pipeline: Pointset (Telemetry)
 ```
 
