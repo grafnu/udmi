@@ -72,7 +72,11 @@ def merge_dbo_config(yaml_file: Path, site_model_dir: Path):
     # Priority 2: Code (with sanitization and collision handling)
     # This now applies to ALL entities including FACILITIES
     for guid, entity in config.items():
-      if guid == "CONFIG_METADATA" or not isinstance(entity, dict) or guid in guid_to_id:
+      if (
+          guid == "CONFIG_METADATA"
+          or not isinstance(entity, dict)
+          or guid in guid_to_id
+      ):
         continue
 
       code = entity.get("code")
@@ -148,7 +152,11 @@ def merge_dbo_config(yaml_file: Path, site_model_dir: Path):
             continue
           target_id = guid_to_id.get(target_guid, str(target_guid))
           target_entity = config.get(target_guid)
-          target_type = target_entity.get("type") if isinstance(target_entity, dict) else None
+          target_type = (
+              target_entity.get("type")
+              if isinstance(target_entity, dict)
+              else None
+          )
 
           if target_type == "FACILITIES/BUILDING":
             loc = metadata.setdefault("system", {}).setdefault("location", {})
@@ -197,12 +205,21 @@ def merge_dbo_config(yaml_file: Path, site_model_dir: Path):
 
           for s_guid in filter(None, search_guids):
             f_entity = config.get(s_guid)
-            if f_entity and isinstance(f_entity, dict) and "connections" in f_entity and isinstance(f_entity["connections"], dict):
+            if (
+                f_entity
+                and isinstance(f_entity, dict)
+                and "connections" in f_entity
+                and isinstance(f_entity["connections"], dict)
+            ):
               for t_guid in f_entity["connections"]:
                 if isinstance(t_guid, (list, tuple)):
                   continue
                 t_entity = config.get(t_guid)
-                if t_entity and isinstance(t_entity, dict) and t_entity.get("type") == "FACILITIES/BUILDING":
+                if (
+                    t_entity
+                    and isinstance(t_entity, dict)
+                    and t_entity.get("type") == "FACILITIES/BUILDING"
+                ):
                   loc["site"] = guid_to_id.get(t_guid, str(t_guid))
                   break
             if "site" in loc:
@@ -211,7 +228,11 @@ def merge_dbo_config(yaml_file: Path, site_model_dir: Path):
         # Final fallback: pick the first building in the config
         if "site" not in loc:
           for f_guid, f_entity in config.items():
-            if f_entity and isinstance(f_entity, dict) and f_entity.get("type") == "FACILITIES/BUILDING":
+            if (
+                f_entity
+                and isinstance(f_entity, dict)
+                and f_entity.get("type") == "FACILITIES/BUILDING"
+            ):
               loc["site"] = guid_to_id.get(f_guid, str(f_guid))
               break
 
@@ -229,7 +250,12 @@ def merge_dbo_config(yaml_file: Path, site_model_dir: Path):
               pv = pt_dbo["present_value"]
               if pv not in ("present_value", f"points.{pt_name}.present_value"):
                 pt_udmi["ref"] = pv
-            if "units" in pt_dbo and isinstance(pt_dbo["units"], dict) and "values" in pt_dbo["units"] and isinstance(pt_dbo["units"]["values"], dict):
+            if (
+                "units" in pt_dbo
+                and isinstance(pt_dbo["units"], dict)
+                and "values" in pt_dbo["units"]
+                and isinstance(pt_dbo["units"]["values"], dict)
+            ):
               udmi_unit = list(pt_dbo["units"]["values"].keys())[0]
               pt_udmi["units"] = udmi_unit
               raw_unit = pt_dbo["units"]["values"][udmi_unit]
@@ -244,7 +270,10 @@ def merge_dbo_config(yaml_file: Path, site_model_dir: Path):
             if clean_pt_dbo.get("present_value") == expected_pv:
               del clean_pt_dbo["present_value"]
 
-            if "units" in clean_pt_dbo and isinstance(clean_pt_dbo["units"], dict):
+            if (
+                "units" in clean_pt_dbo
+                and isinstance(clean_pt_dbo["units"], dict)
+            ):
               u = clean_pt_dbo["units"].copy()
               if u.get("key") == f"pointset.points.{pt_name}.units":
                 del u["key"]
@@ -292,13 +321,13 @@ def merge_dbo_config(yaml_file: Path, site_model_dir: Path):
 
   except Exception as e:
     log_entry = (
-        f"[{timestamp}] ERROR: Failed to merge {yaml_file.name} into {site_model_dir}: "
-        f"{type(e).__name__}: {e}\n"
+        f"[{timestamp}] ERROR: Failed to merge {yaml_file.name} into "
+        f"{site_model_dir}: {type(e).__name__}: {e}\n"
     )
     try:
       with open(log_path, "a", encoding="utf-8") as lf:
         lf.write(log_entry)
-    except Exception:
+    except OSError:
       pass
     raise
 
