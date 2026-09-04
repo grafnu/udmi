@@ -69,14 +69,14 @@ sequenceDiagram
   Devices<<-->>Spotter: fieldbus scan
   Spotter->>Butler: Discovery Events
   Note over Butler, Mapper: Mapping
-  Mapper->>Butler: Fetch Discovery
-  Mapper->>Model: Fetch Current Model
+  Butler->>Mapper: Discovery Scan
+  Model->>Mapper: Current Model
   Mapper->>Mapper: Map
-  Mapper->>Butler: Propose Model Changes
+  Mapper->>Butler: Proposed Model
   Note over Butler, Pipeline: Provisioning
   Butler->>Butler: Approve
   Butler->>Model: Update Model
-  Model->>Pipeline: Provisioning
+  Model->>Pipeline: Provision Pipeline
   Note over Devices, Pipeline: Operational
   Devices-->>Pipeline: Pointset (Telemetry)
 ```
