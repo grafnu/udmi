@@ -42,3 +42,35 @@ devices and capabilities might be different than what is expected to be there!
 to be. This means at some point, _somebody_ needs to type in exactly what everything is.
 * Without _provisioning_, nothing can change in the system, and essentially requires
 again _somebody_ to go around and manually do things to make it all work.
+
+## Sequence Diagram
+
+The overall onboarding sequence involves multiple components that work together to provide the overall flow:
+* **Devices**: The target things that need to be discovered, configured, and ultimately communicate point data.
+* **Spotter**: Operative node that performs _discovery_, scanning local networks and producing observations.
+* **Butler**: Cloud-based agent/service responsible for managing the overall _discovery_ and _mapping_ process (how often, what color, etc...).
+* **Mapper**: Used at the spotter to coordinate on-prem discovery.
+* **Pipeline**: Ultimate recipient of pointset information, The thing that cares about 'temperature' in a room.
+
+(The `*` prefixing a `*term` means that this id/property is being sourced/created at that step.)
+
+```mermaid
+sequenceDiagram
+  %%{wrap}%%
+  participant Devices
+  participant Spotter
+  participant Butler
+  participant Mapper
+  participant Pipeline
+  Note over Devices, Butler: Discovery
+  Butler->>Spotter: Discovery Config
+  Devices<<-->>Spotter: fieldbus
+  Spotter->>Mapper: Discovery Events
+  Note over Mapper: Mapping
+  Mapper->>Butler: Model (Proposal)
+  Note over Butler, Pipeline: Provisioning
+  Butler->>Pipeline: Provisioning
+  Note over Devices, Pipeline: Operational
+  Devices-->>Pipeline: Pointset (Telemetry)
+```
+

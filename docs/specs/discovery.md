@@ -21,35 +21,6 @@ Backend services will receive a streaming set of
 [_discovery enumeration messages_](../../tests/schemas/events_discovery/enumeration.json) that
 follow the appropriate [_discovery event schema_](../../gencode/docs/events_discovery.html).
 
-## Sequence Diagram
-
-The overall discovery sequence involves multiple components that work together to provide the overall flow:
-* **Devices**: The target things that need to be discovered, configured, and ultimately communicate point data.
-* **Spotter**: Operative node that performs _discovery_, scanning local networks and producing observations.
-* **Butler**: Cloud-based agent/service responsible for managing the overall _discovery_ and _mapping_ process (how often, what color, etc...).
-* **Mapper**: Used at the spotter to coordinate on-prem discovery.
-* **Pipeline**: Ultimate recipient of pointset information, The thing that cares about 'temperature' in a room.
-
-(The `*` prefixing a `*term` means that this id/property is being sourced/created at that step.)
-
-```mermaid
-sequenceDiagram
-  %%{wrap}%%
-  participant Devices
-  participant Spotter
-  participant Butler
-  participant Mapper
-  participant Pipeline
-  Note over Devices, Butler: Discovery Start
-  Butler->>Spotter: Discovery Config
-  Devices<<-->>Spotter: fieldbus
-  Spotter->>Mapper: Discovery Events
-  Note over Mapper: Mapping
-  Mapper->>Butler: Model (Proposal)
-  Butler->>Pipeline: Provisioning
-  Devices-->>Pipeline: Pointset (Telemetry)
-```
-
 ## Scanning
 
 _Scanning_ is the process of scanning a network and identifying the various
