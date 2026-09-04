@@ -49,6 +49,7 @@ The overall onboarding sequence involves multiple components that work together 
 * **Devices**: The target things that need to be discovered, configured, and ultimately communicate point data.
 * **Spotter**: Operative node that performs _discovery_, scanning local networks and producing observations.
 * **Butler**: Cloud-based agent/service responsible for managing the overall _discovery_ and _mapping_ process (how often, what color, etc...).
+* **Model**: Central repository / source of truth containing device configurations and metadata.
 * **Mapper**: Used at the spotter to coordinate on-prem discovery.
 * **Pipeline**: Ultimate recipient of pointset information, The thing that cares about 'temperature' in a room.
 
@@ -60,6 +61,7 @@ sequenceDiagram
   participant Devices
   participant Spotter
   participant Butler
+  participant Model
   participant Mapper
   participant Pipeline
   Note over Devices, Butler: Discovery
@@ -68,12 +70,13 @@ sequenceDiagram
   Spotter->>Butler: Discovery Events
   Note over Butler, Mapper: Mapping
   Mapper->>Butler: Fetch Discovery
-  Mapper->>Butler: Fetch Current Model
-  Mapper->>Mapper: Mapping
+  Mapper->>Model: Fetch Current Model
+  Mapper->>Mapper: Map
   Mapper->>Butler: Propose Model Changes
   Note over Butler, Pipeline: Provisioning
-  Butler->>Butler: Approval
-  Butler->>Pipeline: Provisioning
+  Butler->>Butler: Approve
+  Butler->>Model: Update Model
+  Model->>Pipeline: Provisioning
   Note over Devices, Pipeline: Operational
   Devices-->>Pipeline: Pointset (Telemetry)
 ```
