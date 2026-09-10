@@ -229,7 +229,7 @@ class PostgresManager:
             status VARCHAR(50) DEFAULT 'RUNNING',
             batch_size INTEGER DEFAULT 10,
             batch_interval_sec INTEGER DEFAULT 60,
-            total_devices INTEGER DEFAULT 10,
+            total_devices INTEGER DEFAULT 0,
             converged_devices INTEGER DEFAULT 0,
             failed_devices INTEGER DEFAULT 0,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,

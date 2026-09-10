@@ -21,7 +21,7 @@ sys.path.insert(0, REPO_ROOT)
 
 from mcp.butler.provider import ButlerProvider
 from mcp.butler.server import ButlerMcpServer, ButlerMcpHttpHandler
-from mcp.butler.client import ButlerClient, ButlerMcpClient
+from mcp.butler.client import ButlerClient
 from http.server import HTTPServer
 
 

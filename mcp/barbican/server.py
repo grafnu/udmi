@@ -314,7 +314,7 @@ class BarbicanMcpHttpHandler(BaseHTTPRequestHandler):
     server_instance: Optional[BarbicanMcpServer] = None
     static_dir: Optional[str] = None
 
-    def log_message(self, format: str, *args: Any) -> None:
+    def log_message(self, fmt: str, *args: Any) -> None:
         pass
 
     def send_cors_headers(self) -> None:

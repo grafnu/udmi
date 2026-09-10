@@ -301,3 +301,39 @@ def test_gummi_jetski_button_color_coding(gummi_server_url: str, browser_context
     assert len(page_errors) == 0, f"JavaScript errors during button color test: {page_errors}"
     page.close()
 
+
+def test_gummi_console_portrait_mode_height(gummi_server_url: str, browser_context: Browser):
+    """Verifies that in portrait mode (height > width), console pane takes up 1/2 of vertical space."""
+    page: Page = browser_context.new_page()
+    page_errors: List[str] = []
+    page.on("pageerror", lambda err: page_errors.append(str(err)))
+
+    # Set portrait viewport: width 600, height 1000
+    page.set_viewport_size({"width": 600, "height": 1000})
+    page.goto(gummi_server_url)
+    page.wait_for_load_state("domcontentloaded")
+
+    # Open console
+    btn_jetski = page.locator("#btn-jetski")
+    btn_jetski.click()
+
+    console_pane = page.locator("#console-pane")
+    expect(console_pane).to_be_visible()
+
+    # Measure computed height in portrait mode
+    pane_height = page.evaluate("() => document.getElementById('console-pane').getBoundingClientRect().height")
+    window_height = page.evaluate("() => window.innerHeight")
+    # In portrait mode (1000px height), console should take up 1/2 = 500px
+    assert abs(pane_height - (window_height / 2)) <= 2, f"Expected 50vh height (~{window_height / 2}px), got {pane_height}px"
+
+    # Switch to landscape: width 1200, height 800
+    page.set_viewport_size({"width": 1200, "height": 800})
+    time.sleep(0.2)
+    pane_height_landscape = page.evaluate("() => document.getElementById('console-pane').getBoundingClientRect().height")
+    # In landscape mode, height should be standard fixed 380px
+    assert abs(pane_height_landscape - 380) <= 2, f"Expected 380px height in landscape, got {pane_height_landscape}px"
+
+    assert len(page_errors) == 0, f"JavaScript errors during portrait mode test: {page_errors}"
+    page.close()
+
+

@@ -115,7 +115,3 @@ class BarbicanClient:
         """List all available MCP tools."""
         res = self.call_rpc("tools/list", {})
         return res.get("tools", [])
-
-
-# Convenient alias
-BarbicanMcpClient = BarbicanClient

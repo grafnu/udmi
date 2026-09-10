@@ -13,7 +13,7 @@ import socket
 import sys
 import threading
 import time
-from typing import Any, Callable, Deque, Dict, List, Optional, Tuple, Union
+from typing import Any, Deque, Dict, List, Optional, Tuple
 import uuid
 
 script_dir = os.path.dirname(os.path.realpath(__file__))
@@ -28,10 +28,8 @@ except (ImportError, ModuleNotFoundError):
     mqtt = None
 
 try:
-    from udmi.common.connection import MessageConnection
     from udmi.common.project_spec import parse_project_spec
 except (ImportError, ModuleNotFoundError):
-    MessageConnection = None
     parse_project_spec = None
 
 
@@ -598,8 +596,7 @@ class UUFIProvider:
                 item_id = item["id"]
                 if item_id <= cursor:
                     continue
-                if item_id > max_id:
-                    max_id = item_id
+                max_id = max(max_id, item_id)
 
                 if type_filter and item.get("subType") not in type_filter:
                     continue

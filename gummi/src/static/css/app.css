@@ -591,6 +591,16 @@ body {
   height: calc(100vh - 110px);
 }
 
+@media (orientation: portrait) {
+  .console-pane {
+    height: 50vh;
+  }
+
+  .console-pane.expanded {
+    height: calc(100vh - 80px);
+  }
+}
+
 .console-header {
   display: flex;
   justify-content: space-between;

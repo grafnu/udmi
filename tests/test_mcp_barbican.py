@@ -92,6 +92,22 @@ class TestBarbicanProviderLogic(unittest.TestCase):
             self.assertEqual(props.get(":make_model"), "Bosch")
             self.assertEqual(props.get("/status"), '{"online": true}')
 
+    def test_discover_target_success(self):
+        with patch("socket.create_connection") as mock_conn:
+            target = BarbicanProvider.discover_target(candidates=[9002])
+            self.assertEqual(target, "http://127.0.0.1:9002")
+
+    def test_discover_target_etcd_port_env(self):
+        with patch.dict("os.environ", {"ETCD_PORT": "19999"}), patch("socket.create_connection") as mock_conn:
+            target = BarbicanProvider.discover_target()
+            self.assertEqual(target, "http://127.0.0.1:19999")
+
+    def test_discover_target_fail_fast(self):
+        with patch("socket.create_connection", side_effect=ConnectionRefusedError):
+            with self.assertRaises(RuntimeError) as cm:
+                BarbicanProvider.discover_target(candidates=[9002, 9003])
+            self.assertIn("No reachable Barbican/etcd datastore found", str(cm.exception))
+
 
 class TestBarbicanMcpServerAndClient(unittest.TestCase):
     """Test MCP JSON-RPC protocol and HTTP server/client abstraction."""

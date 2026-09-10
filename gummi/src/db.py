@@ -538,7 +538,7 @@ class GummiDB:
         target_subfolder: str = "system",
         batch_size: int = 10,
         batch_interval_sec: int = 60,
-        total_devices: int = 10,
+        total_devices: int = 0,
     ) -> Dict[str, Any]:
         """Creates a staged configuration rollout campaign via Butler."""
         if self.mock_mode:
@@ -554,7 +554,7 @@ class GummiDB:
                 "batch_size": batch_size,
                 "batch_interval_sec": batch_interval_sec,
                 "total_devices": total_devices,
-                "converged_devices": 1,
+                "converged_devices": 0,
                 "failed_devices": 0,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }

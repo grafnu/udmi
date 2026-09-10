@@ -212,7 +212,7 @@ class ButlerClient:
         target_subfolder: str = "system",
         batch_size: int = 10,
         batch_interval_sec: int = 60,
-        total_devices: int = 10,
+        total_devices: int = 0,
     ) -> Dict[str, Any]:
         """Create a new declarative staged rollout campaign."""
         params = {
@@ -255,7 +255,3 @@ class ButlerClient:
         """List all available MCP tools."""
         res = self.call_rpc("tools/list", {})
         return res.get("tools", [])
-
-
-# Convenient alias
-ButlerMcpClient = ButlerClient

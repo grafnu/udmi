@@ -544,7 +544,7 @@ class ButlerMcpHttpHandler(BaseHTTPRequestHandler):
 
     server_instance: Optional[ButlerMcpServer] = None
 
-    def log_message(self, format: str, *args: Any) -> None:
+    def log_message(self, fmt: str, *args: Any) -> None:
         pass
 
     def send_cors_headers(self) -> None:

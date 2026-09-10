@@ -7,5 +7,6 @@ event stream ingress according to the authoritative UUFI specification (docs/spe
 
 from mcp.uufi.client import UUFIClient
 from mcp.uufi.provider import UUFIProvider
+from mcp.uufi.server import UUFIMcpServer
 
-__all__ = ["UUFIProvider", "UUFIClient"]
+__all__ = ["UUFIProvider", "UUFIClient", "UUFIMcpServer"]

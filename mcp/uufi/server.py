@@ -16,8 +16,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
 import sys
-import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 import urllib.parse
 
 from mcp.uufi.provider import UUFIProvider
@@ -375,7 +374,7 @@ class UUFIMcpHttpHandler(BaseHTTPRequestHandler):
 
     server_instance: Optional[UUFIMcpServer] = None
 
-    def log_message(self, format: str, *args: Any) -> None:
+    def log_message(self, fmt: str, *args: Any) -> None:
         pass
 
     def send_cors_headers(self) -> None:

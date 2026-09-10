@@ -687,14 +687,18 @@ function setupConsole() {
     btnAlertRestart.addEventListener("click", () => killAndRestartConsole());
   }
 
-  // Handle window resize for xterm
-  window.addEventListener("resize", () => {
+  // Handle window resize & orientation change for xterm
+  const handleViewportResize = () => {
     if (isConsoleOpen && fitAddon && term) {
       try {
         fitAddon.fit();
         syncTermSize();
       } catch (e) {}
     }
+  };
+  window.addEventListener("resize", handleViewportResize);
+  window.addEventListener("orientationchange", () => {
+    setTimeout(handleViewportResize, 100);
   });
 
   // Initial status check and periodic polling

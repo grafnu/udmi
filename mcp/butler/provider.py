@@ -10,7 +10,6 @@ import json
 import os
 import re
 import sys
-import threading
 from typing import Any, Dict, List, Optional, Union
 
 
@@ -693,6 +692,14 @@ class ButlerProvider:
         search: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Fetches a paginated, filtered list of devices from udmi_system_state."""
+        if status and status.upper() != "ONLINE":
+            return {
+                "total": 0,
+                "limit": limit,
+                "offset": offset,
+                "devices": [],
+            }
+
         if not self.pg_manager:
             raise ConnectionError("Butler relational datastore is unavailable.")
 
@@ -912,7 +919,7 @@ class ButlerProvider:
         target_subfolder: str = "system",
         batch_size: int = 10,
         batch_interval_sec: int = 60,
-        total_devices: int = 10,
+        total_devices: int = 0,
     ) -> Dict[str, Any]:
         """Creates and launches a new declarative staged rollout campaign."""
         return self.rollout_manager.create_rollout(

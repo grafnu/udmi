@@ -6,7 +6,6 @@ within the Butler subsystem, storing all campaign records in the PostgreSQL
 at any time without loss of rollout state.
 """
 
-from datetime import datetime, timezone
 import json
 import sys
 from typing import Any, Dict, List, Optional
@@ -30,7 +29,7 @@ CREATE TABLE IF NOT EXISTS udmi_rollouts (
     status VARCHAR(50) DEFAULT 'RUNNING',
     batch_size INTEGER DEFAULT 10,
     batch_interval_sec INTEGER DEFAULT 60,
-    total_devices INTEGER DEFAULT 10,
+    total_devices INTEGER DEFAULT 0,
     converged_devices INTEGER DEFAULT 0,
     failed_devices INTEGER DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -74,7 +73,7 @@ class RolloutManager:
         target_subfolder: str = "system",
         batch_size: int = 10,
         batch_interval_sec: int = 60,
-        total_devices: int = 10,
+        total_devices: int = 0,
     ) -> Dict[str, Any]:
         """Creates and persists a new declarative staged rollout campaign in PostgreSQL."""
         if not self.postgres_manager:
@@ -170,15 +169,14 @@ class RolloutManager:
         if not self.postgres_manager:
             raise RuntimeError("Butler PostgreSQL datastore is required for rollout persistence.")
 
+        VALID_STATUSES = {"RUNNING", "PAUSED", "CANCELLED", "COMPLETED"}
         normalized_status = None
         if status:
-            s_lower = status.lower()
-            if s_lower == "pause":
-                normalized_status = "PAUSED"
-            elif s_lower == "cancel":
-                normalized_status = "CANCELLED"
-            else:
-                normalized_status = status.upper()
+            normalized_status = status.upper()
+            if normalized_status not in VALID_STATUSES:
+                raise ValueError(
+                    f"Invalid rollout status '{status}'. Must be one of: {', '.join(sorted(VALID_STATUSES))}"
+                )
 
         conn = self.postgres_manager.get_connection()
         try:
@@ -263,7 +261,7 @@ class RolloutManager:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, total_devices, converged_devices
+                    SELECT id, target_filter, total_devices, converged_devices
                     FROM udmi_rollouts
                     WHERE status = 'RUNNING' AND target_subfolder = %s
                     FOR UPDATE;
@@ -271,9 +269,28 @@ class RolloutManager:
                     (subfolder,),
                 )
                 running = cur.fetchall()
-                for r_id, tot, conv in running:
-                    new_conv = min(tot, conv + 1)
-                    new_st = "COMPLETED" if new_conv >= tot else "RUNNING"
+                for row_data in running:
+                    if len(row_data) == 4:
+                        r_id, raw_filter, tot, conv = row_data
+                    else:
+                        r_id, tot, conv = row_data
+                        raw_filter = {}
+
+                    target_filter = (
+                        raw_filter
+                        if isinstance(raw_filter, dict)
+                        else (json.loads(raw_filter) if raw_filter else {})
+                    )
+                    if target_filter:
+                        if "registry_id" in target_filter and registry_id and target_filter["registry_id"] != registry_id:
+                            continue
+                        if "device_id" in target_filter and device_id and target_filter["device_id"] != device_id:
+                            continue
+                        if "device_ids" in target_filter and device_id and device_id not in target_filter["device_ids"]:
+                            continue
+
+                    new_conv = min(tot, conv + 1) if tot > 0 else conv + 1
+                    new_st = "COMPLETED" if (tot > 0 and new_conv >= tot) else "RUNNING"
                     cur.execute(
                         """
                         UPDATE udmi_rollouts

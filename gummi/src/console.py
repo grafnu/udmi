@@ -6,13 +6,12 @@ import os
 import re
 import shlex
 import subprocess
-import time
 from typing import Any, Dict, List, Optional, Tuple
 
 
 def build_tmux_keys(sess: str, keys: List[str]) -> List[str]:
     """Builds tmux send-keys command arguments from hex byte strings."""
-    if keys == ["7f"] or keys == ["08"]:
+    if keys in (["7f"], ["08"]):
         return ["tmux", "send-keys", "-t", sess, "BSpace"]
     elif keys == ["1b", "5b", "33", "7e"]:
         return ["tmux", "send-keys", "-t", sess, "DC"]
@@ -194,33 +193,6 @@ class GummiConsoleManager:
                 child_pids.extend([c.strip() for c in c_res.stdout.strip().splitlines() if c.strip()])
         return child_pids
 
-    def get_session_cli_log(self) -> Optional[str]:
-        """Discovers the active Jetski CLI log file from the session's open file descriptors."""
-        pids = self.get_pane_child_pids()
-        for pid in pids:
-            fd_dir = f"/proc/{pid}/fd"
-            if os.path.exists(fd_dir):
-                try:
-                    for fd in os.listdir(fd_dir):
-                        target = os.path.realpath(os.path.join(fd_dir, fd))
-                        if "cli-" in target and target.endswith(".log"):
-                            return target
-                except Exception:
-                    pass
-        log_dir = os.path.expanduser("~/.gemini/jetski/cli/log")
-        if os.path.isdir(log_dir):
-            try:
-                files = [
-                    os.path.join(log_dir, f)
-                    for f in os.listdir(log_dir)
-                    if f.startswith("cli-") and f.endswith(".log")
-                ]
-                if files:
-                    return max(files, key=os.path.getmtime)
-            except Exception:
-                pass
-        return None
-
     def is_active(self) -> bool:
         """Determines if the running session is actively performing work vs idle."""
         if self.mock_mode:
@@ -228,7 +200,6 @@ class GummiConsoleManager:
         if not self.is_running():
             return False
 
-        # 1. Check if child tool processes exist under the pane PID (e.g. running bash, python, git)
         try:
             child_pids = self.get_pane_child_pids()
             if len(child_pids) > 1:
@@ -236,58 +207,10 @@ class GummiConsoleManager:
         except Exception:
             pass
 
-        # 2. Check conversation transcript for authoritative turn status
-        conv_id = self.get_conv_id()
-        if conv_id:
-            transcript_path = os.path.expanduser(f"~/.gemini/jetski/brain/{conv_id}/.system_generated/logs/transcript.jsonl")
-            if os.path.exists(transcript_path):
-                try:
-                    with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
-                        lines = [line.strip() for line in f if line.strip()]
-                        if lines:
-                            last_step = json.loads(lines[-1])
-                            step_type = last_step.get("type")
-                            status = last_step.get("status")
-                            has_tools = bool(last_step.get("tool_calls"))
-
-                            # If user input was sent, step not finished, or tools are running: active!
-                            if step_type == "USER_INPUT" or status != "DONE" or has_tools:
-                                return True
-
-                            # If final planner response is DONE without pending tool calls: idle!
-                            if step_type == "PLANNER_RESPONSE" and status == "DONE" and not has_tools:
-                                return False
-                except Exception:
-                    pass
-
-        # 3. Check screen capture: inspect only active status line at bottom of pane
-        try:
-            cap = subprocess.run(
-                ["tmux", "capture-pane", "-p", "-t", self.session_name],
-                capture_output=True,
-                text=True,
-                timeout=1,
-            )
-            if cap.returncode == 0 and cap.stdout:
-                bottom_lines = cap.stdout.splitlines()[-6:]
-                bottom_text = "\n".join(bottom_lines)
-                spinners = [
-                    "Thinking...",
-                    "Loading...",
-                    "Generating...",
-                    "Calling tool",
-                    "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
-                    "⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷",
-                ]
-                if any(s in bottom_text for s in spinners):
-                    return True
-        except Exception:
-            pass
-
         return False
 
     def get_diagnostics(self) -> Dict[str, Any]:
-        """Analyzes session state and active logs to detect auth failures or startup errors."""
+        """Analyzes session state and exit code."""
         running = self.is_running()
         if self.mock_mode:
             has_error = getattr(self, "_mock_error", False)
@@ -350,7 +273,7 @@ class GummiConsoleManager:
                     err_detail = ""
                     if os.path.exists(self.log_file):
                         try:
-                            with open(self.log_file, "r", errors="replace") as lf:
+                            with open(self.log_file, "r", encoding="utf-8", errors="replace") as lf:
                                 lines = [l.strip() for l in lf.readlines() if l.strip()]
                                 if lines:
                                     err_detail = lines[-1]
@@ -379,59 +302,26 @@ class GummiConsoleManager:
                 "alert": None,
             }
 
-        cli_log = self.get_session_cli_log()
-        alert_msg = None
-        state = "idle"
-        severity = "success"
-        if cli_log and os.path.exists(cli_log):
-            try:
-                with open(cli_log, "r", errors="replace") as cf:
-                    cf.seek(max(0, os.path.getsize(cli_log) - 20000))
-                    content = cf.read()
-                if (
-                    "ThinMint is expired" in content
-                    or "AUTH_FAIL" in content
-                    or "loas2 handshake failed" in content
-                    or "Couldn't get ID from REKE cert" in content
-                ):
-                    state = "auth_required"
-                    severity = "warning"
-                    alert_msg = (
-                        "Authentication Required: Google ThinMint / LOAS certificate has expired. "
-                        "Run 'glogin' in your workstation terminal to authenticate, then click Restart Agent."
-                    )
-                elif "Required key not available" in content:
-                    state = "key_error"
-                    severity = "error"
-                    alert_msg = "Permission/Key Error: Required key not available. Check security credentials."
-            except Exception:
-                pass
-
         active = self.is_active()
         if active:
             button_state = "yellow"
             status_text = "Actively Working"
+            state = "active"
+            severity = "warning"
         else:
             button_state = "green"
-            status_text = (
-                "Idle"
-                if state == "idle"
-                else (
-                    "Auth Required (run 'glogin')"
-                    if state == "auth_required"
-                    else "Key Error"
-                )
-            )
+            status_text = "Idle"
+            state = "idle"
+            severity = "success"
 
         return {
-            "state": state if state != "idle" else ("active" if active else "idle"),
+            "state": state,
             "status_text": status_text,
-            "severity": severity if state != "idle" else ("warning" if active else "success"),
+            "severity": severity,
             "button_state": button_state,
             "running": True,
             "active": active,
-            "alert": alert_msg,
-            "cli_log": cli_log,
+            "alert": None,
         }
 
     def get_log(self, offset: int = 0) -> Dict[str, Any]:

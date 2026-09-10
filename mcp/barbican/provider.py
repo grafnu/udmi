@@ -7,6 +7,7 @@ registries, and properties with natural ordering.
 import base64
 import functools
 import json
+import os
 import re
 import socket
 import urllib.error
@@ -72,14 +73,25 @@ class BarbicanProvider:
     @classmethod
     def discover_target(cls, candidates: Optional[List[int]] = None) -> str:
         """Find an active datastore port among standard candidates."""
-        candidates = candidates or [18834, 2379]
+        if candidates is None:
+            candidates = []
+            env_port = os.environ.get("ETCD_PORT")
+            if env_port:
+                try:
+                    candidates.append(int(env_port))
+                except ValueError:
+                    pass
+            for p in [18834, 2379]:
+                if p not in candidates:
+                    candidates.append(p)
+
         for port in candidates:
             try:
                 with socket.create_connection(("127.0.0.1", port), timeout=0.2):
                     return f"http://127.0.0.1:{port}"
             except Exception:
                 continue
-        return "http://127.0.0.1:2379"
+        raise RuntimeError("No reachable Barbican/etcd datastore found")
 
     def _request(
         self, endpoint: str, payload: Optional[Dict[str, Any]] = None, timeout: float = 5.0

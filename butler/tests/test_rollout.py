@@ -138,9 +138,13 @@ class RolloutManagerTests(unittest.TestCase):
             ),
         ]
 
-        updated = self.manager.update_rollout(1, status="pause")
+        updated = self.manager.update_rollout(1, status="PAUSED")
         self.assertIsNotNone(updated)
         self.assertEqual(updated["status"], "PAUSED")
+
+    def test_update_rollout_invalid_status(self):
+        with self.assertRaises(ValueError):
+            self.manager.update_rollout(1, status="INVALID_STATUS")
 
     def test_update_rollout_auto_complete(self):
         now = datetime(2026, 9, 10, 10, 0, 0, tzinfo=timezone.utc)
@@ -196,6 +200,37 @@ class RolloutManagerTests(unittest.TestCase):
         self.assertEqual(len(res), 1)
         self.assertEqual(res[0]["converged_devices"], 3)
         self.assertEqual(res[0]["status"], "RUNNING")
+
+    def test_evaluate_convergence_filter_match_and_mismatch(self):
+        now = datetime(2026, 9, 10, 10, 0, 0, tzinfo=timezone.utc)
+        # One rollout matches DEV-1, another targets DEV-2
+        self.mock_cur.fetchall.return_value = [
+            (1, {"device_id": "DEV-1"}, 10, 2),
+            (2, {"device_id": "DEV-2"}, 10, 1),
+        ]
+        self.mock_cur.fetchone.return_value = (
+            1,
+            "Upgrade DEV-1",
+            {"device_id": "DEV-1"},
+            "system",
+            {"system": {}},
+            "RUNNING",
+            5,
+            60,
+            10,
+            3,
+            0,
+            now,
+            now,
+        )
+
+        res = self.manager.evaluate_convergence("REG-1", "DEV-1", "system", {})
+        self.assertEqual(len(res), 1)
+        self.assertEqual(res[0]["id"], 1)
+
+        # Non-matching device should update nothing
+        res_none = self.manager.evaluate_convergence("REG-1", "DEV-OTHER", "system", {})
+        self.assertEqual(len(res_none), 0)
 
     def test_fail_fast_without_postgres(self):
         manager = RolloutManager(postgres_manager=None)

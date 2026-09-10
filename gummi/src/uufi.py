@@ -212,7 +212,7 @@ class GummiUUFIClient:
         target_subfolder: str = "system",
         batch_size: int = 10,
         batch_interval_sec: int = 60,
-        total_devices: int = 10,
+        total_devices: int = 0,
     ) -> Dict[str, Any]:
         """Creates and launches a new declarative staged rollout campaign."""
         if not self.db:
@@ -274,8 +274,10 @@ class GummiUUFIClient:
         rollouts = self.db.list_rollouts()
         for r in rollouts:
             if r.get("status") == "RUNNING" and r.get("target_subfolder") == subfolder:
-                conv = min(r.get("total_devices", 10), r.get("converged_devices", 0) + 1)
-                new_status = "COMPLETED" if conv >= r.get("total_devices", 10) else "RUNNING"
+                tot = r.get("total_devices", 0)
+                current_conv = r.get("converged_devices", 0)
+                conv = min(tot, current_conv + 1) if tot > 0 else current_conv + 1
+                new_status = "COMPLETED" if (tot > 0 and conv >= tot) else "RUNNING"
                 self.update_rollout(r["id"], status=new_status, converged_devices=conv)
 
     # --------------------------------------------------------------------------

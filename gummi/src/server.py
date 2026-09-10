@@ -179,14 +179,14 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
                 return self._handle_sse()
 
             # 8. Terminal Console Log & Status
-            if path in ("/api/project/term-log", "/api/console/log"):
+            if path == "/api/project/term-log":
                 offset = int(query.get("offset", ["0"])[0])
                 if not self.console:
                     return self._send_json({"data": "", "offset": 0, "cleared": False, "running": False})
                 res = self.console.get_log(offset=offset)
                 return self._send_json(res)
 
-            if path in ("/api/project/status", "/api/console/status"):
+            if path == "/api/project/status":
                 running = self.console.is_running() if self.console else False
                 session_name = self.console.session_name if self.console else "gummi~agent"
                 diag = self.console.get_diagnostics() if self.console else {
@@ -269,8 +269,8 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
                     return self._send_json({"error": f"Rollout {r_id} not found"}, status_code=404)
                 return self._send_json(res, status_code=200)
 
-            # 4. Mapping Lifecycle Simulation & Seeder (/api/mapping/run or /api/mapping/seed)
-            if path in ("/api/mapping/run", "/api/mapping/seed"):
+            # 4. Mapping Lifecycle Simulation & Seeder (/api/mapping/run)
+            if path == "/api/mapping/run":
                 if not getattr(self.server, "enable_mapping_seed", False):
                     return self._send_json(
                         {"error": "Forbidden: mapping seed feature is disabled. Start server with --enable-mapping-seed to activate."},
@@ -281,7 +281,7 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
                 return self._send_json(result, status_code=200)
 
             # 5. Terminal Console Operations
-            if path in ("/api/project/jetski", "/api/console/start", "/api/console/jetski"):
+            if path == "/api/project/jetski":
                 prompt = body.get("prompt")
                 cols = body.get("cols")
                 rows = body.get("rows")
@@ -290,7 +290,7 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
                 res = self.console.start_jetski(prompt=prompt, cols=cols, rows=rows)
                 return self._send_json(res, status_code=200)
 
-            if path in ("/api/project/term-input", "/api/console/input"):
+            if path == "/api/project/term-input":
                 hex_keys = body.get("hexKeys") or []
                 if not self.console:
                     return self._send_json({"error": "Console manager unavailable"}, status_code=503)
@@ -300,14 +300,14 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
                     return self._send_json({"error": err}, status_code=code)
                 return self._send_json({"status": "ok"}, status_code=200)
 
-            if path in ("/api/project/term-resize", "/api/console/resize"):
+            if path == "/api/project/term-resize":
                 cols = int(body.get("cols", 120))
                 rows = int(body.get("rows", 30))
                 if self.console:
                     self.console.resize(cols, rows)
                 return self._send_json({"status": "resized"}, status_code=200)
 
-            if path in ("/api/project/term-kill", "/api/project/kill", "/api/console/kill"):
+            if path == "/api/project/term-kill":
                 if self.console:
                     self.console.kill()
                 return self._send_json({"status": "killed"}, status_code=200)
