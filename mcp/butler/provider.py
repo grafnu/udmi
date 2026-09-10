@@ -557,15 +557,11 @@ class ButlerProvider:
                     (registry_id,),
                 )
                 deleted_count += cur.rowcount
-
-                try:
-                    cur.execute(
-                        "DELETE FROM udmi_discovery WHERE device_registry_id = %s;",
-                        (registry_id,),
-                    )
-                    deleted_count += cur.rowcount
-                except Exception:
-                    pass
+                cur.execute(
+                    "DELETE FROM udmi_discovery WHERE device_registry_id = %s;",
+                    (registry_id,),
+                )
+                deleted_count += cur.rowcount
 
             conn.commit()
         finally:
@@ -792,42 +788,30 @@ class ButlerProvider:
 
                 if not sys_row:
                     return None
-
-                try:
-                    cur.execute("""
-                        SELECT system_location_room, system_location_floor, metadata
-                        FROM udmi_metadata
-                        WHERE device_registry_id = %s AND device_id = %s
-                        ORDER BY timestamp DESC
-                        LIMIT 1;
-                    """, (registry_id, device_id))
-                    meta_row = cur.fetchone()
-                except Exception:
-                    meta_row = None
-
-                try:
-                    cur.execute("""
-                        SELECT DISTINCT ON (point_name)
-                            point_name, value_state, units, level, message, status_timestamp, timestamp
-                        FROM udmi_point_state
-                        WHERE device_registry_id = %s AND device_id = %s
-                        ORDER BY point_name, timestamp DESC;
-                    """, (registry_id, device_id))
-                    point_rows = cur.fetchall()
-                except Exception:
-                    point_rows = []
-
-                try:
-                    cur.execute("""
-                        SELECT level, category, message, detail, timestamp
-                        FROM udmi_validation
-                        WHERE device_registry_id = %s AND device_id = %s
-                        ORDER BY timestamp DESC
-                        LIMIT 10;
-                    """, (registry_id, device_id))
-                    val_rows = cur.fetchall()
-                except Exception:
-                    val_rows = []
+                cur.execute("""
+                    SELECT system_location_room, system_location_floor, metadata
+                    FROM udmi_metadata
+                    WHERE device_registry_id = %s AND device_id = %s
+                    ORDER BY timestamp DESC
+                    LIMIT 1;
+                """, (registry_id, device_id))
+                meta_row = cur.fetchone()
+                cur.execute("""
+                    SELECT DISTINCT ON (point_name)
+                        point_name, value_state, units, level, message, status_timestamp, timestamp
+                    FROM udmi_point_state
+                    WHERE device_registry_id = %s AND device_id = %s
+                    ORDER BY point_name, timestamp DESC;
+                """, (registry_id, device_id))
+                point_rows = cur.fetchall()
+                cur.execute("""
+                    SELECT level, category, message, detail, timestamp
+                    FROM udmi_validation
+                    WHERE device_registry_id = %s AND device_id = %s
+                    ORDER BY timestamp DESC
+                    LIMIT 10;
+                """, (registry_id, device_id))
+                val_rows = cur.fetchall()
 
             meta_dict = meta_row[2] if (meta_row and len(meta_row) > 2 and isinstance(meta_row[2], dict)) else {}
             meta_dict.setdefault("make", sys_row[0] or "Unknown")

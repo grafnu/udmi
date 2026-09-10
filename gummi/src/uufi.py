@@ -111,7 +111,6 @@ class GummiUUFIClient:
                             "sub_folder": sub_folder,
                             "timestamp": ev.get("timestamp"),
                         })
-                        self._evaluate_rollout_convergence(reg_id, dev_id, sub_folder, payload)
                     elif sub_folder in ("status", "validation"):
                         self.broadcast_event("alert", {
                             "topic": ev.get("topic"),
@@ -136,7 +135,16 @@ class GummiUUFIClient:
                     try:
                         if self.db:
                             rollouts = self.db.list_rollouts()
-                            self._active_rollouts_cache = [r for r in rollouts if r.get("status") == "RUNNING"]
+                            new_cache = []
+                            for r in rollouts:
+                                if r.get("status") in ("RUNNING", "COMPLETED"):
+                                    # Find previous state in cache
+                                    prev = next((x for x in self._active_rollouts_cache if x["id"] == r["id"]), None)
+                                    if prev:
+                                        if prev.get("converged_devices") != r.get("converged_devices") or prev.get("status") != r.get("status"):
+                                            self.broadcast_event("rollout_progress", r)
+                                    new_cache.append(r)
+                            self._active_rollouts_cache = new_cache
                     except Exception:
                         pass
 
@@ -207,32 +215,7 @@ class GummiUUFIClient:
     # Managed Rollouts Convergence
     # --------------------------------------------------------------------------
 
-    def _evaluate_rollout_convergence(
-        self,
-        registry_id: str,
-        device_id: str,
-        subfolder: str,
-        payload: Dict[str, Any],
-    ) -> None:
-        """Checks incoming state against cached running rollout targets (O(1) memory lookup)."""
-        if not self.db:
-            return
-        
-        for r in self._active_rollouts_cache:
-            if r.get("target_subfolder") == subfolder:
-                tot = r.get("total_devices", 0)
-                current_conv = r.get("converged_devices", 0)
-                conv = min(tot, current_conv + 1) if tot > 0 else current_conv + 1
-                new_status = "COMPLETED" if (tot > 0 and conv >= tot) else "RUNNING"
-                
-                # Immediately update local cache to prevent redundant updates while waiting for next sync
-                r["converged_devices"] = conv
-                r["status"] = new_status
-                
-                # Perform the actual DB mutation
-                updated = self.db.update_rollout(r["id"], status=new_status, converged_devices=conv)
-                if updated:
-                    self.broadcast_event("rollout_progress", updated)
+
 
     # --------------------------------------------------------------------------
     # Server-Sent Events (SSE) Streaming
