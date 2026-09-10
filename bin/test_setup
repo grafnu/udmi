@@ -2,7 +2,11 @@
 # UDMI Test Infrastructure Control CLI & MCP Server Wrapper
 
 UDMI_ROOT=$(cd "$(dirname "$0")/.." && pwd)
-export PYTHONPATH="$UDMI_ROOT:${PYTHONPATH:-}"
+export PYTHONPATH="$UDMI_ROOT:$UDMI_ROOT/common/src/main/python:$UDMI_ROOT/gencode/python:$UDMI_ROOT/butler:$UDMI_ROOT/gummi:${PYTHONPATH:-}"
+
+if [ -f "$UDMI_ROOT/venv/bin/activate" ]; then
+    source "$UDMI_ROOT/venv/bin/activate"
+fi
 
 if [[ $# -eq 0 && ! -t 0 ]]; then
     # When stdin is a pipe / redirected, run in MCP stdio server mode

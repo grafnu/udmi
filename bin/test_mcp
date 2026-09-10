@@ -5,6 +5,11 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$DIR/.."
 source etc/shell_common.sh
 
+if [ -f "venv/bin/activate" ]; then
+    source "venv/bin/activate"
+fi
+export PYTHONPATH="common/src/main/python:gencode/python:butler:gummi:.:${PYTHONPATH:-}"
+
 TEST_ID="ci_mcp_test_$$"
 SITE_MODEL="sites/udmi_site_model"
 
@@ -51,15 +56,15 @@ proc.wait()
 
 # 1b. Test Barbican MCP stdio JSON-RPC protocol & unit tests
 echo "Step 1b: Verifying Barbican MCP JSON-RPC protocol, provider, and UI indirection..."
-python3 -m unittest tests/test_mcp_barbican.py
+python3 -m unittest discover -s tests -p "test_mcp_barbican.py"
 
 # 1c. Test Butler MCP stdio JSON-RPC protocol & unit tests
 echo "Step 1c: Verifying Butler MCP JSON-RPC protocol, provider, and mapping data access..."
-python3 -m unittest tests/test_mcp_butler.py
+python3 -m unittest discover -s tests -p "test_mcp_butler.py"
 
 # 1d. Test UUFI MCP stdio JSON-RPC protocol & unit tests
 echo "Step 1d: Verifying UUFI MCP JSON-RPC protocol, provider, and messaging..."
-python3 -m unittest tests/test_mcp_uufi.py
+python3 -m unittest discover -s tests -p "test_mcp_uufi.py"
 
 # 2. Test CLI ensure command
 echo "Step 2: Starting test infrastructure via CLI (bin/test_setup ensure)..."

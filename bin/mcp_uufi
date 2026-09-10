@@ -2,6 +2,10 @@
 # UDMI UUFI MCP Server Runner
 
 UDMI_ROOT=$(cd "$(dirname "$0")/.." && pwd)
-export PYTHONPATH="$UDMI_ROOT:${PYTHONPATH:-}"
+export PYTHONPATH="$UDMI_ROOT:$UDMI_ROOT/common/src/main/python:$UDMI_ROOT/gencode/python:$UDMI_ROOT/butler:$UDMI_ROOT/gummi:${PYTHONPATH:-}"
+
+if [ -f "$UDMI_ROOT/venv/bin/activate" ]; then
+    source "$UDMI_ROOT/venv/bin/activate"
+fi
 
 exec python3 "$UDMI_ROOT/mcp/uufi/server.py" "$@"

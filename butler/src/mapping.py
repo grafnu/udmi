@@ -13,30 +13,36 @@ try:
     from mcp.butler.client import ButlerClient
     from mcp.butler.provider import ButlerProvider
 except (ImportError, ModuleNotFoundError):
-    from udmi.mcp.butler.client import ButlerClient
-    from udmi.mcp.butler.provider import ButlerProvider
+    try:
+        from udmi.mcp.butler.client import ButlerClient
+        from udmi.mcp.butler.provider import ButlerProvider
+    except (ImportError, ModuleNotFoundError):
+        ButlerClient = None
+        ButlerProvider = None
 
 
 def get_butler_interface(conn_spec=None, butler_port=None):
     """Resolves an active Butler client connection or in-process provider."""
     # 1. Check for running Butler MCP service
-    port = butler_port or os.environ.get("BUTLER_PORT", 8088)
-    try:
-        client = ButlerClient(port=int(port))
-        health = client.health()
-        if health.get("status") in ("UP", "DEGRADED"):
-            return client
-    except Exception:
-        pass
+    if ButlerClient is not None:
+        port = butler_port or os.environ.get("BUTLER_PORT", 8088)
+        try:
+            client = ButlerClient(port=int(port))
+            health = client.health()
+            if health.get("status") in ("UP", "DEGRADED"):
+                return client
+        except Exception:
+            pass
 
     # 2. In-process provider fallback
-    try:
-        provider = ButlerProvider(project_spec=conn_spec)
-        health = provider.health()
-        if health.get("status") in ("UP", "DEGRADED"):
-            return provider
-    except Exception:
-        pass
+    if ButlerProvider is not None:
+        try:
+            provider = ButlerProvider(project_spec=conn_spec)
+            health = provider.health()
+            if health.get("status") in ("UP", "DEGRADED"):
+                return provider
+        except Exception:
+            pass
 
     return None
 
