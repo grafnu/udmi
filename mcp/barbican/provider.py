@@ -1,7 +1,7 @@
-"""ETCD Data Provider for UDMI MCP Server.
+"""Barbican Data Provider for UDMI MCP Server.
 
-Provides direct communication with an etcd cluster/instance using the v3 HTTP gateway.
-Extracts UDMI device hierarchies, registries, and properties with natural ordering.
+Provides datastore access and extracts UDMI device hierarchies,
+registries, and properties with natural ordering.
 """
 
 import base64
@@ -48,7 +48,7 @@ LAST_STATE_KEY_SUFFIX = ":last_state"
 
 
 def prefix_range_end(prefix: str) -> bytes:
-    """Computes the upper bound key for an etcd prefix range scan."""
+    """Computes the upper bound key for a prefix range scan."""
     b = bytearray(prefix.encode("utf-8"))
     for i in range(len(b) - 1, -1, -1):
         if b[i] < 0xFF:
@@ -57,12 +57,11 @@ def prefix_range_end(prefix: str) -> bytes:
     return b"\x00"
 
 
-class EtcdProvider:
-    """Encapsulates etcd v3 HTTP client communication and UDMI model querying."""
+class BarbicanProvider:
+    """Encapsulates Barbican datastore communication and UDMI model querying."""
 
     def __init__(self, target: Optional[str] = None):
         if target is None:
-            # Try to discover or default to 2379
             target = self.discover_target()
         elif isinstance(target, int):
             target = f"http://127.0.0.1:{target}"
@@ -72,7 +71,7 @@ class EtcdProvider:
 
     @classmethod
     def discover_target(cls, candidates: Optional[List[int]] = None) -> str:
-        """Find an active etcd port among standard candidates."""
+        """Find an active datastore port among standard candidates."""
         candidates = candidates or [18834, 2379]
         for port in candidates:
             try:
@@ -85,7 +84,7 @@ class EtcdProvider:
     def _request(
         self, endpoint: str, payload: Optional[Dict[str, Any]] = None, timeout: float = 5.0
     ) -> Dict[str, Any]:
-        """Send an HTTP JSON request to the etcd gateway."""
+        """Send an HTTP JSON request to the datastore gateway."""
         url = f"{self.target}{endpoint}"
         data = json.dumps(payload).encode("utf-8") if payload else None
         headers = {"Content-Type": "application/json"}
@@ -98,36 +97,36 @@ class EtcdProvider:
                 return json.loads(resp_bytes.decode("utf-8"))
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"etcd request to {endpoint} failed (HTTP {e.code}): {err_body}") from e
+            raise RuntimeError(f"Datastore request to {endpoint} failed (HTTP {e.code}): {err_body}") from e
         except Exception as e:
-            raise RuntimeError(f"etcd connection to {url} failed: {e}") from e
+            raise RuntimeError(f"Datastore connection to {url} failed: {e}") from e
 
     def health(self) -> Dict[str, Any]:
-        """Check connection health of the etcd instance."""
+        """Check connection health of the Barbican datastore."""
         try:
             url = f"{self.target}/health"
             req = urllib.request.Request(url, method="GET")
             with urllib.request.urlopen(req, timeout=1.0) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
+                is_up = data.get("health") in ["true", True]
                 return {
-                    "status": "UP" if data.get("health") in ["true", True] else "DEGRADED",
-                    "target": self.target,
-                    "details": data,
+                    "status": "UP" if is_up else "DEGRADED",
+                    "service": "barbican",
+                    "connected": is_up,
                 }
-        except Exception as e:
-            # Fallback to checking a range query on /v3/kv/range
+        except Exception:
             try:
                 self.get_entry("__health_probe__")
                 return {
                     "status": "UP",
-                    "target": self.target,
-                    "details": "kv_range responded",
+                    "service": "barbican",
+                    "connected": True,
                 }
-            except Exception as e2:
+            except Exception:
                 return {
                     "status": "DOWN",
-                    "target": self.target,
-                    "error": str(e2),
+                    "service": "barbican",
+                    "connected": False,
                 }
 
     def get_entry(self, key: str) -> Optional[str]:
@@ -174,7 +173,7 @@ class EtcdProvider:
         return keys
 
     def put_entry(self, key: str, value: str) -> bool:
-        """Store a key-value entry in etcd."""
+        """Store a key-value entry in the datastore."""
         payload = {
             "key": base64.b64encode(key.encode("utf-8")).decode("ascii"),
             "value": base64.b64encode(value.encode("utf-8")).decode("ascii"),
@@ -183,7 +182,7 @@ class EtcdProvider:
         return "header" in res
 
     def delete_entry(self, key: str, is_prefix: bool = False) -> int:
-        """Delete a key or prefix from etcd, returning the count of deleted keys."""
+        """Delete a key or prefix from the datastore, returning the count of deleted keys."""
         payload: Dict[str, Any] = {
             "key": base64.b64encode(key.encode("utf-8")).decode("ascii"),
         }

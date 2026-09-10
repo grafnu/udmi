@@ -49,9 +49,13 @@ proc.stdin.close()
 proc.wait()
 '
 
-# 1b. Test ETCD MCP stdio JSON-RPC protocol & unit tests
-echo "Step 1b: Verifying ETCD MCP JSON-RPC protocol, provider, and UI indirection..."
-python3 -m unittest tests/test_mcp_etcd.py
+# 1b. Test Barbican MCP stdio JSON-RPC protocol & unit tests
+echo "Step 1b: Verifying Barbican MCP JSON-RPC protocol, provider, and UI indirection..."
+python3 -m unittest tests/test_mcp_barbican.py
+
+# 1c. Test Butler MCP stdio JSON-RPC protocol & unit tests
+echo "Step 1c: Verifying Butler MCP JSON-RPC protocol, provider, and mapping data access..."
+python3 -m unittest tests/test_mcp_butler.py
 
 # 2. Test CLI ensure command
 echo "Step 2: Starting test infrastructure via CLI (bin/test_setup ensure)..."

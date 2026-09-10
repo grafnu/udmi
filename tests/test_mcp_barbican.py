@@ -1,4 +1,4 @@
-"""Unit and integration tests for UDMI ETCD MCP Server and Client."""
+"""Unit and integration tests for UDMI Barbican MCP Server and Client."""
 
 import json
 import subprocess
@@ -8,22 +8,22 @@ import unittest
 from http.server import HTTPServer
 from unittest.mock import MagicMock, patch
 
-from mcp.etcd.client import EtcdMcpClient
-from mcp.etcd.provider import (
-    EtcdProvider,
+from mcp.barbican.client import BarbicanClient
+from mcp.barbican.provider import (
+    BarbicanProvider,
     natural_compare,
     NATURAL_SORT_KEY,
     prefix_range_end,
 )
-from mcp.etcd.server import (
-    EtcdMcpServer,
-    EtcdMcpHttpHandler,
+from mcp.barbican.server import (
+    BarbicanMcpServer,
+    BarbicanMcpHttpHandler,
     MCP_TOOLS,
 )
 
 
-class TestEtcdProviderLogic(unittest.TestCase):
-    """Test pure algorithmic logic in EtcdProvider without requiring live etcd."""
+class TestBarbicanProviderLogic(unittest.TestCase):
+    """Test pure algorithmic logic in BarbicanProvider without requiring live backend."""
 
     def test_natural_comparator(self):
         items = ["dev-10", "dev-1", "dev-2", "dev-20", "dev-03"]
@@ -41,7 +41,7 @@ class TestEtcdProviderLogic(unittest.TestCase):
         self.assertEqual(end_dev, b"/r/reg1/d/dev2")
 
     def test_list_registries_parsing(self):
-        provider = EtcdProvider("http://127.0.0.1:2379")
+        provider = BarbicanProvider("http://127.0.0.1:2379")
         keys = [
             "/r/cloud_iot_registry/d/AHU-1:numId",
             "/r/cloud_iot_registry/d/AHU-1/c/state:latest",
@@ -55,11 +55,10 @@ class TestEtcdProviderLogic(unittest.TestCase):
         with patch.object(provider, "get_prefix_keys", return_value=keys):
             result = provider.list_registries("/r/")
             self.assertEqual(result["registries"], ["acme_corp", "cloud_iot_registry"])
-            # acme_corp has dev-1, dev-2, dev-10 = 3; cloud_iot_registry has AHU-1, AHU-2 = 2; total = 5
             self.assertEqual(result["totalDevicesCount"], 5)
 
     def test_list_devices_parsing(self):
-        provider = EtcdProvider("http://127.0.0.1:2379")
+        provider = BarbicanProvider("http://127.0.0.1:2379")
         keys = [
             "/r/cloud_iot_registry/d/AHU-10:numId",
             "/r/cloud_iot_registry/d/AHU-1:numId",
@@ -72,7 +71,7 @@ class TestEtcdProviderLogic(unittest.TestCase):
             self.assertEqual(result["devices"], ["AHU-1", "AHU-2", "AHU-10"])
 
     def test_get_device_properties_parsing(self):
-        provider = EtcdProvider("http://127.0.0.1:2379")
+        provider = BarbicanProvider("http://127.0.0.1:2379")
         prefix = "/r/reg1/d/dev1"
 
         def mock_get_prefix(p):
@@ -94,14 +93,17 @@ class TestEtcdProviderLogic(unittest.TestCase):
             self.assertEqual(props.get("/status"), '{"online": true}')
 
 
-class TestEtcdMcpServerAndClient(unittest.TestCase):
+class TestBarbicanMcpServerAndClient(unittest.TestCase):
     """Test MCP JSON-RPC protocol and HTTP server/client abstraction."""
 
     @classmethod
     def setUpClass(cls):
-        # Create a mock provider
-        cls.mock_provider = MagicMock(spec=EtcdProvider)
-        cls.mock_provider.health.return_value = {"status": "UP", "target": "mock://127.0.0.1:2379"}
+        cls.mock_provider = MagicMock(spec=BarbicanProvider)
+        cls.mock_provider.health.return_value = {
+            "status": "UP",
+            "service": "barbican",
+            "connected": True,
+        }
         cls.mock_provider.list_registries.return_value = {
             "registries": ["acme", "cloud_iot"],
             "totalDevicesCount": 4,
@@ -115,22 +117,22 @@ class TestEtcdMcpServerAndClient(unittest.TestCase):
             "deviceId": "AHU-1",
             "properties": {":numId": "999", "/status": "HEALTHY"},
         }
-        cls.mock_provider.get_entry.return_value = "hello_etcd"
+        cls.mock_provider.get_entry.return_value = "hello_barbican"
         cls.mock_provider.get_prefix_entries.return_value = {"/test/a": "valA"}
         cls.mock_provider.put_entry.return_value = True
         cls.mock_provider.delete_entry.return_value = 1
 
-        cls.mcp_server = EtcdMcpServer(cls.mock_provider)
+        cls.mcp_server = BarbicanMcpServer(cls.mock_provider)
 
         # Start ephemeral HTTP server
-        EtcdMcpHttpHandler.server_instance = cls.mcp_server
-        cls.httpd = HTTPServer(("127.0.0.1", 0), EtcdMcpHttpHandler)
+        BarbicanMcpHttpHandler.server_instance = cls.mcp_server
+        cls.httpd = HTTPServer(("127.0.0.1", 0), BarbicanMcpHttpHandler)
         cls.port = cls.httpd.server_address[1]
         cls.server_thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
         cls.server_thread.start()
         time.sleep(0.1)
 
-        cls.client = EtcdMcpClient(port=cls.port)
+        cls.client = BarbicanClient(port=cls.port)
 
     @classmethod
     def tearDownClass(cls):
@@ -139,7 +141,7 @@ class TestEtcdMcpServerAndClient(unittest.TestCase):
 
     def test_jsonrpc_initialize(self):
         res = self.mcp_server.handle_request({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
-        self.assertEqual(res["result"]["serverInfo"]["name"], "udmi-etcd")
+        self.assertEqual(res["result"]["serverInfo"]["name"], "udmi-barbican")
         self.assertEqual(res["result"]["protocolVersion"], "2024-11-05")
 
     def test_jsonrpc_ping(self):
@@ -186,7 +188,7 @@ class TestEtcdMcpServerAndClient(unittest.TestCase):
 
         # 5. get_entry
         val = self.client.get_entry("/some/key")
-        self.assertEqual(val, "hello_etcd")
+        self.assertEqual(val, "hello_barbican")
 
         # 6. put_entry
         ok = self.client.put_entry("/some/key", "new_val")
@@ -199,7 +201,6 @@ class TestEtcdMcpServerAndClient(unittest.TestCase):
     def test_http_jsonrpc_direct(self):
         import urllib.request
         import urllib.error
-        # Test POST /rpc with list_registries
         req_body = json.dumps({
             "jsonrpc": "2.0",
             "id": 100,
@@ -224,12 +225,12 @@ class TestEtcdMcpServerAndClient(unittest.TestCase):
             self.assertEqual(e.code, 404)
 
 
-class TestEtcdMcpStdioRunner(unittest.TestCase):
-    """Test running bin/etcd_mcp in stdio mode via subprocess."""
+class TestBarbicanMcpStdioRunner(unittest.TestCase):
+    """Test running bin/mcp_barbican in stdio mode via subprocess."""
 
     def test_stdio_initialize_and_tools_list(self):
         proc = subprocess.Popen(
-            ["bin/etcd_mcp", "mcp"],
+            ["bin/mcp_barbican", "mcp"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -241,7 +242,7 @@ class TestEtcdMcpStdioRunner(unittest.TestCase):
             proc.stdin.flush()
             init_line = proc.stdout.readline()
             init_resp = json.loads(init_line)
-            self.assertEqual(init_resp["result"]["serverInfo"]["name"], "udmi-etcd")
+            self.assertEqual(init_resp["result"]["serverInfo"]["name"], "udmi-barbican")
 
             # 2. tools/list
             proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}) + "\n")
@@ -258,8 +259,8 @@ class TestEtcdMcpStdioRunner(unittest.TestCase):
             proc.wait(timeout=2)
 
 
-class TestUiServerEtcdIndirection(unittest.TestCase):
-    """Test that ui/v2/server.py routes /api/registries endpoints via EtcdMcpClient."""
+class TestUiServerBarbicanIndirection(unittest.TestCase):
+    """Test that ui/v2/server.py routes /api/registries endpoints via BarbicanClient."""
 
     @classmethod
     def setUpClass(cls):
@@ -280,7 +281,7 @@ class TestUiServerEtcdIndirection(unittest.TestCase):
         cls.httpd.server_close()
 
     @patch("ui.v2.server.start_etcd_explorer_service", return_value=True)
-    @patch("ui.v2.server.EtcdMcpClient")
+    @patch("ui.v2.server.BarbicanClient")
     def test_ui_server_indirected_registries(self, mock_client_cls, mock_start):
         mock_client = MagicMock()
         mock_client.list_registries.return_value = {
@@ -300,7 +301,7 @@ class TestUiServerEtcdIndirection(unittest.TestCase):
         mock_client.list_registries.assert_called_once()
 
     @patch("ui.v2.server.start_etcd_explorer_service", return_value=True)
-    @patch("ui.v2.server.EtcdMcpClient")
+    @patch("ui.v2.server.BarbicanClient")
     def test_ui_server_indirected_devices(self, mock_client_cls, mock_start):
         mock_client = MagicMock()
         mock_client.list_devices.return_value = {
@@ -319,7 +320,7 @@ class TestUiServerEtcdIndirection(unittest.TestCase):
         mock_client.list_devices.assert_called_once_with("reg_alpha")
 
     @patch("ui.v2.server.start_etcd_explorer_service", return_value=True)
-    @patch("ui.v2.server.EtcdMcpClient")
+    @patch("ui.v2.server.BarbicanClient")
     def test_ui_server_indirected_properties(self, mock_client_cls, mock_start):
         mock_client = MagicMock()
         mock_client.get_device_properties.return_value = {
@@ -341,4 +342,3 @@ class TestUiServerEtcdIndirection(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

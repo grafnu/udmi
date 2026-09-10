@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""UDMI ETCD MCP Server & RPC Daemon.
+"""UDMI Barbican MCP Server & RPC Daemon.
 
 Supports:
 1. Standard MCP JSON-RPC 2.0 protocol over stdio for AI agent tool calling.
 2. HTTP JSON-RPC 2.0 endpoint (POST /rpc, POST /) for headless inter-service RPC.
-3. Static file hosting for the etcd explorer web UI.
+3. Static file hosting for the explorer web UI.
 4. Direct CLI inspection and querying.
 """
 
@@ -17,13 +17,13 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any, Dict, List, Optional
 import urllib.parse
 
-from mcp.etcd.provider import EtcdProvider
+from mcp.barbican.provider import BarbicanProvider
 
 
 MCP_TOOLS = [
     {
         "name": "list_registries",
-        "description": "List all unique UDMI device registries and total count of registered devices in etcd.",
+        "description": "List all unique UDMI device registries and total count of registered devices in Barbican.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -37,13 +37,13 @@ MCP_TOOLS = [
     },
     {
         "name": "list_devices",
-        "description": "List all devices registered under a given UDMI registry in etcd.",
+        "description": "List all devices registered under a given UDMI registry in Barbican.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "registry_id": {
                     "type": "string",
-                    "description": "The target registry identifier (e.g. 'cloud_iot_registry', 'ZZ-TRI-FECTA')",
+                    "description": "The target registry identifier (e.g. 'ZZ-TRI-FECTA')",
                 }
             },
             "required": ["registry_id"],
@@ -51,7 +51,7 @@ MCP_TOOLS = [
     },
     {
         "name": "get_device_properties",
-        "description": "Retrieve all key-value properties and configuration state for a specific device in etcd.",
+        "description": "Retrieve all key-value properties and configuration state for a specific device in Barbican.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -69,13 +69,13 @@ MCP_TOOLS = [
     },
     {
         "name": "get_entry",
-        "description": "Retrieve the exact value of a single key from etcd.",
+        "description": "Retrieve the exact value of a single key from the Barbican datastore.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "key": {
                     "type": "string",
-                    "description": "The exact etcd key to fetch",
+                    "description": "The exact datastore key to fetch",
                 }
             },
             "required": ["key"],
@@ -83,7 +83,7 @@ MCP_TOOLS = [
     },
     {
         "name": "get_prefix_entries",
-        "description": "Retrieve all key-value entries starting with the given prefix in etcd.",
+        "description": "Retrieve all key-value entries starting with the given prefix in the Barbican datastore.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -97,13 +97,13 @@ MCP_TOOLS = [
     },
     {
         "name": "put_entry",
-        "description": "Store a key-value entry in etcd.",
+        "description": "Store a key-value entry in the Barbican datastore.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "key": {
                     "type": "string",
-                    "description": "Etcd key path",
+                    "description": "Datastore key path",
                 },
                 "value": {
                     "type": "string",
@@ -115,7 +115,7 @@ MCP_TOOLS = [
     },
     {
         "name": "delete_entry",
-        "description": "Delete a key or key prefix from etcd.",
+        "description": "Delete a key or key prefix from the Barbican datastore.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -134,7 +134,7 @@ MCP_TOOLS = [
     },
     {
         "name": "health",
-        "description": "Check connection health and status of the underlying etcd service.",
+        "description": "Check connection health and status of the Barbican service.",
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -143,48 +143,75 @@ MCP_TOOLS = [
 ]
 
 
-
-
-class EtcdMcpServer:
+class BarbicanMcpServer:
     """Core MCP Server instance handling JSON-RPC 2.0 requests."""
 
-    def __init__(self, provider: Optional[EtcdProvider] = None, target: Optional[str] = None):
-        self.provider = provider or EtcdProvider(target)
+    def __init__(self, provider: Optional[BarbicanProvider] = None):
+        self.provider = provider or BarbicanProvider()
 
-    def handle_request(self, req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def handle_request(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Process a single JSON-RPC 2.0 request."""
-        req_id = req.get("id")
-        method = req.get("method")
-        params = req.get("params", {})
+        req_id = request.get("id")
+        method = request.get("method")
+        params = request.get("params", {})
 
+        if not method:
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32600, "message": "Invalid Request: missing method"},
+            }
+
+        # 1. initialize
         if method == "initialize":
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "result": {
                     "protocolVersion": "2024-11-05",
-                    "capabilities": {"tools": {}},
                     "serverInfo": {
-                        "name": "udmi-etcd",
+                        "name": "udmi-barbican",
                         "version": "1.0.0",
+                    },
+                    "capabilities": {
+                        "tools": {
+                            "listChanged": False,
+                        }
                     },
                 },
             }
 
-        if method == "notifications/initialized":
+        # 2. ping
+        if method == "ping":
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {},
+            }
+
+        # 3. notifications / initialized
+        if method in ["notifications/initialized", "initialized"]:
             return None
 
-        if method == "ping":
-            return {"jsonrpc": "2.0", "id": req_id, "result": {}}
-
+        # 3. tools/list
         if method == "tools/list":
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": MCP_TOOLS}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"tools": MCP_TOOLS},
+            }
 
+        # 4. tools/call
         if method == "tools/call":
             tool_name = params.get("name")
             tool_args = params.get("arguments", {})
             try:
-                result_data = self.execute_tool(tool_name, tool_args)
+                res = self._dispatch_tool(tool_name, tool_args)
+                text_output = (
+                    json.dumps(res, indent=2)
+                    if isinstance(res, (dict, list))
+                    else str(res)
+                )
                 return {
                     "jsonrpc": "2.0",
                     "id": req_id,
@@ -192,7 +219,7 @@ class EtcdMcpServer:
                         "content": [
                             {
                                 "type": "text",
-                                "text": json.dumps(result_data, indent=2),
+                                "text": text_output,
                             }
                         ],
                         "isError": False,
@@ -203,46 +230,42 @@ class EtcdMcpServer:
                     "jsonrpc": "2.0",
                     "id": req_id,
                     "result": {
-                        "content": [{"type": "text", "text": f"Error: {e}"}],
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"Error executing {tool_name}: {str(e)}",
+                            }
+                        ],
                         "isError": True,
                     },
                 }
 
-        # Direct RPC method execution
-        if method in [
-            "list_registries",
-            "list_devices",
-            "get_device_properties",
-            "get_entry",
-            "get_prefix_entries",
-            "put_entry",
-            "delete_entry",
-            "health",
-        ]:
-            try:
-                result_data = self.execute_tool(method, params)
-                return {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "result": result_data,
-                }
-            except Exception as e:
-                return {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "error": {"code": -32603, "message": str(e)},
-                }
+        # 5. Direct method routing
+        try:
+            res = self._dispatch_tool(method, params)
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": res,
+            }
+        except ValueError:
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32601, "message": f"Method not found: {method}"},
+            }
+        except Exception as e:
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32603, "message": f"Internal error: {str(e)}"},
+            }
 
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "error": {"code": -32601, "message": f"Method not found: {method}"},
-        }
-
-    def execute_tool(self, name: str, args: Dict[str, Any]) -> Any:
-        """Route tool invocation to provider."""
+    def _dispatch_tool(self, name: str, args: Dict[str, Any]) -> Any:
+        """Execute a tool or method against BarbicanProvider."""
         if name == "list_registries":
-            return self.provider.list_registries(prefix=args.get("prefix", "/r/"))
+            prefix = args.get("prefix", "/r/")
+            return self.provider.list_registries(prefix)
         if name == "list_devices":
             return self.provider.list_devices(registry_id=args["registry_id"])
         if name == "get_device_properties":
@@ -285,14 +308,13 @@ class EtcdMcpServer:
                 sys.stdout.flush()
 
 
-class EtcdMcpHttpHandler(BaseHTTPRequestHandler):
+class BarbicanMcpHttpHandler(BaseHTTPRequestHandler):
     """HTTP handler supporting JSON-RPC 2.0, REST endpoints, and static web explorer assets."""
 
-    server_instance: Optional[EtcdMcpServer] = None
+    server_instance: Optional[BarbicanMcpServer] = None
     static_dir: Optional[str] = None
 
     def log_message(self, format: str, *args: Any) -> None:
-        # Suppress noisy standard HTTP request logging
         pass
 
     def send_cors_headers(self) -> None:
@@ -306,10 +328,6 @@ class EtcdMcpHttpHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self) -> None:
-        parsed_url = urllib.parse.urlparse(self.path)
-        path = parsed_url.path
-
-        # Handle JSON-RPC 2.0 POST requests
         content_len = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else "{}"
         try:
@@ -346,8 +364,6 @@ class EtcdMcpHttpHandler(BaseHTTPRequestHandler):
             self.send_json(health_data, is_head=is_head)
             return
 
-
-        # Static assets for etcd explorer
         self.serve_static(path, is_head=is_head)
 
     def send_json(self, obj: Any, status: int = 200, is_head: bool = False) -> None:
@@ -361,7 +377,9 @@ class EtcdMcpHttpHandler(BaseHTTPRequestHandler):
             self.wfile.write(content)
 
     def serve_static(self, path: str, is_head: bool = False) -> None:
-        if path.startswith("/etcd_explorer"):
+        if path.startswith("/barbican_explorer"):
+            path = path[len("/barbican_explorer"):]
+        elif path.startswith("/etcd_explorer"):
             path = path[len("/etcd_explorer"):]
         if not path or path == "/":
             path = "/index.html"
@@ -408,17 +426,17 @@ class EtcdMcpHttpHandler(BaseHTTPRequestHandler):
 
 
 def run_http_server(
-    server_instance: EtcdMcpServer,
+    server_instance: BarbicanMcpServer,
     port: int = 8085,
     host: str = "0.0.0.0",
     static_dir: Optional[str] = None,
 ) -> None:
     """Run standalone HTTP JSON-RPC and REST server."""
-    EtcdMcpHttpHandler.server_instance = server_instance
-    EtcdMcpHttpHandler.static_dir = static_dir
-    httpd = HTTPServer((host, port), EtcdMcpHttpHandler)
+    BarbicanMcpHttpHandler.server_instance = server_instance
+    BarbicanMcpHttpHandler.static_dir = static_dir
+    httpd = HTTPServer((host, port), BarbicanMcpHttpHandler)
     httpd.allow_reuse_address = True
-    print(f"ETCD MCP Server listening on http://{host}:{port}", file=sys.stderr)
+    print(f"Barbican MCP Server listening on http://{host}:{port}", file=sys.stderr)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -429,7 +447,7 @@ def run_http_server(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="UDMI ETCD MCP Server & Diagnostic RPC Service"
+        description="UDMI Barbican MCP Server & Diagnostic RPC Service"
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -440,8 +458,8 @@ def main() -> None:
     serve_parser = subparsers.add_parser("serve", help="Run HTTP JSON-RPC & Explorer REST server")
     serve_parser.add_argument("--port", type=int, default=8085, help="HTTP server listen port (default: 8085)")
     serve_parser.add_argument("--host", default="0.0.0.0", help="HTTP server listen host (default: 0.0.0.0)")
-    serve_parser.add_argument("--etcd-port", type=int, default=None, help="Target etcd client port (default: auto-detect/2379)")
-    serve_parser.add_argument("--etcd-target", default=None, help="Target etcd URL (default: http://127.0.0.1:<port>)")
+    serve_parser.add_argument("--etcd-port", type=int, default=None, help="Target backend port")
+    serve_parser.add_argument("--etcd-target", default=None, help="Target backend URL")
 
     # CLI query subcommands
     reg_parser = subparsers.add_parser("registries", help="List registries")
@@ -458,28 +476,28 @@ def main() -> None:
     prop_parser.add_argument("--etcd-port", type=int, default=None)
 
     get_parser = subparsers.add_parser("get", help="Get key value")
-    get_parser.add_argument("key", help="Etcd key")
+    get_parser.add_argument("key", help="Datastore key")
     get_parser.add_argument("--etcd-port", type=int, default=None)
 
     put_parser = subparsers.add_parser("put", help="Put key value")
-    put_parser.add_argument("key", help="Etcd key")
-    put_parser.add_argument("value", help="Etcd value")
+    put_parser.add_argument("key", help="Datastore key")
+    put_parser.add_argument("value", help="Datastore value")
     put_parser.add_argument("--etcd-port", type=int, default=None)
 
-    health_parser = subparsers.add_parser("health", help="Check etcd health")
+    health_parser = subparsers.add_parser("health", help="Check Barbican health")
     health_parser.add_argument("--etcd-port", type=int, default=None)
 
     args = parser.parse_args()
 
-    # Determine etcd target
+    # Determine backend target
     target = None
     if hasattr(args, "etcd_target") and args.etcd_target:
         target = args.etcd_target
     elif hasattr(args, "etcd_port") and args.etcd_port:
         target = f"http://127.0.0.1:{args.etcd_port}"
 
-    provider = EtcdProvider(target)
-    server_instance = EtcdMcpServer(provider)
+    provider = BarbicanProvider(target)
+    server_instance = BarbicanMcpServer(provider)
 
     if args.command == "serve":
         run_http_server(server_instance, port=args.port, host=args.host)
@@ -523,7 +541,7 @@ def main() -> None:
         print(json.dumps(h, indent=2))
         return
 
-    # Default to MCP stdio mode if "mcp" or no arguments / redirected stdin
+    # Default to MCP stdio mode
     server_instance.run_stdio()
 
 

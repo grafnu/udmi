@@ -38,7 +38,7 @@ for p in [ROOT_DIR, mantis_v2, mantis_src, mantis_v1, mantis_dir, tools_dir]:
     if os.path.exists(p) and p not in sys.path:
         sys.path.insert(0, p)
 
-from mcp.etcd.client import EtcdMcpClient
+from mcp.barbican.client import BarbicanClient
 
 
 def to_home_relative(path_str):
@@ -125,7 +125,7 @@ def start_etcd_explorer_service(etcd_port=18834, explorer_port=8085):
         return False
 
     try:
-        subprocess.run(['pkill', '-f', 'mcp.etcd.server'], capture_output=True)
+        subprocess.run(['pkill', '-f', 'mcp.barbican.server'], capture_output=True)
     except Exception:
         pass
 
@@ -136,7 +136,7 @@ def start_etcd_explorer_service(etcd_port=18834, explorer_port=8085):
 
     cmd = [
         sys.executable,
-        "-m", "mcp.etcd.server",
+        "-m", "mcp.barbican.server",
         "serve",
         f"--port={explorer_port}",
         f"--etcd-port={etcd_port}"
@@ -580,9 +580,9 @@ class UDMIRequestHandler(SimpleHTTPRequestHandler):
         """Handle ETCD explorer static assets and indirect /api/registries calls through ETCD MCP server."""
         start_etcd_explorer_service()
 
-        # Handle API calls by indirecting through the ETCD MCP server via JSON-RPC
+        # Handle API calls by indirecting through the Barbican MCP server via JSON-RPC
         if req_path.startswith('/api/registries'):
-            client = EtcdMcpClient(port=8085)
+            client = BarbicanClient(port=8085)
             try:
                 if req_path in ['/api/registries', '/api/registries/']:
                     data = client.list_registries()
@@ -604,7 +604,7 @@ class UDMIRequestHandler(SimpleHTTPRequestHandler):
                 self.send_error_response(404, f"Unknown registry endpoint: {req_path}")
                 return
             except Exception as e:
-                self.send_error_response(502, f"ETCD MCP server request failed: {str(e)}")
+                self.send_error_response(502, f"Barbican MCP server request failed: {str(e)}")
                 return
 
         target_path = req_path
@@ -1053,7 +1053,7 @@ class UDMIRequestHandler(SimpleHTTPRequestHandler):
 
         etcd_explorer_up = False
         try:
-            res = subprocess.run(['pgrep', '-f', 'mcp.etcd.server'], capture_output=True, text=True)
+            res = subprocess.run(['pgrep', '-f', 'mcp.barbican.server'], capture_output=True, text=True)
             if res.returncode == 0 and res.stdout.strip():
                 etcd_explorer_up = True
         except Exception:
@@ -1508,7 +1508,7 @@ class UDMIRequestHandler(SimpleHTTPRequestHandler):
                         pass
                     if os.path.exists(pid_file):
                         os.remove(pid_file)
-                subprocess.run(['pkill', '-f', 'mcp.etcd.server'], capture_output=True)
+                subprocess.run(['pkill', '-f', 'mcp.barbican.server'], capture_output=True)
             elif component == 'etcd':
                 pid_file = os.path.join(ROOT_DIR, 'var', 'etcd_explorer.pid')
                 if os.path.exists(pid_file):
@@ -1520,7 +1520,7 @@ class UDMIRequestHandler(SimpleHTTPRequestHandler):
                         pass
                     if os.path.exists(pid_file):
                         os.remove(pid_file)
-                subprocess.run(['pkill', '-f', 'mcp.etcd.server'], capture_output=True)
+                subprocess.run(['pkill', '-f', 'mcp.barbican.server'], capture_output=True)
                 subprocess.run(['pkill', '-f', 'etcd'], capture_output=True)
             elif component == 'influx':
                 subprocess.run(['pkill', '-f', 'influxd'], capture_output=True)

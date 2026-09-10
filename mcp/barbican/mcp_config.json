@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "udmi-etcd": {
-      "command": "bin/etcd_mcp",
+    "udmi-barbican": {
+      "command": "bin/mcp_barbican",
       "args": ["mcp"],
       "env": {
         "PYTHONUNBUFFERED": "1"

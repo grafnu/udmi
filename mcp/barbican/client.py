@@ -1,7 +1,8 @@
-"""ETCD MCP JSON-RPC Client.
+"""Barbican MCP JSON-RPC Client.
 
 Allows Python components (such as ui/v2/server.py) to interact with the
-mcp/etcd/ server via JSON-RPC 2.0 without making any direct database calls to etcd.
+Barbican service via JSON-RPC 2.0 without making any direct database calls
+or depending on internal datastore implementation details.
 """
 
 import itertools
@@ -11,8 +12,8 @@ import urllib.request
 from typing import Any, Dict, List, Optional
 
 
-class EtcdMcpClient:
-    """Client for communicating with the ETCD MCP JSON-RPC service."""
+class BarbicanClient:
+    """Client for communicating with the Barbican MCP JSON-RPC service."""
 
     def __init__(
         self,
@@ -54,7 +55,7 @@ class EtcdMcpClient:
             body = e.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"JSON-RPC HTTP error ({e.code}) connecting to {self.endpoint}: {body}") from e
         except Exception as e:
-            raise RuntimeError(f"Failed to connect to ETCD MCP server at {self.endpoint}: {e}") from e
+            raise RuntimeError(f"Failed to connect to Barbican MCP server at {self.endpoint}: {e}") from e
 
         if "error" in resp_data:
             err = resp_data["error"]
@@ -114,3 +115,7 @@ class EtcdMcpClient:
         """List all available MCP tools."""
         res = self.call_rpc("tools/list", {})
         return res.get("tools", [])
+
+
+# Convenient alias
+BarbicanMcpClient = BarbicanClient
