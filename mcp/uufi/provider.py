@@ -22,17 +22,8 @@ common_py = os.path.join(repo_root, "common", "src", "main", "python")
 if os.path.exists(common_py) and common_py not in sys.path:
     sys.path.insert(0, common_py)
 
-try:
-    import paho.mqtt.client as mqtt
-except (ImportError, ModuleNotFoundError):
-    mqtt = None
-
-try:
-    from udmi.common.project_spec import parse_project_spec
-except (ImportError, ModuleNotFoundError):
-    parse_project_spec = None
-
-
+import paho.mqtt.client as mqtt
+from udmi.common.project_spec import parse_project_spec
 class UUFIProvider:
     """Provider encapsulating UUFI messaging, handshakes, queries, and event streams."""
 

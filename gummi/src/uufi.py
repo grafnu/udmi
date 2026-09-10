@@ -16,12 +16,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 import uuid
 
-try:
-    from mcp.uufi.client import UUFIClient
-except (ImportError, ModuleNotFoundError):
-    from udmi.mcp.uufi.client import UUFIClient
-
-
+from mcp.uufi.client import UUFIClient
 class GummiUUFIClient:
     """Manages UUFI messaging, configuration mutations, and live event distribution for GUMMI."""
 
@@ -50,6 +45,7 @@ class GummiUUFIClient:
             self.uufi = UUFIClient(port=self.uufi_port)
 
         self.event_subscribers: List[queue.Queue] = []
+        self._active_rollouts_cache: List[Dict[str, Any]] = []
         self._lock = threading.RLock()
         self.cursor = 0
 
@@ -126,7 +122,7 @@ class GummiUUFIClient:
                 if new_cursor > self.cursor:
                     self.cursor = new_cursor
 
-                # Periodically broadcast system status
+                # Periodically broadcast system status and sync active rollouts
                 now = time.time()
                 if now - last_health_check >= 5.0:
                     last_health_check = now
@@ -136,6 +132,13 @@ class GummiUUFIClient:
                         self.broadcast_event("system_status", {"uufi": st, "broker": h.get("broker")})
                     except Exception:
                         self.broadcast_event("system_status", {"uufi": "DISCONNECTED"})
+                        
+                    try:
+                        if self.db:
+                            rollouts = self.db.list_rollouts()
+                            self._active_rollouts_cache = [r for r in rollouts if r.get("status") == "RUNNING"]
+                    except Exception:
+                        pass
 
             except Exception:
                 for _ in range(10):
@@ -201,65 +204,8 @@ class GummiUUFIClient:
         }
 
     # --------------------------------------------------------------------------
-    # Managed Rollouts Engine (Delegated to Butler MCP / db)
+    # Managed Rollouts Convergence
     # --------------------------------------------------------------------------
-
-    def create_rollout(
-        self,
-        name: str,
-        target_filter: Dict[str, Any],
-        target_payload: Dict[str, Any],
-        target_subfolder: str = "system",
-        batch_size: int = 10,
-        batch_interval_sec: int = 60,
-        total_devices: int = 0,
-    ) -> Dict[str, Any]:
-        """Creates and launches a new declarative staged rollout campaign."""
-        if not self.db:
-            raise RuntimeError("Database/Butler provider is not configured")
-        rollout = self.db.create_rollout(
-            name=name,
-            target_filter=target_filter,
-            target_payload=target_payload,
-            target_subfolder=target_subfolder,
-            batch_size=batch_size,
-            batch_interval_sec=batch_interval_sec,
-            total_devices=total_devices,
-        )
-        self.broadcast_event("rollout_progress", rollout)
-        return rollout
-
-    def list_rollouts(self) -> List[Dict[str, Any]]:
-        """Returns active and completed rollout campaigns."""
-        if not self.db:
-            return []
-        return self.db.list_rollouts()
-
-    def get_rollout(self, rollout_id: int) -> Optional[Dict[str, Any]]:
-        """Returns a single rollout campaign."""
-        if not self.db:
-            return None
-        return self.db.get_rollout(rollout_id)
-
-    def update_rollout(
-        self,
-        rollout_id: int,
-        status: Optional[str] = None,
-        converged_devices: Optional[int] = None,
-        failed_devices: Optional[int] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Updates rollout status (e.g. PAUSED, CANCELLED) or progress."""
-        if not self.db:
-            return None
-        updated = self.db.update_rollout(
-            rollout_id=rollout_id,
-            status=status,
-            converged_devices=converged_devices,
-            failed_devices=failed_devices,
-        )
-        if updated:
-            self.broadcast_event("rollout_progress", updated)
-        return updated
 
     def _evaluate_rollout_convergence(
         self,
@@ -268,17 +214,25 @@ class GummiUUFIClient:
         subfolder: str,
         payload: Dict[str, Any],
     ) -> None:
-        """Checks incoming state against running rollout targets."""
+        """Checks incoming state against cached running rollout targets (O(1) memory lookup)."""
         if not self.db:
             return
-        rollouts = self.db.list_rollouts()
-        for r in rollouts:
-            if r.get("status") == "RUNNING" and r.get("target_subfolder") == subfolder:
+        
+        for r in self._active_rollouts_cache:
+            if r.get("target_subfolder") == subfolder:
                 tot = r.get("total_devices", 0)
                 current_conv = r.get("converged_devices", 0)
                 conv = min(tot, current_conv + 1) if tot > 0 else current_conv + 1
                 new_status = "COMPLETED" if (tot > 0 and conv >= tot) else "RUNNING"
-                self.update_rollout(r["id"], status=new_status, converged_devices=conv)
+                
+                # Immediately update local cache to prevent redundant updates while waiting for next sync
+                r["converged_devices"] = conv
+                r["status"] = new_status
+                
+                # Perform the actual DB mutation
+                updated = self.db.update_rollout(r["id"], status=new_status, converged_devices=conv)
+                if updated:
+                    self.broadcast_event("rollout_progress", updated)
 
     # --------------------------------------------------------------------------
     # Server-Sent Events (SSE) Streaming

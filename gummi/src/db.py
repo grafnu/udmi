@@ -7,22 +7,9 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-try:
-    from mcp.butler.client import ButlerClient
-except (ImportError, ModuleNotFoundError):
-    from udmi.mcp.butler.client import ButlerClient
-
-try:
-    from mcp.barbican.client import BarbicanClient
-except (ImportError, ModuleNotFoundError):
-    from udmi.mcp.barbican.client import BarbicanClient
-
-try:
-    from mcp.uufi.client import UUFIClient
-except (ImportError, ModuleNotFoundError):
-    from udmi.mcp.uufi.client import UUFIClient
-
-
+from mcp.butler.client import ButlerClient
+from mcp.barbican.client import BarbicanClient
+from mcp.uufi.client import UUFIClient
 class GummiDB:
     """Manages read and query operations by delegating exclusively to Butler, Barbican, and UUFI MCP services."""
 

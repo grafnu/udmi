@@ -41,28 +41,10 @@ def _format_iso(val: Any) -> Optional[str]:
         s += "Z"
     return s
 
-try:
-    from udmi.common.db.postgres import PostgresManager
-except (ImportError, ModuleNotFoundError):
-    PostgresManager = None
-
-try:
-    from udmi.common.db.influx import InfluxManager
-except (ImportError, ModuleNotFoundError):
-    InfluxManager = None
-
-
-try:
-    from udmi.common.project_spec import parse_project_spec
-except (ImportError, ModuleNotFoundError):
-    parse_project_spec = None
-
-try:
-    from butler.src.rollout import RolloutManager
-except (ImportError, ModuleNotFoundError):
-    from udmi.butler.src.rollout import RolloutManager
-
-
+from udmi.common.db.postgres import PostgresManager
+from udmi.common.db.influx import InfluxManager
+from udmi.common.project_spec import parse_project_spec
+from butler.src.rollout import RolloutManager
 class ButlerProvider:
     """Encapsulates Butler datastore access for mapping and telemetry reconciliation."""
 

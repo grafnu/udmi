@@ -171,7 +171,7 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
 
             # 6. Managed Rollouts
             if path == "/api/rollouts":
-                rollouts = self.uufi.list_rollouts()
+                rollouts = self.db.list_rollouts()
                 return self._send_json(rollouts)
 
             # 7. Real-Time Event Stream (Server-Sent Events)
@@ -249,7 +249,7 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
                 batch_size = int(body.get("batch_size", 10))
                 batch_interval_sec = int(body.get("batch_interval_sec", 60))
 
-                rollout = self.uufi.create_rollout(
+                rollout = self.db.create_rollout(
                     name=name,
                     target_filter=target_filter,
                     target_payload=target_payload,
@@ -264,7 +264,9 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
             if ctrl_match:
                 r_id = int(ctrl_match.group(1))
                 action = ctrl_match.group(2)
-                res = self.uufi.update_rollout(r_id, status="PAUSED" if action == "pause" else "CANCELLED")
+                res = self.db.update_rollout(r_id, status="PAUSED" if action == "pause" else "CANCELLED")
+                if res:
+                    self.uufi.broadcast_event("rollout_progress", res)
                 if res is None:
                     return self._send_json({"error": f"Rollout {r_id} not found"}, status_code=404)
                 return self._send_json(res, status_code=200)
@@ -366,9 +368,6 @@ class GummiServer:
         butler_client: Optional[Any] = None,
         uufi_port: Optional[int] = None,
         uufi_client: Optional[Any] = None,
-        # Legacy parameters gracefully ignored if passed
-        project_spec: Optional[str] = None,
-        site_model: Optional[str] = None,
         **kwargs,
     ):
         self.host = host
