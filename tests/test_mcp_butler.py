@@ -415,5 +415,57 @@ class TestButlerMcpStdioRunner(unittest.TestCase):
             proc.wait(timeout=2)
 
 
+class TestMapperIntegrationWithButlerMcp(unittest.TestCase):
+    """Verifies that run_mapping successfully consumes discovered devices via ButlerClient."""
+
+    def test_run_mapping_with_butler_client(self):
+        import tempfile
+        from butler.src.mapping import run_mapping
+
+        with tempfile.TemporaryDirectory() as tmp_site:
+            dev_dir = os.path.join(tmp_site, "devices", "AHU-22")
+            os.makedirs(dev_dir, exist_ok=True)
+            meta_path = os.path.join(dev_dir, "metadata.json")
+            base_meta = {
+                "version": "1.5.7",
+                "timestamp": "2026-08-20T10:00:00Z",
+                "system": {"serial_no": "AHU-22-001"},
+                "localnet": {
+                    "families": {
+                        "vendor": {"addr": "0x65"}
+                    }
+                }
+            }
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(base_meta, f)
+
+            mock_client = MagicMock()
+            mock_client.get_discovered_devices.return_value = [
+                {
+                    "gateway_id": "GAT-123",
+                    "generation": "2026-09-01T12:00:00Z",
+                    "bacnet": "10022",
+                    "ipv4": "192.168.1.122",
+                    "vendor": "0x68",
+                }
+            ]
+
+            run_mapping(
+                conn_spec=None,
+                registry_id="ZZ-TRI-FECTA",
+                site_model=tmp_site,
+                butler_client=mock_client,
+            )
+
+            mock_client.get_discovered_devices.assert_called_once_with("ZZ-TRI-FECTA")
+
+            unk_path = os.path.join(tmp_site, "devices", "UNK-1", "metadata.json")
+            self.assertTrue(os.path.exists(unk_path))
+            with open(unk_path, "r", encoding="utf-8") as f:
+                unk_meta = json.load(f)
+            self.assertEqual(unk_meta["localnet"]["families"]["vendor"]["addr"], "0x68")
+            self.assertEqual(unk_meta["localnet"]["families"]["bacnet"]["addr"], "10022")
+
+
 if __name__ == "__main__":
     unittest.main()

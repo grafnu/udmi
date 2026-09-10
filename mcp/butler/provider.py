@@ -22,6 +22,12 @@ except (ImportError, ModuleNotFoundError):
     InfluxManager = None
 
 
+try:
+    from udmi.common.project_spec import parse_project_spec
+except (ImportError, ModuleNotFoundError):
+    parse_project_spec = None
+
+
 class ButlerProvider:
     """Encapsulates Butler datastore access for mapping and telemetry reconciliation."""
 
@@ -29,6 +35,7 @@ class ButlerProvider:
         self,
         pg_manager: Optional[Any] = None,
         influx_manager: Optional[Any] = None,
+        project_spec: Optional[str] = None,
         pg_port: Optional[Union[str, int]] = None,
         influx_port: Optional[Union[str, int]] = None,
     ):
@@ -36,7 +43,14 @@ class ButlerProvider:
         if pg_manager is not None:
             self.pg_manager = pg_manager
         elif PostgresManager is not None:
-            resolved_port = pg_port or os.environ.get("POSTGRES_PORT", "5432")
+            resolved_port = pg_port
+            if not resolved_port and project_spec and parse_project_spec:
+                spec_info = parse_project_spec(project_spec)
+                p = spec_info.get("port")
+                if p and str(p) != "8883":
+                    resolved_port = str(int(p) + 3)
+            if not resolved_port:
+                resolved_port = os.environ.get("POSTGRES_PORT", "5432")
             self.pg_manager = PostgresManager(port=resolved_port)
         else:
             self.pg_manager = None
@@ -44,7 +58,14 @@ class ButlerProvider:
         if influx_manager is not None:
             self.influx_manager = influx_manager
         elif InfluxManager is not None:
-            resolved_inf_port = influx_port or os.environ.get("INFLUX_PORT", os.environ.get("INFLUXDB_PORT", "8086"))
+            resolved_inf_port = influx_port
+            if not resolved_inf_port and project_spec and parse_project_spec:
+                spec_info = parse_project_spec(project_spec)
+                p = spec_info.get("port")
+                if p and str(p) != "8883":
+                    resolved_inf_port = str(int(p) + 2)
+            if not resolved_inf_port:
+                resolved_inf_port = os.environ.get("INFLUX_PORT", os.environ.get("INFLUXDB_PORT", "8086"))
             host = os.environ.get("INFLUXDB_HOST", "127.0.0.1")
             url = f"http://{host}:{resolved_inf_port}"
             self.influx_manager = InfluxManager(url=url)
@@ -223,6 +244,8 @@ class ButlerProvider:
                 bacnet_addr = payload.get("addr")
             elif payload.get("family") == "vendor":
                 vendor_addr = payload.get("addr")
+            elif payload.get("family") == "ipv4":
+                ipv4_addr = payload.get("addr")
 
             families = payload.get("families", {})
             if isinstance(families, dict):
