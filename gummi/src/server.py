@@ -78,18 +78,23 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
             # 1. System & Capabilities
             if path == "/api/system/capabilities":
                 is_mock = getattr(self.server, "mock_mode", False)
+                enable_mapping_seed = getattr(self.server, "enable_mapping_seed", False)
+                features = [
+                    "portfolio",
+                    "devices",
+                    "config_management",
+                    "managed_rollout",
+                    "bridgehead_admin",
+                ]
+                if enable_mapping_seed:
+                    features.append("mapping_seed")
                 caps = {
                     "environment": "MOCK_MODE" if is_mock else "LOCAL_BRIDGEHEAD",
                     "mock_mode": is_mock,
+                    "enable_mapping_seed": enable_mapping_seed,
                     "auth_mode": "NO_AUTH",
                     "uufi_status": "MOCK_MODE" if is_mock else ("ACTIVE" if self.uufi.is_connected else "DISCONNECTED"),
-                    "features": [
-                        "portfolio",
-                        "devices",
-                        "config_management",
-                        "managed_rollout",
-                        "bridgehead_admin",
-                    ],
+                    "features": features,
                 }
                 return self._send_json(caps)
 
@@ -228,6 +233,11 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
 
             # 4. Mapping Lifecycle Simulation & Seeder (/api/mapping/run or /api/mapping/seed)
             if path in ("/api/mapping/run", "/api/mapping/seed"):
+                if not getattr(self.server, "enable_mapping_seed", False):
+                    return self._send_json(
+                        {"error": "Forbidden: mapping seed feature is disabled. Start server with --enable-mapping-seed to activate."},
+                        status_code=403,
+                    )
                 reg_id = body.get("registry_id", "ZZ-TRI-FECTA")
                 result = self.db.populate_mapping_scenario(reg_id)
                 return self._send_json(result, status_code=200)
@@ -279,6 +289,7 @@ class GummiServer:
         host: str = "0.0.0.0",
         port: int = 8080,
         mock_mode: bool = False,
+        enable_mapping_seed: bool = False,
         project_spec: Optional[str] = None,
         site_model: Optional[str] = None,
         uufi_port: Optional[int] = None,
@@ -287,6 +298,7 @@ class GummiServer:
         self.host = host
         self.port = port
         self.mock_mode = mock_mode
+        self.enable_mapping_seed = enable_mapping_seed
         self.project_spec = project_spec
         self.site_model = site_model
 
@@ -310,10 +322,12 @@ class GummiServer:
         self.httpd = ThreadingHTTPServer(server_address, GummiRequestHandler)
         self.httpd.daemon_threads = True
         self.httpd.mock_mode = self.mock_mode
+        self.httpd.enable_mapping_seed = self.enable_mapping_seed
         self.httpd.db = self.db
         self.httpd.uufi = self.uufi
         mode_str = " [MOCK MODE]" if self.mock_mode else ""
-        print(f"GUMMI Server listening on http://{self.host}:{self.port}{mode_str}")
+        seed_str = " [MAPPING SEED ENABLED]" if self.enable_mapping_seed else ""
+        print(f"GUMMI Server listening on http://{self.host}:{self.port}{mode_str}{seed_str}")
         try:
             self.httpd.serve_forever()
         except KeyboardInterrupt:
@@ -335,8 +349,14 @@ def main():
     parser.add_argument(
         "--mock",
         action="store_true",
-        default=os.environ.get("GUMMI_MOCK_MODE", os.environ.get("GUMMI_MOCK", "")).lower() in ("1", "true", "yes"),
+        default=False,
         help="Run in Mock Mode without connecting to live backend databases or services",
+    )
+    parser.add_argument(
+        "--enable-mapping-seed",
+        action="store_true",
+        default=False,
+        help="Enable synthetic mapping lifecycle seeding button and API endpoint",
     )
     parser.add_argument("--project-spec", default=os.environ.get("TARGET_PROJECT", "//mqtt/localhost"), help="Target project spec")
     parser.add_argument("--site-model", default=os.environ.get("SITE_MODEL", "sites/udmi_site_model"), help="Site model directory")
@@ -347,6 +367,7 @@ def main():
         host=args.host,
         port=args.port,
         mock_mode=args.mock,
+        enable_mapping_seed=args.enable_mapping_seed,
         project_spec=args.project_spec,
         site_model=args.site_model,
         uufi_port=args.uufi_port,

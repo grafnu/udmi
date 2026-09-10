@@ -91,6 +91,15 @@ async function loadCapabilities() {
       uufiBadge.className = "badge badge-neutral";
       uufiText.textContent = "UUFI: Local/Offline";
     }
+
+    const seedBtn = document.getElementById("btn-seed-mapping");
+    if (seedBtn) {
+      if (data.enable_mapping_seed || (data.features && data.features.includes("mapping_seed"))) {
+        seedBtn.style.display = "inline-block";
+      } else {
+        seedBtn.style.display = "none";
+      }
+    }
   } catch (err) {
     console.warn("Failed to load capabilities:", err);
   }

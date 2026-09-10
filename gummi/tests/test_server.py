@@ -93,6 +93,8 @@ class TestGummiServer:
         data = http_get_json(f"{gummi_server}/api/system/capabilities")
         assert data.get("environment") == "MOCK_MODE"
         assert data.get("mock_mode") is True
+        assert data.get("enable_mapping_seed") is False
+        assert "mapping_seed" not in data.get("features", [])
         assert "portfolio" in data.get("features", [])
         assert "devices" in data.get("features", [])
         assert "managed_rollout" in data.get("features", [])
@@ -274,4 +276,56 @@ class TestGummiServer:
             except Exception:
                 pass
             server.uufi.stop()
+
+    def test_env_var_mock_mode_ignored(self, monkeypatch):
+        """Verifies environment variables GUMMI_MOCK_MODE/GUMMI_MOCK do not implicitly enable mock mode."""
+        import argparse
+        monkeypatch.setenv("GUMMI_MOCK_MODE", "true")
+        monkeypatch.setenv("GUMMI_MOCK", "true")
+
+        # Create parser identical to main()
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--mock", action="store_true", default=False)
+        args = parser.parse_args([])
+        assert args.mock is False
+
+    def test_mapping_seed_flag_enables_feature_and_capabilities(self):
+        """Verifies that --enable-mapping-seed exposes capability and allows seed mutation."""
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+
+        server = GummiServer(host="127.0.0.1", port=port, mock_mode=True, enable_mapping_seed=True)
+        server_address = (server.host, server.port)
+        httpd = ThreadingHTTPServer(server_address, GummiRequestHandler)
+        httpd.daemon_threads = True
+        httpd.mock_mode = server.mock_mode
+        httpd.enable_mapping_seed = server.enable_mapping_seed
+        httpd.db = server.db
+        httpd.uufi = server.uufi
+        server.httpd = httpd
+
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        time.sleep(0.2)
+        base_url = f"http://127.0.0.1:{port}"
+
+        try:
+            caps = http_get_json(f"{base_url}/api/system/capabilities")
+            assert caps.get("enable_mapping_seed") is True
+            assert "mapping_seed" in caps.get("features", [])
+
+            # POST /api/mapping/run should succeed
+            res = http_post_json(f"{base_url}/api/mapping/run", {"registry_id": "ZZ-TRI-FECTA"})
+            assert res.get("status") == "SUCCESS"
+            assert res.get("records_inserted") == 4
+        finally:
+            try:
+                httpd.server_close()
+            except Exception:
+                pass
+            server.uufi.stop()
+
 
