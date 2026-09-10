@@ -72,26 +72,36 @@ class BarbicanProvider:
 
     @classmethod
     def discover_target(cls, candidates: Optional[List[int]] = None) -> str:
-        """Find an active datastore port among standard candidates."""
-        if candidates is None:
-            candidates = []
-            env_port = os.environ.get("ETCD_PORT")
-            if env_port:
+        """Find an active datastore port among candidates, or return the canonical default."""
+        if candidates is not None:
+            for port in candidates:
                 try:
-                    candidates.append(int(env_port))
-                except ValueError:
-                    pass
-            for p in [18834, 2379]:
-                if p not in candidates:
-                    candidates.append(p)
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                        return f"http://127.0.0.1:{port}"
+                except Exception:
+                    continue
+            raise RuntimeError("No reachable Barbican/etcd datastore found")
 
-        for port in candidates:
+        env_port = os.environ.get("ETCD_PORT")
+        search_ports: List[int] = []
+        if env_port:
+            try:
+                search_ports.append(int(env_port))
+            except ValueError:
+                pass
+        for p in [18834, 2379]:
+            if p not in search_ports:
+                search_ports.append(p)
+
+        for port in search_ports:
             try:
                 with socket.create_connection(("127.0.0.1", port), timeout=0.2):
                     return f"http://127.0.0.1:{port}"
             except Exception:
                 continue
-        raise RuntimeError("No reachable Barbican/etcd datastore found")
+
+        default_port = env_port if env_port else 2379
+        return f"http://127.0.0.1:{default_port}"
 
     def _request(
         self, endpoint: str, payload: Optional[Dict[str, Any]] = None, timeout: float = 5.0

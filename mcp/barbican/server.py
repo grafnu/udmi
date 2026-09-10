@@ -452,7 +452,9 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command")
 
     # mcp subcommand
-    subparsers.add_parser("mcp", help="Run in stdio MCP server mode")
+    mcp_parser = subparsers.add_parser("mcp", help="Run in stdio MCP server mode")
+    mcp_parser.add_argument("--etcd-port", type=int, default=None, help="Target backend port")
+    mcp_parser.add_argument("--etcd-target", default=None, help="Target backend URL")
 
     # serve subcommand
     serve_parser = subparsers.add_parser("serve", help="Run HTTP JSON-RPC & Explorer REST server")

@@ -108,6 +108,12 @@ class TestBarbicanProviderLogic(unittest.TestCase):
                 BarbicanProvider.discover_target(candidates=[9002, 9003])
             self.assertIn("No reachable Barbican/etcd datastore found", str(cm.exception))
 
+    def test_discover_target_default_canonical_when_no_active_candidate(self):
+        with patch("socket.create_connection", side_effect=ConnectionRefusedError):
+            with patch.dict("os.environ", {}, clear=True):
+                target = BarbicanProvider.discover_target()
+                self.assertEqual(target, "http://127.0.0.1:2379")
+
 
 class TestBarbicanMcpServerAndClient(unittest.TestCase):
     """Test MCP JSON-RPC protocol and HTTP server/client abstraction."""
@@ -271,8 +277,11 @@ class TestBarbicanMcpStdioRunner(unittest.TestCase):
             self.assertIn("get_device_properties", tools)
             self.assertIn("health", tools)
         finally:
-            proc.stdin.close()
-            proc.wait(timeout=2)
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
 
 class TestUiServerBarbicanIndirection(unittest.TestCase):
