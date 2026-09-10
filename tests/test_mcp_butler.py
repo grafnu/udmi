@@ -222,6 +222,74 @@ class TestButlerProvider(unittest.TestCase):
         self.assertEqual(res["status"], "SUCCESS")
         self.assertGreaterEqual(res["deleted_records"], 5)
 
+    def test_get_portfolio_summary(self):
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.fetchone.side_effect = [
+            (10, 2),  # total_devices, total_registries
+            (3,),     # critical_alerts_24h
+            (1,),     # error_devices
+        ]
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        self.mock_pg.get_connection.return_value = mock_conn
+
+        summary = self.provider.get_portfolio_summary()
+        self.assertEqual(summary["device_counts"]["total"], 10)
+        self.assertEqual(summary["device_counts"]["online"], 9)
+        self.assertEqual(summary["device_counts"]["error"], 1)
+        self.assertEqual(summary["registries_count"], 2)
+        self.assertEqual(summary["critical_alerts_24h"], 3)
+
+    def test_get_alerts(self):
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.fetchall.return_value = [
+            (1, "REG-1", "DEV-1", 500, "cat", "msg", "detail", datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)),
+        ]
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        self.mock_pg.get_connection.return_value = mock_conn
+
+        alerts = self.provider.get_alerts(limit=10, min_level=500)
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["device_id"], "DEV-1")
+        self.assertEqual(alerts[0]["level"], 500)
+
+    def test_get_devices(self):
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.fetchone.return_value = (1,)  # total count
+        mock_cur.fetchall.return_value = [
+            (1, "REG-1", "DEV-1", "Acme", "Model-A", "SN-1", [{"version": "1.0.0"}], datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)),
+        ]
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        self.mock_pg.get_connection.return_value = mock_conn
+
+        devs = self.provider.get_devices(limit=10, offset=0, registry_id="REG-1")
+        self.assertEqual(devs["total"], 1)
+        self.assertEqual(len(devs["devices"]), 1)
+        self.assertEqual(devs["devices"][0]["device_id"], "DEV-1")
+        self.assertEqual(devs["devices"][0]["software_version"], "1.0.0")
+
+    def test_get_device_detail(self):
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.fetchone.side_effect = [
+            ("Acme", "Model-A", "SN-1", "revA", "skuA", {"system": "1.0.0"}, datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)),
+            ("Room-101", "Floor-1", {}),
+        ]
+        mock_cur.fetchall.side_effect = [
+            [("temp", "applied", "C", 300, "OK", datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc), datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc))],
+            [(500, "cat", "msg", "detail", datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc))],
+        ]
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        self.mock_pg.get_connection.return_value = mock_conn
+
+        detail = self.provider.get_device_detail("REG-1", "DEV-1")
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail["device_id"], "DEV-1")
+        self.assertIn("temp", detail["state"]["pointset"]["points"])
+        self.assertEqual(len(detail["events"]), 1)
+
 
 class TestButlerMcpServer(unittest.TestCase):
     """Tests for ButlerMcpServer handling JSON-RPC 2.0 requests."""
@@ -258,6 +326,10 @@ class TestButlerMcpServer(unittest.TestCase):
             "get_device_telemetry",
             "write_telemetry",
             "clear_registry_mapping_data",
+            "get_portfolio_summary",
+            "get_alerts",
+            "get_devices",
+            "get_device_detail",
         ]
         for exp in expected:
             self.assertIn(exp, tool_names)
@@ -374,9 +446,31 @@ class TestButlerClientIntegration(unittest.TestCase):
         telem = self.client.get_device_telemetry("ZZ-TRI-FECTA", "AHU-22")
         self.assertEqual(telem["series"][0]["point_name"], "temp")
 
+    def test_client_portfolio_and_devices_queries(self):
+        self.mock_provider.get_portfolio_summary.return_value = {
+            "device_counts": {"total": 10, "online": 9, "offline": 0, "error": 1},
+            "registries_count": 2,
+            "active_rollouts_count": 0,
+            "critical_alerts_24h": 3,
+        }
+        summary = self.client.get_portfolio_summary()
+        self.assertEqual(summary["device_counts"]["total"], 10)
+
+        self.mock_provider.get_alerts.return_value = [{"id": 1, "level": 500}]
+        alerts = self.client.get_alerts(limit=5)
+        self.assertEqual(len(alerts), 1)
+
+        self.mock_provider.get_devices.return_value = {"total": 1, "devices": [{"device_id": "DEV-1"}]}
+        devs = self.client.get_devices(limit=10)
+        self.assertEqual(devs["total"], 1)
+
+        self.mock_provider.get_device_detail.return_value = {"device_id": "DEV-1"}
+        detail = self.client.get_device_detail("REG-1", "DEV-1")
+        self.assertEqual(detail["device_id"], "DEV-1")
+
     def test_client_tools_list(self):
         tools = self.client.tools_list()
-        self.assertGreaterEqual(len(tools), 8)
+        self.assertGreaterEqual(len(tools), 12)
 
 
 class TestButlerMcpStdioRunner(unittest.TestCase):

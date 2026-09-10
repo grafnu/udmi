@@ -36,7 +36,7 @@ class GummiUUFIClient:
         self.mock_mode = mock_mode
         self.project_spec = project_spec
         self.site_model = site_model
-        self.uufi_port = uufi_port or int(os.environ.get("UUFI_PORT", "8087"))
+        self.uufi_port = uufi_port or 8087
         self.client_id = f"gummi_{uuid.uuid4().hex[:8]}"
 
         # Canonical UUFI MCP client interface (no opportunistic fallback heuristics)

@@ -162,6 +162,95 @@ class ButlerClient:
         """Delete discovery events and proposals for a registry."""
         return self.call_rpc("clear_registry_mapping_data", {"registry_id": registry_id})
 
+    def get_portfolio_summary(self) -> Dict[str, Any]:
+        """Fetch aggregate device counts, online/offline breakdown, and recent alerts count."""
+        return self.call_rpc("get_portfolio_summary", {})
+
+    def get_alerts(self, limit: int = 50, min_level: int = 500) -> List[Dict[str, Any]]:
+        """Fetch recent validation alerts above severity threshold."""
+        return self.call_rpc("get_alerts", {"limit": limit, "min_level": min_level})
+
+    def get_devices(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        registry_id: Optional[str] = None,
+        device_prefix: Optional[str] = None,
+        make: Optional[str] = None,
+        model: Optional[str] = None,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Fetch paginated, filtered devices list."""
+        params = {
+            "limit": limit,
+            "offset": offset,
+        }
+        if registry_id:
+            params["registry_id"] = registry_id
+        if device_prefix:
+            params["device_prefix"] = device_prefix
+        if make:
+            params["make"] = make
+        if model:
+            params["model"] = model
+        if status:
+            params["status"] = status
+        if search:
+            params["search"] = search
+        return self.call_rpc("get_devices", params)
+
+    def get_device_detail(self, registry_id: str, device_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch detailed state, metadata, points, and validation events for a device."""
+        return self.call_rpc("get_device_detail", {"registry_id": registry_id, "device_id": device_id})
+
+    def create_rollout(
+        self,
+        name: str,
+        target_filter: Dict[str, Any],
+        target_payload: Dict[str, Any],
+        target_subfolder: str = "system",
+        batch_size: int = 10,
+        batch_interval_sec: int = 60,
+        total_devices: int = 10,
+    ) -> Dict[str, Any]:
+        """Create a new declarative staged rollout campaign."""
+        params = {
+            "name": name,
+            "target_filter": target_filter,
+            "target_payload": target_payload,
+            "target_subfolder": target_subfolder,
+            "batch_size": batch_size,
+            "batch_interval_sec": batch_interval_sec,
+            "total_devices": total_devices,
+        }
+        return self.call_rpc("create_rollout", params)
+
+    def list_rollouts(self) -> List[Dict[str, Any]]:
+        """List all active and completed rollout campaigns."""
+        return self.call_rpc("list_rollouts", {})
+
+    def get_rollout(self, rollout_id: int) -> Optional[Dict[str, Any]]:
+        """Retrieve details for a rollout campaign."""
+        return self.call_rpc("get_rollout", {"rollout_id": rollout_id})
+
+    def update_rollout(
+        self,
+        rollout_id: int,
+        status: Optional[str] = None,
+        converged_devices: Optional[int] = None,
+        failed_devices: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Update rollout status (e.g. PAUSED, CANCELLED) or progress."""
+        params: Dict[str, Any] = {"rollout_id": rollout_id}
+        if status is not None:
+            params["status"] = status
+        if converged_devices is not None:
+            params["converged_devices"] = converged_devices
+        if failed_devices is not None:
+            params["failed_devices"] = failed_devices
+        return self.call_rpc("update_rollout", params)
+
     def tools_list(self) -> List[Dict[str, Any]]:
         """List all available MCP tools."""
         res = self.call_rpc("tools/list", {})

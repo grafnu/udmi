@@ -202,18 +202,29 @@ class TestGummiServer:
 
     def test_mock_mode_disabled_health_and_query_failures(self):
         """Verifies that with mock_mode=False and unavailable backends, GummiDB fails fast."""
-        from udmi.common.db.influx import InfluxManager
-        from udmi.common.db.postgres import PostgresManager
+        from mcp.butler.client import ButlerClient
+        from mcp.barbican.client import BarbicanClient
+        from mcp.uufi.client import UUFIClient
 
-        # Explicit unreachable endpoints to test fail-fast in isolated environment
-        unreachable_influx = InfluxManager(url="http://127.0.0.1:59999")
-        unreachable_pg = PostgresManager(port=59998)
-        db = GummiDB(pg_manager=unreachable_pg, influx_manager=unreachable_influx, mock_mode=False)
+        # Explicit unreachable MCP ports to test fail-fast in isolated environment
+        unreachable_butler = ButlerClient(port=59999, timeout=0.5)
+        unreachable_barbican = BarbicanClient(port=59998, timeout=0.5)
+        unreachable_uufi = UUFIClient(port=59997, timeout=0.5)
+
+        db = GummiDB(
+            butler_client=unreachable_butler,
+            barbican_client=unreachable_barbican,
+            uufi_client=unreachable_uufi,
+            mock_mode=False,
+        )
         health = db.check_component_health()
         assert health["overall_status"] == "DEGRADED"
+        assert health["components"]["butler"]["status"] == "DOWN"
+        assert health["components"]["barbican"]["status"] == "DOWN"
+        assert health["components"]["uufi_service"]["status"] == "DOWN"
         assert health["components"]["postgres"]["status"] == "DOWN"
         assert health["components"]["influxdb"]["status"] == "DOWN"
-        assert health["components"]["uufi_service"]["status"] == "DOWN"
+        assert health["components"]["etcd"]["status"] == "DOWN"
 
         with pytest.raises(ConnectionError):
             db.get_portfolio_summary()
@@ -236,15 +247,18 @@ class TestGummiServer:
     def test_live_server_error_responses(self):
         """Verifies that live server returns HTTP 503 instead of falling back to mock data."""
         import socket
-        from udmi.common.db.postgres import PostgresManager
+        from mcp.butler.client import ButlerClient
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
         s.close()
 
-        server = GummiServer(host="127.0.0.1", port=port, mock_mode=False)
-        # Ensure postgres points to unreachable port so it fails cleanly
-        server.db.pg = PostgresManager(port=59998)
+        server = GummiServer(
+            host="127.0.0.1",
+            port=port,
+            mock_mode=False,
+            butler_client=ButlerClient(port=59999, timeout=0.5),
+        )
         server_address = (server.host, server.port)
         httpd = ThreadingHTTPServer(server_address, GummiRequestHandler)
         httpd.daemon_threads = True

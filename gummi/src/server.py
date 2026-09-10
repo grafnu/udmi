@@ -290,27 +290,37 @@ class GummiServer:
         port: int = 8080,
         mock_mode: bool = False,
         enable_mapping_seed: bool = False,
-        project_spec: Optional[str] = None,
-        site_model: Optional[str] = None,
+        barbican_port: Optional[int] = None,
+        barbican_client: Optional[Any] = None,
+        butler_port: Optional[int] = None,
+        butler_client: Optional[Any] = None,
         uufi_port: Optional[int] = None,
         uufi_client: Optional[Any] = None,
+        # Legacy parameters gracefully ignored if passed
+        project_spec: Optional[str] = None,
+        site_model: Optional[str] = None,
+        **kwargs,
     ):
         self.host = host
         self.port = port
         self.mock_mode = mock_mode
         self.enable_mapping_seed = enable_mapping_seed
-        self.project_spec = project_spec
-        self.site_model = site_model
+        self.barbican_port = barbican_port or 8085
+        self.butler_port = butler_port or 8088
+        self.uufi_port = uufi_port or 8087
 
         self.uufi = GummiUUFIClient(
-            project_spec=project_spec,
-            site_model=site_model,
-            uufi_port=uufi_port,
+            uufi_port=self.uufi_port,
             uufi_client=uufi_client,
             mock_mode=mock_mode,
         )
         self.db = GummiDB(
+            butler_client=butler_client,
+            barbican_client=barbican_client,
             uufi_client=self.uufi.uufi,
+            butler_port=self.butler_port,
+            barbican_port=self.barbican_port,
+            uufi_port=self.uufi_port,
             mock_mode=mock_mode,
         )
         self.httpd: Optional[ThreadingHTTPServer] = None
@@ -358,9 +368,9 @@ def main():
         default=False,
         help="Enable synthetic mapping lifecycle seeding button and API endpoint",
     )
-    parser.add_argument("--project-spec", default=os.environ.get("TARGET_PROJECT", "//mqtt/localhost"), help="Target project spec")
-    parser.add_argument("--site-model", default=os.environ.get("SITE_MODEL", "sites/udmi_site_model"), help="Site model directory")
-    parser.add_argument("--uufi-port", type=int, default=int(os.environ.get("UUFI_PORT", "8087")), help="UUFI MCP server port (default: 8087)")
+    parser.add_argument("--barbican-port", type=int, default=8085, help="Barbican MCP server port (default: 8085)")
+    parser.add_argument("--butler-port", type=int, default=8088, help="Butler MCP server port (default: 8088)")
+    parser.add_argument("--uufi-port", type=int, default=8087, help="UUFI MCP server port (default: 8087)")
     args = parser.parse_args()
 
     server = GummiServer(
@@ -368,8 +378,8 @@ def main():
         port=args.port,
         mock_mode=args.mock,
         enable_mapping_seed=args.enable_mapping_seed,
-        project_spec=args.project_spec,
-        site_model=args.site_model,
+        barbican_port=args.barbican_port,
+        butler_port=args.butler_port,
         uufi_port=args.uufi_port,
     )
     server.start()

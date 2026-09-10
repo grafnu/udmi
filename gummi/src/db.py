@@ -1,56 +1,70 @@
-"""Database access adapter for GUMMI querying Butler data stores or mock mode."""
+"""Database access adapter for GUMMI querying Butler, Barbican, and UUFI MCP endpoints or mock mode."""
 
 from datetime import datetime, timezone, timedelta
 import json
 import os
-import socket
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 try:
-    from udmi.common.db.postgres import PostgresManager
-except ImportError:
-    PostgresManager = None
+    from mcp.butler.client import ButlerClient
+except (ImportError, ModuleNotFoundError):
+    from udmi.mcp.butler.client import ButlerClient
 
 try:
-    from udmi.common.db.influx import InfluxManager
-except ImportError:
-    InfluxManager = None
+    from mcp.barbican.client import BarbicanClient
+except (ImportError, ModuleNotFoundError):
+    from udmi.mcp.barbican.client import BarbicanClient
+
+try:
+    from mcp.uufi.client import UUFIClient
+except (ImportError, ModuleNotFoundError):
+    from udmi.mcp.uufi.client import UUFIClient
 
 
 class GummiDB:
-    """Manages read and query operations against Butler PostgreSQL and InfluxDB instances."""
+    """Manages read and query operations by delegating exclusively to Butler, Barbican, and UUFI MCP services."""
 
     def __init__(
         self,
-        pg_manager: Optional[Any] = None,
-        influx_manager: Optional[Any] = None,
+        butler_client: Optional[Any] = None,
+        barbican_client: Optional[Any] = None,
         uufi_client: Optional[Any] = None,
+        butler_port: Optional[int] = None,
+        barbican_port: Optional[int] = None,
+        uufi_port: Optional[int] = None,
         mock_mode: bool = False,
+        **kwargs,
     ):
         self.mock_mode = mock_mode
-        self.pg = None if mock_mode else (pg_manager or (PostgresManager() if PostgresManager else None))
-        self.influx = None if mock_mode else (influx_manager or (InfluxManager() if InfluxManager else None))
-        self.uufi = None if mock_mode else uufi_client
-        self._mock_fleet = self._generate_mock_fleet() if mock_mode else []
-        self._mock_messages = self._generate_mock_messages() if mock_mode else {}
+        self.butler_port = butler_port or 8088
+        self.barbican_port = barbican_port or 8085
+        self.uufi_port = uufi_port or 8087
 
-    def _get_pg_connection(self):
-        """Returns a PostgreSQL connection or raises ConnectionError if unconfigured or unreachable."""
-        if not self.pg:
-            raise ConnectionError("PostgreSQL manager is not configured or unavailable")
-        try:
-            return self.pg.get_connection()
-        except Exception as e:
-            raise ConnectionError(f"PostgreSQL connection failed: {e}") from e
+        if mock_mode:
+            self.butler = None
+            self.barbican = None
+            self.uufi = None
+            self._mock_fleet = self._generate_mock_fleet()
+            self._mock_messages = self._generate_mock_messages()
+            self._mock_rollouts = self._generate_mock_rollouts()
+            self._mock_rollout_id_counter = len(self._mock_rollouts) + 1
+        else:
+            self.butler = butler_client or ButlerClient(port=self.butler_port)
+            self.barbican = barbican_client or BarbicanClient(port=self.barbican_port)
+            self.uufi = uufi_client or UUFIClient(port=self.uufi_port)
+            self._mock_fleet = []
+            self._mock_messages = {}
+            self._mock_rollouts = {}
+            self._mock_rollout_id_counter = 1
 
     # --------------------------------------------------------------------------
     # Health & Connectivity
     # --------------------------------------------------------------------------
 
     def check_component_health(self) -> Dict[str, Any]:
-        """Probes local database and broker components to report latency and status."""
+        """Probes backend MCP endpoints to report latency and status."""
         if self.mock_mode:
             components = {
                 "postgres": {
@@ -83,6 +97,18 @@ class GummiDB:
                     "latency_ms": 0.0,
                     "note": "Running in mock mode",
                 },
+                "barbican": {
+                    "status": "MOCK_MODE",
+                    "endpoint": "mock://barbican",
+                    "latency_ms": 0.0,
+                    "note": "Running in mock mode",
+                },
+                "butler": {
+                    "status": "MOCK_MODE",
+                    "endpoint": "mock://butler",
+                    "latency_ms": 0.0,
+                    "note": "Running in mock mode",
+                },
             }
             return {
                 "overall_status": "MOCK_MODE",
@@ -92,113 +118,111 @@ class GummiDB:
 
         components: Dict[str, Any] = {}
 
-        # 1. PostgreSQL Probe
-        pg_host = os.environ.get("POSTGRES_HOST", "127.0.0.1")
-        pg_port = int(os.environ.get("POSTGRES_PORT", "5432"))
-        if not self.pg:
-            components["postgres"] = {
-                "status": "DOWN",
-                "endpoint": f"{pg_host}:{pg_port}",
-                "error": "PostgresManager not configured or unavailable",
-            }
-        else:
-            t0 = time.perf_counter()
-            try:
-                conn = self.pg.get_connection()
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1;")
-                    cur.fetchone()
-                conn.close()
-                latency = round((time.perf_counter() - t0) * 1000, 2)
-                components["postgres"] = {
-                    "status": "UP",
-                    "endpoint": f"{pg_host}:{pg_port}",
-                    "latency_ms": latency,
-                }
-            except Exception as e:
-                components["postgres"] = {
-                    "status": "DOWN",
-                    "endpoint": f"{pg_host}:{pg_port}",
-                    "error": str(e),
-                }
-
-        # 2. InfluxDB Probe
-        influx_port = int(os.environ.get("INFLUX_PORT", os.environ.get("INFLUXDB_PORT", "8086")))
-        influx_host = os.environ.get("INFLUXDB_HOST", "127.0.0.1")
-        if not self.influx:
-            components["influxdb"] = {
-                "status": "DOWN",
-                "endpoint": f"{influx_host}:{influx_port}",
-                "error": "InfluxManager not configured or unavailable",
-            }
-        else:
-            t0 = time.perf_counter()
-            try:
-                client = self.influx.get_client()
-                ready = client.ready()
-                latency = round((time.perf_counter() - t0) * 1000, 2)
-                status_str = "UP" if (ready and getattr(ready, "status", None) == "ready") else "DOWN"
-                components["influxdb"] = {
-                    "status": status_str,
-                    "endpoint": f"{influx_host}:{influx_port}",
-                    "latency_ms": latency,
-                }
-            except Exception as e:
-                components["influxdb"] = {
-                    "status": "DOWN",
-                    "endpoint": f"{influx_host}:{influx_port}",
-                    "error": str(e),
-                }
-
-        # 3. UUFI Messaging Service Probe
-        if not self.uufi:
-            uufi_comp = {
-                "status": "DOWN",
-                "endpoint": "uufi-service",
-                "error": "UUFI client not configured or unavailable",
-            }
-        else:
-            try:
-                h = self.uufi.health()
-                if h.get("status") in ("UP", "REACHABLE", "ACTIVE"):
-                    uufi_comp = {
-                        "status": "UP",
-                        "endpoint": h.get("broker", "uufi-service"),
-                        "latency_ms": h.get("latency_ms", 0.0),
-                    }
-                else:
-                    uufi_comp = {
-                        "status": "DOWN",
-                        "endpoint": h.get("broker", "uufi-service"),
-                        "error": h.get("error", "UUFI Service unreachable"),
-                    }
-            except Exception as e:
-                uufi_comp = {
-                    "status": "DOWN",
-                    "endpoint": "uufi-service",
-                    "error": str(e),
-                }
-
-        components["uufi_service"] = uufi_comp
-        components["mqtt_broker"] = uufi_comp
-
-        # 4. etcd Probe
-        etcd_port = int(os.environ.get("ETCD_PORT", "2379"))
-        etcd_host = os.environ.get("ETCD_HOST", "127.0.0.1")
+        # 1. Butler MCP Probe (Relational & Timeseries Datastores)
         t0 = time.perf_counter()
         try:
-            with socket.create_connection((etcd_host, etcd_port), timeout=0.5):
-                latency = round((time.perf_counter() - t0) * 1000, 2)
-                components["etcd"] = {
-                    "status": "UP",
-                    "endpoint": f"{etcd_host}:{etcd_port}",
-                    "latency_ms": latency,
-                }
+            if not self.butler:
+                raise ConnectionError("Butler MCP client not configured")
+            butler_h = self.butler.health()
+            butler_lat = round((time.perf_counter() - t0) * 1000, 2)
+            butler_status = butler_h.get("status", "DOWN")
+            datastores = butler_h.get("datastores", {})
+            pg_up = datastores.get("relational", False)
+            influx_up = datastores.get("timeseries", False)
+
+            components["butler"] = {
+                "status": "UP" if butler_h.get("connected") else butler_status,
+                "endpoint": getattr(self.butler, "endpoint", f"127.0.0.1:{self.butler_port}"),
+                "latency_ms": butler_lat,
+            }
+            components["postgres"] = {
+                "status": "UP" if pg_up else "DOWN",
+                "endpoint": "butler://relational",
+                "latency_ms": butler_lat,
+            }
+            components["influxdb"] = {
+                "status": "UP" if influx_up else "DOWN",
+                "endpoint": "butler://timeseries",
+                "latency_ms": butler_lat,
+            }
         except Exception as e:
+            components["butler"] = {
+                "status": "DOWN",
+                "endpoint": getattr(self.butler, "endpoint", f"127.0.0.1:{self.butler_port}") if self.butler else "unconfigured",
+                "error": str(e),
+            }
+            components["postgres"] = {
+                "status": "DOWN",
+                "endpoint": "butler://relational",
+                "error": f"Butler MCP unreachable: {e}",
+            }
+            components["influxdb"] = {
+                "status": "DOWN",
+                "endpoint": "butler://timeseries",
+                "error": f"Butler MCP unreachable: {e}",
+            }
+
+        # 2. Barbican MCP Probe (Device Catalog & etcd)
+        t0 = time.perf_counter()
+        try:
+            if not self.barbican:
+                raise ConnectionError("Barbican MCP client not configured")
+            barbican_h = self.barbican.health()
+            barbican_lat = round((time.perf_counter() - t0) * 1000, 2)
+            is_connected = barbican_h.get("connected", False)
+
+            components["barbican"] = {
+                "status": "UP" if is_connected else barbican_h.get("status", "DOWN"),
+                "endpoint": getattr(self.barbican, "endpoint", f"127.0.0.1:{self.barbican_port}"),
+                "latency_ms": barbican_lat,
+            }
+            components["etcd"] = {
+                "status": "UP" if is_connected else "DOWN",
+                "endpoint": "barbican://etcd",
+                "latency_ms": barbican_lat,
+            }
+        except Exception as e:
+            components["barbican"] = {
+                "status": "DOWN",
+                "endpoint": getattr(self.barbican, "endpoint", f"127.0.0.1:{self.barbican_port}") if self.barbican else "unconfigured",
+                "error": str(e),
+            }
             components["etcd"] = {
                 "status": "DOWN",
-                "endpoint": f"{etcd_host}:{etcd_port}",
+                "endpoint": "barbican://etcd",
+                "error": f"Barbican MCP unreachable: {e}",
+            }
+
+        # 3. UUFI MCP Probe (Messaging Fabric & Broker)
+        t0 = time.perf_counter()
+        try:
+            if not self.uufi:
+                raise ConnectionError("UUFI MCP client not configured")
+            uufi_h = self.uufi.health()
+            uufi_lat = round((time.perf_counter() - t0) * 1000, 2)
+            uufi_up = uufi_h.get("status") in ("UP", "REACHABLE", "ACTIVE")
+            broker_info = uufi_h.get("broker", "uufi-broker")
+
+            components["uufi_service"] = {
+                "status": "UP" if uufi_up else "DOWN",
+                "endpoint": getattr(self.uufi, "endpoint", f"127.0.0.1:{self.uufi_port}"),
+                "latency_ms": uufi_lat,
+            }
+            components["mqtt_broker"] = {
+                "status": "UP" if uufi_up else "DOWN",
+                "endpoint": broker_info,
+                "latency_ms": uufi_lat,
+            }
+        except Exception as e:
+            components["uufi_service"] = {
+                "status": "DOWN",
+                "endpoint": getattr(self.uufi, "endpoint", f"127.0.0.1:{self.uufi_port}") if self.uufi else "unconfigured",
                 "error": str(e),
+            }
+            components["mqtt_broker"] = {
+                "status": "DOWN",
+                "endpoint": "uufi://broker",
+                "error": f"UUFI MCP unreachable: {e}",
             }
 
         all_up = all(c.get("status") == "UP" for c in components.values())
@@ -218,84 +242,24 @@ class GummiDB:
         if self.mock_mode:
             return self._mock_portfolio_summary()
 
-        conn = self._get_pg_connection()
+        if not self.butler:
+            raise ConnectionError("Butler MCP client is not configured or unavailable")
         try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT 
-                        COUNT(DISTINCT (device_registry_id, device_id)) as total_devices,
-                        COUNT(DISTINCT device_registry_id) as total_registries
-                    FROM udmi_system_state;
-                """)
-                row = cur.fetchone()
-                total_devices = row[0] if row else 0
-                total_registries = row[1] if row else 0
-
-                cur.execute("""
-                    SELECT COUNT(*) 
-                    FROM udmi_validation 
-                    WHERE level >= 500 AND timestamp >= NOW() - INTERVAL '24 hours';
-                """)
-                crit_row = cur.fetchone()
-                critical_alerts_24h = crit_row[0] if crit_row else 0
-
-                cur.execute("""
-                    SELECT COUNT(DISTINCT (device_registry_id, device_id))
-                    FROM udmi_validation
-                    WHERE level >= 500 AND timestamp >= NOW() - INTERVAL '15 minutes';
-                """)
-                err_row = cur.fetchone()
-                error_devices = err_row[0] if err_row else 0
-
-            online_devices = max(0, total_devices - error_devices)
-            offline_devices = 0
-
-            return {
-                "device_counts": {
-                    "total": total_devices,
-                    "online": online_devices,
-                    "offline": offline_devices,
-                    "error": error_devices,
-                },
-                "registries_count": total_registries,
-                "active_rollouts_count": 0,
-                "critical_alerts_24h": critical_alerts_24h,
-            }
-        finally:
-            conn.close()
+            return self.butler.get_portfolio_summary()
+        except Exception as e:
+            raise ConnectionError(f"Butler MCP request failed: {e}") from e
 
     def get_alerts(self, limit: int = 50, min_level: int = 500) -> List[Dict[str, Any]]:
         """Queries recent validation and alarm events."""
         if self.mock_mode:
             return self._mock_alerts(limit=limit, min_level=min_level)
 
-        conn = self._get_pg_connection()
+        if not self.butler:
+            raise ConnectionError("Butler MCP client is not configured or unavailable")
         try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT id, device_registry_id, device_id, level, category, message, detail, timestamp
-                    FROM udmi_validation
-                    WHERE level >= %s
-                    ORDER BY timestamp DESC
-                    LIMIT %s;
-                """, (min_level, limit))
-                rows = cur.fetchall()
-
-            alerts = []
-            for r in rows:
-                alerts.append({
-                    "id": r[0],
-                    "registry_id": r[1] or "default",
-                    "device_id": r[2] or "unknown",
-                    "level": r[3],
-                    "category": r[4] or "validation",
-                    "message": r[5] or "Validation Notice",
-                    "detail": r[6],
-                    "timestamp": r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7]),
-                })
-            return alerts
-        finally:
-            conn.close()
+            return self.butler.get_alerts(limit=limit, min_level=min_level)
+        except Exception as e:
+            raise ConnectionError(f"Butler MCP request failed: {e}") from e
 
     # --------------------------------------------------------------------------
     # Devices Explorer Queries
@@ -312,7 +276,7 @@ class GummiDB:
         status: Optional[str] = None,
         search: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Fetches a paginated, filtered list of devices from udmi_system_state."""
+        """Fetches a paginated, filtered list of devices via Butler MCP."""
         if self.mock_mode:
             return self._filter_mock_devices(
                 limit=limit,
@@ -325,93 +289,21 @@ class GummiDB:
                 search=search,
             )
 
-        conn = self._get_pg_connection()
+        if not self.butler:
+            raise ConnectionError("Butler MCP client is not configured or unavailable")
         try:
-            conditions = ["1=1"]
-            params: List[Any] = []
-
-            if registry_id:
-                conditions.append("s.device_registry_id = %s")
-                params.append(registry_id)
-            if device_prefix:
-                conditions.append("s.device_id LIKE %s")
-                params.append(f"{device_prefix}%")
-            if make:
-                conditions.append("s.make ILIKE %s")
-                params.append(f"%{make}%")
-            if model:
-                conditions.append("s.model ILIKE %s")
-                params.append(f"%{model}%")
-            if search:
-                conditions.append("(s.device_id ILIKE %s OR s.make ILIKE %s OR s.model ILIKE %s)")
-                params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
-
-            where_clause = " AND ".join(conditions)
-
-            with conn.cursor() as cur:
-                count_query = f"""
-                    SELECT COUNT(DISTINCT (s.device_registry_id, s.device_id))
-                    FROM udmi_system_state s
-                    WHERE {where_clause};
-                """
-                cur.execute(count_query, params)
-                total = cur.fetchone()[0]
-
-                if total == 0:
-                    return {
-                        "total": 0,
-                        "limit": limit,
-                        "offset": offset,
-                        "devices": [],
-                    }
-
-                data_query = f"""
-                    SELECT DISTINCT ON (s.device_registry_id, s.device_id)
-                        s.id,
-                        s.device_registry_id,
-                        s.device_id,
-                        s.make,
-                        s.model,
-                        s.serial_no,
-                        s.software,
-                        s.timestamp
-                    FROM udmi_system_state s
-                    WHERE {where_clause}
-                    ORDER BY s.device_registry_id, s.device_id, s.timestamp DESC
-                    LIMIT %s OFFSET %s;
-                """
-                cur.execute(data_query, params + [limit, offset])
-                rows = cur.fetchall()
-
-            devices = []
-            for r in rows:
-                software_raw = r[6]
-                software_ver = None
-                if isinstance(software_raw, list) and software_raw:
-                    software_ver = software_raw[0].get("version") if isinstance(software_raw[0], dict) else None
-                elif isinstance(software_raw, dict):
-                    software_ver = software_raw.get("system")
-
-                devices.append({
-                    "id": r[0],
-                    "registry_id": r[1] or "default",
-                    "device_id": r[2],
-                    "make": r[3] or "Unknown",
-                    "model": r[4] or "Unknown",
-                    "serial_no": r[5],
-                    "software_version": software_ver,
-                    "liveness_status": "ONLINE",
-                    "last_seen": r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7]),
-                })
-
-            return {
-                "total": total,
-                "limit": limit,
-                "offset": offset,
-                "devices": devices,
-            }
-        finally:
-            conn.close()
+            return self.butler.get_devices(
+                limit=limit,
+                offset=offset,
+                registry_id=registry_id,
+                device_prefix=device_prefix,
+                make=make,
+                model=model,
+                status=status,
+                search=search,
+            )
+        except Exception as e:
+            raise ConnectionError(f"Butler MCP request failed: {e}") from e
 
     # --------------------------------------------------------------------------
     # Device Detail & Telemetry Queries
@@ -422,107 +314,12 @@ class GummiDB:
         if self.mock_mode:
             return self._mock_device_detail(registry_id, device_id)
 
-        conn = self._get_pg_connection()
+        if not self.butler:
+            raise ConnectionError("Butler MCP client is not configured or unavailable")
         try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT make, model, serial_no, rev, sku, software, timestamp
-                    FROM udmi_system_state
-                    WHERE device_registry_id = %s AND device_id = %s
-                    ORDER BY timestamp DESC
-                    LIMIT 1;
-                """, (registry_id, device_id))
-                sys_row = cur.fetchone()
-
-                if not sys_row:
-                    return None
-
-                cur.execute("""
-                    SELECT system_location_room, system_location_floor, metadata
-                    FROM udmi_metadata
-                    WHERE device_registry_id = %s AND device_id = %s
-                    ORDER BY timestamp DESC
-                    LIMIT 1;
-                """, (registry_id, device_id))
-                meta_row = cur.fetchone()
-
-                cur.execute("""
-                    SELECT DISTINCT ON (point_name)
-                        point_name, value_state, units, level, message, status_timestamp, timestamp
-                    FROM udmi_point_state
-                    WHERE device_registry_id = %s AND device_id = %s
-                    ORDER BY point_name, timestamp DESC;
-                """, (registry_id, device_id))
-                point_rows = cur.fetchall()
-
-                cur.execute("""
-                    SELECT level, category, message, detail, timestamp
-                    FROM udmi_validation
-                    WHERE device_registry_id = %s AND device_id = %s
-                    ORDER BY timestamp DESC
-                    LIMIT 10;
-                """, (registry_id, device_id))
-                val_rows = cur.fetchall()
-
-            meta_dict = meta_row[2] if (meta_row and isinstance(meta_row[2], dict)) else {}
-            meta_dict.setdefault("make", sys_row[0] or "Unknown")
-            meta_dict.setdefault("model", sys_row[1] or "Unknown")
-            meta_dict.setdefault("serial_no", sys_row[2])
-            meta_dict.setdefault("room", meta_row[0] if meta_row else None)
-            meta_dict.setdefault("floor", meta_row[1] if meta_row else None)
-            meta_dict.setdefault("last_seen", sys_row[6].isoformat() if hasattr(sys_row[6], "isoformat") else str(sys_row[6]))
-
-            points_map = {}
-            for pr in point_rows:
-                points_map[pr[0]] = {
-                    "value_state": pr[1],
-                    "units": pr[2],
-                    "level": pr[3],
-                    "message": pr[4],
-                    "status_timestamp": pr[5].isoformat() if hasattr(pr[5], "isoformat") else str(pr[5]),
-                }
-
-            events = [
-                {
-                    "level": vr[0],
-                    "category": vr[1],
-                    "message": vr[2],
-                    "detail": vr[3],
-                    "timestamp": vr[4].isoformat() if hasattr(vr[4], "isoformat") else str(vr[4]),
-                }
-                for vr in val_rows
-            ]
-
-            software_dict = {}
-            if sys_row and sys_row[5]:
-                if isinstance(sys_row[5], list):
-                    for item in sys_row[5]:
-                        if isinstance(item, dict) and "id" in item:
-                            software_dict[item["id"]] = item.get("version")
-                elif isinstance(sys_row[5], dict):
-                    software_dict = sys_row[5]
-
-            return {
-                "registry_id": registry_id,
-                "device_id": device_id,
-                "metadata": meta_dict,
-                "state": {
-                    "system": {
-                        "software": software_dict,
-                    },
-                    "pointset": {
-                        "points": points_map,
-                    },
-                },
-                "config": {
-                    "system": {
-                        "software": software_dict,
-                    },
-                },
-                "events": events,
-            }
-        finally:
-            conn.close()
+            return self.butler.get_device_detail(registry_id, device_id)
+        except Exception as e:
+            raise ConnectionError(f"Butler MCP request failed: {e}") from e
 
     def get_device_telemetry(
         self,
@@ -532,58 +329,22 @@ class GummiDB:
         start: str = "-1h",
         stop: str = "now()",
     ) -> Dict[str, Any]:
-        """Queries InfluxDB for time-series point values."""
+        """Queries Butler MCP for time-series point values."""
         if self.mock_mode:
             return self._mock_telemetry(registry_id, device_id, point_names)
 
-        if not self.influx:
-            raise ConnectionError("InfluxDB manager is not configured or unavailable")
-
-        client = self.influx.get_client()
-        query_api = client.query_api()
-
-        point_filters = " or ".join([f'r["point_name"] == "{p.strip()}"' for p in point_names if p.strip()])
-        if not point_filters:
-            point_filters = 'true'
-
-        flux_query = f"""
-            from(bucket: "{self.influx.bucket}")
-              |> range(start: {start}, stop: {stop})
-              |> filter(fn: (r) => r["_measurement"] == "point_value")
-              |> filter(fn: (r) => r["device_id"] == "{device_id}")
-              |> filter(fn: (r) => {point_filters})
-              |> yield(name: "points")
-        """
-
+        if not self.butler:
+            raise ConnectionError("Butler MCP client is not configured or unavailable")
         try:
-            tables = query_api.query(flux_query)
+            return self.butler.get_device_telemetry(
+                registry_id=registry_id,
+                device_id=device_id,
+                point_names=point_names,
+                start=start,
+                stop=stop,
+            )
         except Exception as e:
-            raise ConnectionError(f"InfluxDB query failed: {e}") from e
-        series_by_point: Dict[str, List[Dict[str, Any]]] = {}
-
-        for table in tables:
-            for record in table.records:
-                pt_name = record.values.get("point_name")
-                val = record.get_value()
-                ts = record.get_time()
-                if pt_name not in series_by_point:
-                    series_by_point[pt_name] = []
-                series_by_point[pt_name].append({
-                    "time": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
-                    "value": val,
-                    "field": record.get_field(),
-                })
-
-        series_list = [
-            {"point_name": k, "values": v}
-            for k, v in series_by_point.items()
-        ]
-
-        return {
-            "registry_id": registry_id,
-            "device_id": device_id,
-            "series": series_list,
-        }
+            raise ConnectionError(f"Butler MCP request failed: {e}") from e
 
     # --------------------------------------------------------------------------
     # Message Lifecycle & Mapping Queries (Model -> Discovery -> Proposal)
@@ -594,53 +355,16 @@ class GummiDB:
         registry_id: str,
         device_id: str,
     ) -> List[Dict[str, Any]]:
-        """Queries udmi_messages for all lifecycle messages (model, discovery, propose) for a device."""
+        """Queries Butler MCP for all lifecycle messages (model, discovery, propose) for a device."""
         if self.mock_mode:
             return self._mock_device_messages(registry_id, device_id)
 
-        conn = self._get_pg_connection()
+        if not self.butler:
+            raise ConnectionError("Butler MCP client is not configured or unavailable")
         try:
-            with conn.cursor() as cur:
-                # Query messages for this device directly, or discovery events that reference this device
-                cur.execute("""
-                    SELECT id, timestamp, registry_id, device_id, sub_type, sub_folder, payload, attributes
-                    FROM udmi_messages
-                    WHERE registry_id = %s
-                      AND (device_id = %s OR attributes->>'gatewayId' = %s OR payload::text LIKE %s)
-                    ORDER BY timestamp ASC, id ASC;
-                """, (registry_id, device_id, device_id, f'%"{device_id}"%'))
-                rows = cur.fetchall()
-
-            messages = []
-            for r in rows:
-                p_load = r[6]
-                if isinstance(p_load, str):
-                    try:
-                        p_load = json.loads(p_load)
-                    except Exception:
-                        pass
-                attrs = r[7] if isinstance(r[7], dict) else {}
-                if isinstance(attrs, str):
-                    try:
-                        attrs = json.loads(attrs)
-                    except Exception:
-                        attrs = {}
-
-                messages.append({
-                    "id": r[0],
-                    "timestamp": r[1].isoformat() if hasattr(r[1], "isoformat") else str(r[1]),
-                    "registry_id": r[2],
-                    "device_id": r[3],
-                    "sub_type": r[4],
-                    "sub_folder": r[5],
-                    "payload": p_load,
-                    "updateFrom": attrs.get("updateFrom") or (p_load.get("updateFrom") if isinstance(p_load, dict) else None),
-                    "source": attrs.get("source") or (p_load.get("source") if isinstance(p_load, dict) else "system"),
-                    "transaction_id": attrs.get("transactionId"),
-                })
-            return messages
-        finally:
-            conn.close()
+            return self.butler.get_device_messages(registry_id, device_id)
+        except Exception as e:
+            raise ConnectionError(f"Butler MCP request failed: {e}") from e
 
     def populate_mapping_scenario(
         self,
@@ -691,6 +415,9 @@ class GummiDB:
         proposal_localnet = {
             "version": "1.5.7",
             "timestamp": t_prop,
+            "updateFrom": t_model,
+            "source": "butler",
+            "transactionId": "TXN-map-01",
             "families": {
                 "vendor": {"addr": "0x68"},
                 "bacnet": {"addr": "10022"},
@@ -701,6 +428,9 @@ class GummiDB:
         proposal_pointset = {
             "version": "1.5.7",
             "timestamp": t_prop,
+            "updateFrom": t_model,
+            "source": "butler",
+            "transactionId": "TXN-map-02",
             "points": {
                 "supply_air_temperature_sensor": {"units": "Degrees-Celsius"},
                 "return_air_temperature_sensor": {"ref": "point_ret_temp"}
@@ -747,47 +477,28 @@ class GummiDB:
         ]
 
         if not self.mock_mode:
-            conn = self._get_pg_connection()
+            if not self.butler:
+                raise ConnectionError("Butler MCP client is not configured or unavailable")
             try:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS udmi_messages (
-                            id SERIAL PRIMARY KEY,
-                            timestamp TIMESTAMPTZ,
-                            registry_id TEXT,
-                            device_id TEXT,
-                            sub_type TEXT,
-                            sub_folder TEXT,
-                            payload JSONB,
-                            attributes JSONB
-                        );
-                    """)
-                    for r in records:
-                        cur.execute("""
-                            INSERT INTO udmi_messages (timestamp, registry_id, device_id, sub_type, sub_folder, payload, attributes)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s);
-                        """, (
-                            r["timestamp"],
-                            r["registry_id"],
-                            r["device_id"],
-                            r["sub_type"],
-                            r["sub_folder"],
-                            json.dumps(r["payload"]),
-                            json.dumps(r["attributes"]),
-                        ))
-                    conn.commit()
-            finally:
-                conn.close()
-
-            # Query real messages back from postgres
-            messages = self.get_device_messages(registry_id, "AHU-22")
-            return {
-                "status": "SUCCESS",
-                "registry_id": registry_id,
-                "device_id": "AHU-22",
-                "records_inserted": len(records),
-                "messages": messages,
-            }
+                for r in records:
+                    self.butler.record_message(
+                        registry_id=r["registry_id"],
+                        device_id=r["device_id"],
+                        sub_type=r["sub_type"],
+                        sub_folder=r["sub_folder"],
+                        payload=r["payload"],
+                        timestamp=r["timestamp"],
+                    )
+                messages = self.butler.get_device_messages(registry_id, "AHU-22")
+                return {
+                    "status": "SUCCESS",
+                    "registry_id": registry_id,
+                    "device_id": "AHU-22",
+                    "records_inserted": len(records),
+                    "messages": messages,
+                }
+            except Exception as e:
+                raise ConnectionError(f"Failed to populate mapping scenario via Butler MCP: {e}") from e
 
         # Mock mode store
         key = (registry_id, "AHU-22")
@@ -816,8 +527,143 @@ class GummiDB:
         }
 
     # --------------------------------------------------------------------------
+    # Managed Rollouts Operations (Delegated to Butler MCP)
+    # --------------------------------------------------------------------------
+
+    def create_rollout(
+        self,
+        name: str,
+        target_filter: Dict[str, Any],
+        target_payload: Dict[str, Any],
+        target_subfolder: str = "system",
+        batch_size: int = 10,
+        batch_interval_sec: int = 60,
+        total_devices: int = 10,
+    ) -> Dict[str, Any]:
+        """Creates a staged configuration rollout campaign via Butler."""
+        if self.mock_mode:
+            r_id = self._mock_rollout_id_counter
+            self._mock_rollout_id_counter += 1
+            rollout = {
+                "id": r_id,
+                "name": name,
+                "target_filter": target_filter,
+                "target_subfolder": target_subfolder,
+                "target_payload": target_payload,
+                "status": "RUNNING",
+                "batch_size": batch_size,
+                "batch_interval_sec": batch_interval_sec,
+                "total_devices": total_devices,
+                "converged_devices": 1,
+                "failed_devices": 0,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self._mock_rollouts[r_id] = rollout
+            return rollout
+
+        if not self.butler:
+            raise ConnectionError("Butler MCP client is not configured or unavailable")
+        try:
+            return self.butler.create_rollout(
+                name=name,
+                target_filter=target_filter,
+                target_payload=target_payload,
+                target_subfolder=target_subfolder,
+                batch_size=batch_size,
+                batch_interval_sec=batch_interval_sec,
+                total_devices=total_devices,
+            )
+        except Exception as e:
+            raise ConnectionError(f"Butler MCP request failed: {e}") from e
+
+    def list_rollouts(self) -> List[Dict[str, Any]]:
+        """Returns all rollout campaigns from Butler."""
+        if self.mock_mode:
+            return list(self._mock_rollouts.values())
+
+        if not self.butler:
+            raise ConnectionError("Butler MCP client is not configured or unavailable")
+        try:
+            return self.butler.list_rollouts()
+        except Exception as e:
+            raise ConnectionError(f"Butler MCP request failed: {e}") from e
+
+    def get_rollout(self, rollout_id: int) -> Optional[Dict[str, Any]]:
+        """Returns a single rollout campaign from Butler."""
+        if self.mock_mode:
+            return self._mock_rollouts.get(rollout_id)
+
+        if not self.butler:
+            raise ConnectionError("Butler MCP client is not configured or unavailable")
+        try:
+            return self.butler.get_rollout(rollout_id)
+        except Exception as e:
+            raise ConnectionError(f"Butler MCP request failed: {e}") from e
+
+    def update_rollout(
+        self,
+        rollout_id: int,
+        status: Optional[str] = None,
+        converged_devices: Optional[int] = None,
+        failed_devices: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Updates rollout status (e.g. PAUSED, CANCELLED) or progress in Butler."""
+        if self.mock_mode:
+            if rollout_id not in self._mock_rollouts:
+                return None
+            rollout = self._mock_rollouts[rollout_id]
+            if status:
+                s_lower = status.lower()
+                if s_lower == "pause":
+                    rollout["status"] = "PAUSED"
+                elif s_lower == "cancel":
+                    rollout["status"] = "CANCELLED"
+                else:
+                    rollout["status"] = status.upper()
+            if converged_devices is not None:
+                rollout["converged_devices"] = converged_devices
+                if rollout["converged_devices"] >= rollout["total_devices"]:
+                    rollout["status"] = "COMPLETED"
+            if failed_devices is not None:
+                rollout["failed_devices"] = failed_devices
+            rollout["updated_at"] = datetime.now(timezone.utc).isoformat()
+            return rollout
+
+        if not self.butler:
+            raise ConnectionError("Butler MCP client is not configured or unavailable")
+        try:
+            return self.butler.update_rollout(
+                rollout_id=rollout_id,
+                status=status,
+                converged_devices=converged_devices,
+                failed_devices=failed_devices,
+            )
+        except Exception as e:
+            raise ConnectionError(f"Butler MCP request failed: {e}") from e
+
+    # --------------------------------------------------------------------------
     # Mock Data Generators
     # --------------------------------------------------------------------------
+
+    def _generate_mock_rollouts(self) -> Dict[int, Dict[str, Any]]:
+        """Generates initial mock staged rollout campaigns."""
+        now = datetime.now(timezone.utc).isoformat()
+        return {
+            1: {
+                "id": 1,
+                "name": "Upgrade AHU Fleet",
+                "target_filter": {"make": "Acme Controls"},
+                "target_subfolder": "system",
+                "target_payload": {"system": {"software": {"system": "2.5.0"}}},
+                "status": "RUNNING",
+                "batch_size": 5,
+                "batch_interval_sec": 60,
+                "total_devices": 10,
+                "converged_devices": 3,
+                "failed_devices": 0,
+                "created_at": now,
+            }
+        }
 
     def _generate_mock_fleet(self) -> List[Dict[str, Any]]:
         """Generates realistic mock device catalog."""
@@ -1037,42 +883,41 @@ class GummiDB:
         version = match["software_version"] if match else "2.4.1"
         now = datetime.now(timezone.utc).isoformat()
 
-        # Realistic telemetry point set
         points_map = {
             "supply_air_temperature_sensor": {
                 "value_state": "applied",
                 "units": "Degrees-Celsius",
                 "level": 300,
                 "message": "Normal Operation (21.4 C)",
-                "timestamp": now,
+                "status_timestamp": now,
             },
             "return_air_temperature_sensor": {
                 "value_state": "applied",
                 "units": "Degrees-Celsius",
                 "level": 300,
                 "message": "Normal Operation (23.8 C)",
-                "timestamp": now,
+                "status_timestamp": now,
             },
             "supply_air_static_pressure_sensor": {
                 "value_state": "applied",
                 "units": "Pascals",
                 "level": 300,
                 "message": "Normal Operation (350 Pa)",
-                "timestamp": now,
+                "status_timestamp": now,
             },
             "fan_speed_command": {
                 "value_state": "applied",
                 "units": "Percent",
                 "level": 300,
                 "message": "Modulating (75%)",
-                "timestamp": now,
+                "status_timestamp": now,
             },
             "filter_alarm_status": {
                 "value_state": "applied",
                 "units": "Boolean",
                 "level": 300,
                 "message": "Filter Clean (False)",
-                "timestamp": now,
+                "status_timestamp": now,
             },
         }
 
@@ -1226,7 +1071,6 @@ class GummiDB:
         if key in self._mock_messages:
             return self._mock_messages[key]
 
-        # Generate standard default lifecycle for any other device
         now = datetime.now(timezone.utc)
         t_model = (now - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
         return [

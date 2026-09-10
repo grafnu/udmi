@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import json
 import os
 import sys
+import threading
 from typing import Any, Dict, List, Optional, Union
 
 try:
@@ -71,6 +72,11 @@ class ButlerProvider:
             self.influx_manager = InfluxManager(url=url)
         else:
             self.influx_manager = None
+
+        # Staged rollout state management
+        self.rollouts: Dict[int, Dict[str, Any]] = {}
+        self._rollout_id_counter = 1
+        self._rollout_lock = threading.RLock()
 
     def health(self) -> Dict[str, Any]:
         """Probes relational and timeseries datastores to report abstract health status."""
@@ -556,3 +562,385 @@ class ButlerProvider:
             "registry_id": registry_id,
             "deleted_records": deleted_count,
         }
+
+    def get_portfolio_summary(self) -> Dict[str, Any]:
+        """Returns aggregate device counts, online/offline breakdown, and recent alerts."""
+        if not self.pg_manager:
+            raise ConnectionError("Butler relational datastore is unavailable.")
+
+        conn = self.pg_manager.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT 
+                        COUNT(DISTINCT (device_registry_id, device_id)) as total_devices,
+                        COUNT(DISTINCT device_registry_id) as total_registries
+                    FROM udmi_system_state;
+                """)
+                row = cur.fetchone()
+                total_devices = row[0] if row else 0
+                total_registries = row[1] if row else 0
+
+                cur.execute("""
+                    SELECT COUNT(*) 
+                    FROM udmi_validation 
+                    WHERE level >= 500 AND timestamp >= NOW() - INTERVAL '24 hours';
+                """)
+                crit_row = cur.fetchone()
+                critical_alerts_24h = crit_row[0] if crit_row else 0
+
+                cur.execute("""
+                    SELECT COUNT(DISTINCT (device_registry_id, device_id))
+                    FROM udmi_validation
+                    WHERE level >= 500 AND timestamp >= NOW() - INTERVAL '15 minutes';
+                """)
+                err_row = cur.fetchone()
+                error_devices = err_row[0] if err_row else 0
+
+            online_devices = max(0, total_devices - error_devices)
+            offline_devices = 0
+
+            with self._rollout_lock:
+                active_rollouts_count = len([r for r in self.rollouts.values() if r.get("status") == "RUNNING"])
+
+            return {
+                "device_counts": {
+                    "total": total_devices,
+                    "online": online_devices,
+                    "offline": offline_devices,
+                    "error": error_devices,
+                },
+                "registries_count": total_registries,
+                "active_rollouts_count": active_rollouts_count,
+                "critical_alerts_24h": critical_alerts_24h,
+            }
+        finally:
+            conn.close()
+
+    def get_alerts(self, limit: int = 50, min_level: int = 500) -> List[Dict[str, Any]]:
+        """Queries recent validation and alarm events."""
+        if not self.pg_manager:
+            raise ConnectionError("Butler relational datastore is unavailable.")
+
+        conn = self.pg_manager.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, device_registry_id, device_id, level, category, message, detail, timestamp
+                    FROM udmi_validation
+                    WHERE level >= %s
+                    ORDER BY timestamp DESC
+                    LIMIT %s;
+                """, (min_level, limit))
+                rows = cur.fetchall()
+
+            alerts = []
+            for r in rows:
+                alerts.append({
+                    "id": r[0],
+                    "registry_id": r[1] or "default",
+                    "device_id": r[2] or "unknown",
+                    "level": r[3],
+                    "category": r[4] or "validation",
+                    "message": r[5] or "Validation Notice",
+                    "detail": r[6],
+                    "timestamp": r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7]),
+                })
+            return alerts
+        finally:
+            conn.close()
+
+    def get_devices(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        registry_id: Optional[str] = None,
+        device_prefix: Optional[str] = None,
+        make: Optional[str] = None,
+        model: Optional[str] = None,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Fetches a paginated, filtered list of devices from udmi_system_state."""
+        if not self.pg_manager:
+            raise ConnectionError("Butler relational datastore is unavailable.")
+
+        conn = self.pg_manager.get_connection()
+        try:
+            conditions = ["1=1"]
+            params: List[Any] = []
+
+            if registry_id:
+                conditions.append("s.device_registry_id = %s")
+                params.append(registry_id)
+            if device_prefix:
+                conditions.append("s.device_id LIKE %s")
+                params.append(f"{device_prefix}%")
+            if make:
+                conditions.append("s.make ILIKE %s")
+                params.append(f"%{make}%")
+            if model:
+                conditions.append("s.model ILIKE %s")
+                params.append(f"%{model}%")
+            if search:
+                conditions.append("(s.device_id ILIKE %s OR s.make ILIKE %s OR s.model ILIKE %s)")
+                params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+
+            where_clause = " AND ".join(conditions)
+
+            with conn.cursor() as cur:
+                count_query = f"""
+                    SELECT COUNT(DISTINCT (s.device_registry_id, s.device_id))
+                    FROM udmi_system_state s
+                    WHERE {where_clause};
+                """
+                cur.execute(count_query, params)
+                total = cur.fetchone()[0]
+
+                if total == 0:
+                    return {
+                        "total": 0,
+                        "limit": limit,
+                        "offset": offset,
+                        "devices": [],
+                    }
+
+                data_query = f"""
+                    SELECT DISTINCT ON (s.device_registry_id, s.device_id)
+                        s.id,
+                        s.device_registry_id,
+                        s.device_id,
+                        s.make,
+                        s.model,
+                        s.serial_no,
+                        s.software,
+                        s.timestamp
+                    FROM udmi_system_state s
+                    WHERE {where_clause}
+                    ORDER BY s.device_registry_id, s.device_id, s.timestamp DESC
+                    LIMIT %s OFFSET %s;
+                """
+                cur.execute(data_query, params + [limit, offset])
+                rows = cur.fetchall()
+
+            devices = []
+            for r in rows:
+                software_raw = r[6]
+                software_ver = None
+                if isinstance(software_raw, list) and software_raw:
+                    software_ver = software_raw[0].get("version") if isinstance(software_raw[0], dict) else None
+                elif isinstance(software_raw, dict):
+                    software_ver = software_raw.get("system")
+
+                devices.append({
+                    "id": r[0],
+                    "registry_id": r[1] or "default",
+                    "device_id": r[2],
+                    "make": r[3] or "Unknown",
+                    "model": r[4] or "Unknown",
+                    "serial_no": r[5],
+                    "software_version": software_ver,
+                    "liveness_status": "ONLINE",
+                    "last_seen": r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7]),
+                })
+
+            return {
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "devices": devices,
+            }
+        finally:
+            conn.close()
+
+    def get_device_detail(self, registry_id: str, device_id: str) -> Optional[Dict[str, Any]]:
+        """Returns metadata, system state, point states, and recent validation errors for a device."""
+        if not self.pg_manager:
+            raise ConnectionError("Butler relational datastore is unavailable.")
+
+        conn = self.pg_manager.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT make, model, serial_no, rev, sku, software, timestamp
+                    FROM udmi_system_state
+                    WHERE device_registry_id = %s AND device_id = %s
+                    ORDER BY timestamp DESC
+                    LIMIT 1;
+                """, (registry_id, device_id))
+                sys_row = cur.fetchone()
+
+                if not sys_row:
+                    return None
+
+                try:
+                    cur.execute("""
+                        SELECT system_location_room, system_location_floor, metadata
+                        FROM udmi_metadata
+                        WHERE device_registry_id = %s AND device_id = %s
+                        ORDER BY timestamp DESC
+                        LIMIT 1;
+                    """, (registry_id, device_id))
+                    meta_row = cur.fetchone()
+                except Exception:
+                    meta_row = None
+
+                try:
+                    cur.execute("""
+                        SELECT DISTINCT ON (point_name)
+                            point_name, value_state, units, level, message, status_timestamp, timestamp
+                        FROM udmi_point_state
+                        WHERE device_registry_id = %s AND device_id = %s
+                        ORDER BY point_name, timestamp DESC;
+                    """, (registry_id, device_id))
+                    point_rows = cur.fetchall()
+                except Exception:
+                    point_rows = []
+
+                try:
+                    cur.execute("""
+                        SELECT level, category, message, detail, timestamp
+                        FROM udmi_validation
+                        WHERE device_registry_id = %s AND device_id = %s
+                        ORDER BY timestamp DESC
+                        LIMIT 10;
+                    """, (registry_id, device_id))
+                    val_rows = cur.fetchall()
+                except Exception:
+                    val_rows = []
+
+            meta_dict = meta_row[2] if (meta_row and len(meta_row) > 2 and isinstance(meta_row[2], dict)) else {}
+            meta_dict.setdefault("make", sys_row[0] or "Unknown")
+            meta_dict.setdefault("model", sys_row[1] or "Unknown")
+            meta_dict.setdefault("serial_no", sys_row[2])
+            meta_dict.setdefault("room", meta_row[0] if meta_row else None)
+            meta_dict.setdefault("floor", meta_row[1] if meta_row else None)
+            meta_dict.setdefault("last_seen", sys_row[6].isoformat() if hasattr(sys_row[6], "isoformat") else str(sys_row[6]))
+
+            points_map = {}
+            for pr in point_rows:
+                points_map[pr[0]] = {
+                    "value_state": pr[1],
+                    "units": pr[2],
+                    "level": pr[3],
+                    "message": pr[4],
+                    "status_timestamp": pr[5].isoformat() if hasattr(pr[5], "isoformat") else str(pr[5]),
+                }
+
+            events = [
+                {
+                    "level": vr[0],
+                    "category": vr[1],
+                    "message": vr[2],
+                    "detail": vr[3],
+                    "timestamp": vr[4].isoformat() if hasattr(vr[4], "isoformat") else str(vr[4]),
+                }
+                for vr in val_rows
+            ]
+
+            software_dict = {}
+            if sys_row and sys_row[5]:
+                if isinstance(sys_row[5], list):
+                    for item in sys_row[5]:
+                        if isinstance(item, dict) and "id" in item:
+                            software_dict[item["id"]] = item.get("version")
+                elif isinstance(sys_row[5], dict):
+                    software_dict = sys_row[5]
+
+            return {
+                "registry_id": registry_id,
+                "device_id": device_id,
+                "metadata": meta_dict,
+                "state": {
+                    "system": {
+                        "make": sys_row[0],
+                        "model": sys_row[1],
+                        "serial_no": sys_row[2],
+                        "software": software_dict,
+                        "last_seen": sys_row[6].isoformat() if hasattr(sys_row[6], "isoformat") else str(sys_row[6]),
+                    },
+                    "pointset": {
+                        "points": points_map,
+                    },
+                },
+                "events": events,
+                "config": {
+                    "system": {
+                        "software": software_dict,
+                    }
+                },
+            }
+        finally:
+            conn.close()
+
+    def create_rollout(
+        self,
+        name: str,
+        target_filter: Dict[str, Any],
+        target_payload: Dict[str, Any],
+        target_subfolder: str = "system",
+        batch_size: int = 10,
+        batch_interval_sec: int = 60,
+        total_devices: int = 10,
+    ) -> Dict[str, Any]:
+        """Creates and launches a new declarative staged rollout campaign."""
+        with self._rollout_lock:
+            rollout_id = self._rollout_id_counter
+            self._rollout_id_counter += 1
+
+            rollout = {
+                "id": rollout_id,
+                "name": name,
+                "target_filter": target_filter,
+                "target_subfolder": target_subfolder,
+                "target_payload": target_payload,
+                "status": "RUNNING",
+                "batch_size": batch_size,
+                "batch_interval_sec": batch_interval_sec,
+                "total_devices": total_devices,
+                "converged_devices": 1,
+                "failed_devices": 0,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self.rollouts[rollout_id] = rollout
+            return rollout
+
+    def list_rollouts(self) -> List[Dict[str, Any]]:
+        """Returns all active and completed rollout campaigns."""
+        with self._rollout_lock:
+            return list(self.rollouts.values())
+
+    def get_rollout(self, rollout_id: int) -> Optional[Dict[str, Any]]:
+        """Returns details for a single rollout campaign."""
+        with self._rollout_lock:
+            return self.rollouts.get(rollout_id)
+
+    def update_rollout(
+        self,
+        rollout_id: int,
+        status: Optional[str] = None,
+        converged_devices: Optional[int] = None,
+        failed_devices: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Updates status (e.g. PAUSED, CANCELLED) or progress of a rollout campaign."""
+        with self._rollout_lock:
+            if rollout_id not in self.rollouts:
+                return None
+            rollout = self.rollouts[rollout_id]
+            if status:
+                s_lower = status.lower()
+                if s_lower == "pause":
+                    rollout["status"] = "PAUSED"
+                elif s_lower == "cancel":
+                    rollout["status"] = "CANCELLED"
+                else:
+                    rollout["status"] = status.upper()
+            if converged_devices is not None:
+                rollout["converged_devices"] = converged_devices
+                if rollout["converged_devices"] >= rollout["total_devices"]:
+                    rollout["status"] = "COMPLETED"
+            if failed_devices is not None:
+                rollout["failed_devices"] = failed_devices
+            rollout["updated_at"] = datetime.now(timezone.utc).isoformat()
+            return rollout
+

@@ -198,6 +198,118 @@ MCP_TOOLS = [
             "required": ["registry_id"],
         },
     },
+    {
+        "name": "get_portfolio_summary",
+        "description": "Retrieve aggregate device counts, online/offline breakdown, and recent alerts count across registries.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "get_alerts",
+        "description": "Query recent validation and alarm events with optional filtering.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of alerts to retrieve",
+                    "default": 50,
+                },
+                "min_level": {
+                    "type": "integer",
+                    "description": "Minimum alert level severity threshold (e.g. 500 for error/warning)",
+                    "default": 500,
+                },
+            },
+        },
+    },
+    {
+        "name": "get_devices",
+        "description": "Retrieve paginated, filtered devices inventory with status and metadata.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 100},
+                "offset": {"type": "integer", "default": 0},
+                "registry_id": {"type": "string"},
+                "device_prefix": {"type": "string"},
+                "make": {"type": "string"},
+                "model": {"type": "string"},
+                "status": {"type": "string"},
+                "search": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "get_device_detail",
+        "description": "Retrieve comprehensive metadata, system state, point states, and recent validation events for a device.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "registry_id": {
+                    "type": "string",
+                    "description": "Device registry identifier",
+                },
+                "device_id": {
+                    "type": "string",
+                    "description": "Device identifier",
+                },
+            },
+            "required": ["registry_id", "device_id"],
+        },
+    },
+    {
+        "name": "create_rollout",
+        "description": "Create and launch a new staged configuration rollout campaign.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Human-readable rollout campaign name"},
+                "target_filter": {"type": "object", "description": "Filter criteria for targeting devices"},
+                "target_payload": {"type": "object", "description": "Configuration payload to deploy"},
+                "target_subfolder": {"type": "string", "default": "system"},
+                "batch_size": {"type": "integer", "default": 10},
+                "batch_interval_sec": {"type": "integer", "default": 60},
+                "total_devices": {"type": "integer", "default": 10},
+            },
+            "required": ["name", "target_payload"],
+        },
+    },
+    {
+        "name": "list_rollouts",
+        "description": "List all active, paused, completed, or cancelled rollout campaigns.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "get_rollout",
+        "description": "Retrieve details and progress of a specific rollout campaign by ID.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "rollout_id": {"type": "integer", "description": "Rollout campaign ID"},
+            },
+            "required": ["rollout_id"],
+        },
+    },
+    {
+        "name": "update_rollout",
+        "description": "Update rollout campaign status (e.g. PAUSED, CANCELLED, RUNNING) or convergence progress.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "rollout_id": {"type": "integer", "description": "Rollout campaign ID"},
+                "status": {"type": "string", "description": "New rollout status (PAUSED, CANCELLED, RUNNING, COMPLETED)"},
+                "converged_devices": {"type": "integer", "description": "Number of devices that have converged"},
+                "failed_devices": {"type": "integer", "description": "Number of devices that failed deployment"},
+            },
+            "required": ["rollout_id"],
+        },
+    },
 ]
 
 
@@ -359,6 +471,50 @@ class ButlerMcpServer:
             )
         if name == "clear_registry_mapping_data":
             return self.provider.clear_registry_mapping_data(registry_id=args["registry_id"])
+        if name == "get_portfolio_summary":
+            return self.provider.get_portfolio_summary()
+        if name == "get_alerts":
+            return self.provider.get_alerts(
+                limit=args.get("limit", 50),
+                min_level=args.get("min_level", 500),
+            )
+        if name == "get_devices":
+            return self.provider.get_devices(
+                limit=args.get("limit", 100),
+                offset=args.get("offset", 0),
+                registry_id=args.get("registry_id"),
+                device_prefix=args.get("device_prefix"),
+                make=args.get("make"),
+                model=args.get("model"),
+                status=args.get("status"),
+                search=args.get("search"),
+            )
+        if name == "get_device_detail":
+            return self.provider.get_device_detail(
+                registry_id=args["registry_id"],
+                device_id=args["device_id"],
+            )
+        if name == "create_rollout":
+            return self.provider.create_rollout(
+                name=args.get("name", "Untitled Rollout"),
+                target_filter=args.get("target_filter", {}),
+                target_payload=args.get("target_payload", {}),
+                target_subfolder=args.get("target_subfolder", "system"),
+                batch_size=int(args.get("batch_size", 10)),
+                batch_interval_sec=int(args.get("batch_interval_sec", 60)),
+                total_devices=int(args.get("total_devices", 10)),
+            )
+        if name == "list_rollouts":
+            return self.provider.list_rollouts()
+        if name == "get_rollout":
+            return self.provider.get_rollout(rollout_id=int(args["rollout_id"]))
+        if name == "update_rollout":
+            return self.provider.update_rollout(
+                rollout_id=int(args["rollout_id"]),
+                status=args.get("status"),
+                converged_devices=args.get("converged_devices"),
+                failed_devices=args.get("failed_devices"),
+            )
         raise ValueError(f"Unknown tool or method: {name}")
 
     def run_stdio(self) -> None:
