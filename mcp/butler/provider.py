@@ -28,6 +28,11 @@ try:
 except (ImportError, ModuleNotFoundError):
     parse_project_spec = None
 
+try:
+    from butler.src.rollout import RolloutManager
+except (ImportError, ModuleNotFoundError):
+    from udmi.butler.src.rollout import RolloutManager
+
 
 class ButlerProvider:
     """Encapsulates Butler datastore access for mapping and telemetry reconciliation."""
@@ -73,10 +78,8 @@ class ButlerProvider:
         else:
             self.influx_manager = None
 
-        # Staged rollout state management
-        self.rollouts: Dict[int, Dict[str, Any]] = {}
-        self._rollout_id_counter = 1
-        self._rollout_lock = threading.RLock()
+        # Persistent rollout state management in Butler proper (PostgreSQL)
+        self.rollout_manager = RolloutManager(postgres_manager=self.pg_manager)
 
     def health(self) -> Dict[str, Any]:
         """Probes relational and timeseries datastores to report abstract health status."""
@@ -599,9 +602,7 @@ class ButlerProvider:
 
             online_devices = max(0, total_devices - error_devices)
             offline_devices = 0
-
-            with self._rollout_lock:
-                active_rollouts_count = len([r for r in self.rollouts.values() if r.get("status") == "RUNNING"])
+            active_rollouts_count = self.rollout_manager.get_active_rollouts_count()
 
             return {
                 "device_counts": {
@@ -884,36 +885,23 @@ class ButlerProvider:
         total_devices: int = 10,
     ) -> Dict[str, Any]:
         """Creates and launches a new declarative staged rollout campaign."""
-        with self._rollout_lock:
-            rollout_id = self._rollout_id_counter
-            self._rollout_id_counter += 1
-
-            rollout = {
-                "id": rollout_id,
-                "name": name,
-                "target_filter": target_filter,
-                "target_subfolder": target_subfolder,
-                "target_payload": target_payload,
-                "status": "RUNNING",
-                "batch_size": batch_size,
-                "batch_interval_sec": batch_interval_sec,
-                "total_devices": total_devices,
-                "converged_devices": 1,
-                "failed_devices": 0,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            }
-            self.rollouts[rollout_id] = rollout
-            return rollout
+        return self.rollout_manager.create_rollout(
+            name=name,
+            target_filter=target_filter,
+            target_payload=target_payload,
+            target_subfolder=target_subfolder,
+            batch_size=batch_size,
+            batch_interval_sec=batch_interval_sec,
+            total_devices=total_devices,
+        )
 
     def list_rollouts(self) -> List[Dict[str, Any]]:
         """Returns all active and completed rollout campaigns."""
-        with self._rollout_lock:
-            return list(self.rollouts.values())
+        return self.rollout_manager.list_rollouts()
 
     def get_rollout(self, rollout_id: int) -> Optional[Dict[str, Any]]:
         """Returns details for a single rollout campaign."""
-        with self._rollout_lock:
-            return self.rollouts.get(rollout_id)
+        return self.rollout_manager.get_rollout(rollout_id=rollout_id)
 
     def update_rollout(
         self,
@@ -923,24 +911,10 @@ class ButlerProvider:
         failed_devices: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         """Updates status (e.g. PAUSED, CANCELLED) or progress of a rollout campaign."""
-        with self._rollout_lock:
-            if rollout_id not in self.rollouts:
-                return None
-            rollout = self.rollouts[rollout_id]
-            if status:
-                s_lower = status.lower()
-                if s_lower == "pause":
-                    rollout["status"] = "PAUSED"
-                elif s_lower == "cancel":
-                    rollout["status"] = "CANCELLED"
-                else:
-                    rollout["status"] = status.upper()
-            if converged_devices is not None:
-                rollout["converged_devices"] = converged_devices
-                if rollout["converged_devices"] >= rollout["total_devices"]:
-                    rollout["status"] = "COMPLETED"
-            if failed_devices is not None:
-                rollout["failed_devices"] = failed_devices
-            rollout["updated_at"] = datetime.now(timezone.utc).isoformat()
-            return rollout
+        return self.rollout_manager.update_rollout(
+            rollout_id=rollout_id,
+            status=status,
+            converged_devices=converged_devices,
+            failed_devices=failed_devices,
+        )
 

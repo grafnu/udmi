@@ -32,12 +32,14 @@ class GummiUUFIClient:
         uufi_port: Optional[int] = None,
         uufi_client: Optional[Any] = None,
         mock_mode: bool = False,
+        db: Optional[Any] = None,
     ):
         self.mock_mode = mock_mode
         self.project_spec = project_spec
         self.site_model = site_model
         self.uufi_port = uufi_port or 8087
         self.client_id = f"gummi_{uuid.uuid4().hex[:8]}"
+        self.db = db
 
         # Canonical UUFI MCP client interface (no opportunistic fallback heuristics)
         if self.mock_mode:
@@ -50,10 +52,6 @@ class GummiUUFIClient:
         self.event_subscribers: List[queue.Queue] = []
         self._lock = threading.RLock()
         self.cursor = 0
-
-        # In-memory staged rollout tracker
-        self.rollouts: Dict[int, Dict[str, Any]] = {}
-        self._rollout_id_counter = 1
 
         # Background polling worker thread
         self._thread: Optional[threading.Thread] = None
@@ -203,7 +201,7 @@ class GummiUUFIClient:
         }
 
     # --------------------------------------------------------------------------
-    # Managed Rollouts Engine
+    # Managed Rollouts Engine (Delegated to Butler MCP / db)
     # --------------------------------------------------------------------------
 
     def create_rollout(
@@ -214,55 +212,54 @@ class GummiUUFIClient:
         target_subfolder: str = "system",
         batch_size: int = 10,
         batch_interval_sec: int = 60,
+        total_devices: int = 10,
     ) -> Dict[str, Any]:
         """Creates and launches a new declarative staged rollout campaign."""
-        with self._lock:
-            rollout_id = self._rollout_id_counter
-            self._rollout_id_counter += 1
-
-            rollout = {
-                "id": rollout_id,
-                "name": name,
-                "target_filter": target_filter,
-                "target_subfolder": target_subfolder,
-                "target_payload": target_payload,
-                "status": "RUNNING",
-                "batch_size": batch_size,
-                "batch_interval_sec": batch_interval_sec,
-                "total_devices": 10,
-                "converged_devices": 1,
-                "failed_devices": 0,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            }
-            self.rollouts[rollout_id] = rollout
-
+        if not self.db:
+            raise RuntimeError("Database/Butler provider is not configured")
+        rollout = self.db.create_rollout(
+            name=name,
+            target_filter=target_filter,
+            target_payload=target_payload,
+            target_subfolder=target_subfolder,
+            batch_size=batch_size,
+            batch_interval_sec=batch_interval_sec,
+            total_devices=total_devices,
+        )
         self.broadcast_event("rollout_progress", rollout)
         return rollout
 
     def list_rollouts(self) -> List[Dict[str, Any]]:
         """Returns active and completed rollout campaigns."""
-        with self._lock:
-            return list(self.rollouts.values())
+        if not self.db:
+            return []
+        return self.db.list_rollouts()
 
     def get_rollout(self, rollout_id: int) -> Optional[Dict[str, Any]]:
-        with self._lock:
-            return self.rollouts.get(rollout_id)
+        """Returns a single rollout campaign."""
+        if not self.db:
+            return None
+        return self.db.get_rollout(rollout_id)
 
-    def pause_rollout(self, rollout_id: int) -> Optional[Dict[str, Any]]:
-        with self._lock:
-            if rollout_id in self.rollouts:
-                self.rollouts[rollout_id]["status"] = "PAUSED"
-                self.broadcast_event("rollout_progress", self.rollouts[rollout_id])
-                return self.rollouts[rollout_id]
-        return None
-
-    def cancel_rollout(self, rollout_id: int) -> Optional[Dict[str, Any]]:
-        with self._lock:
-            if rollout_id in self.rollouts:
-                self.rollouts[rollout_id]["status"] = "CANCELLED"
-                self.broadcast_event("rollout_progress", self.rollouts[rollout_id])
-                return self.rollouts[rollout_id]
-        return None
+    def update_rollout(
+        self,
+        rollout_id: int,
+        status: Optional[str] = None,
+        converged_devices: Optional[int] = None,
+        failed_devices: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Updates rollout status (e.g. PAUSED, CANCELLED) or progress."""
+        if not self.db:
+            return None
+        updated = self.db.update_rollout(
+            rollout_id=rollout_id,
+            status=status,
+            converged_devices=converged_devices,
+            failed_devices=failed_devices,
+        )
+        if updated:
+            self.broadcast_event("rollout_progress", updated)
+        return updated
 
     def _evaluate_rollout_convergence(
         self,
@@ -272,13 +269,14 @@ class GummiUUFIClient:
         payload: Dict[str, Any],
     ) -> None:
         """Checks incoming state against running rollout targets."""
-        with self._lock:
-            for r_id, r in self.rollouts.items():
-                if r.get("status") == "RUNNING" and r.get("target_subfolder") == subfolder:
-                    r["converged_devices"] = min(r["total_devices"], r["converged_devices"] + 1)
-                    if r["converged_devices"] >= r["total_devices"]:
-                        r["status"] = "COMPLETED"
-                    self.broadcast_event("rollout_progress", r)
+        if not self.db:
+            return
+        rollouts = self.db.list_rollouts()
+        for r in rollouts:
+            if r.get("status") == "RUNNING" and r.get("target_subfolder") == subfolder:
+                conv = min(r.get("total_devices", 10), r.get("converged_devices", 0) + 1)
+                new_status = "COMPLETED" if conv >= r.get("total_devices", 10) else "RUNNING"
+                self.update_rollout(r["id"], status=new_status, converged_devices=conv)
 
     # --------------------------------------------------------------------------
     # Server-Sent Events (SSE) Streaming

@@ -106,7 +106,6 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
             # 3. Portfolio Summary & Alerts
             if path == "/api/portfolio/summary":
                 summary = self.db.get_portfolio_summary()
-                summary["active_rollouts_count"] = len([r for r in self.uufi.list_rollouts() if r.get("status") == "RUNNING"])
                 return self._send_json(summary)
 
             if path == "/api/portfolio/alerts":
@@ -225,10 +224,9 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
             if ctrl_match:
                 r_id = int(ctrl_match.group(1))
                 action = ctrl_match.group(2)
-                if action == "pause":
-                    res = self.uufi.pause_rollout(r_id)
-                else:
-                    res = self.uufi.cancel_rollout(r_id)
+                res = self.uufi.update_rollout(r_id, status="PAUSED" if action == "pause" else "CANCELLED")
+                if res is None:
+                    return self._send_json({"error": f"Rollout {r_id} not found"}, status_code=404)
                 return self._send_json(res, status_code=200)
 
             # 4. Mapping Lifecycle Simulation & Seeder (/api/mapping/run or /api/mapping/seed)
@@ -323,6 +321,7 @@ class GummiServer:
             uufi_port=self.uufi_port,
             mock_mode=mock_mode,
         )
+        self.uufi.db = self.db
         self.httpd: Optional[ThreadingHTTPServer] = None
 
     def start(self) -> None:

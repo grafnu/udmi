@@ -14,6 +14,8 @@ import urllib.error
 import urllib.request
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(REPO_ROOT, "common", "src", "main", "python"))
+sys.path.insert(0, os.path.join(REPO_ROOT, "gencode", "python"))
 sys.path.insert(0, REPO_ROOT)
 
 from mcp.butler.provider import ButlerProvider
@@ -229,6 +231,7 @@ class TestButlerProvider(unittest.TestCase):
             (10, 2),  # total_devices, total_registries
             (3,),     # critical_alerts_24h
             (1,),     # error_devices
+            (1,),     # active_rollouts_count
         ]
         mock_conn.cursor.return_value.__enter__.return_value = mock_cur
         self.mock_pg.get_connection.return_value = mock_conn
@@ -239,6 +242,7 @@ class TestButlerProvider(unittest.TestCase):
         self.assertEqual(summary["device_counts"]["error"], 1)
         self.assertEqual(summary["registries_count"], 2)
         self.assertEqual(summary["critical_alerts_24h"], 3)
+        self.assertEqual(summary["active_rollouts_count"], 1)
 
     def test_get_alerts(self):
         mock_conn = MagicMock()
@@ -290,6 +294,61 @@ class TestButlerProvider(unittest.TestCase):
         self.assertIn("temp", detail["state"]["pointset"]["points"])
         self.assertEqual(len(detail["events"]), 1)
 
+    def test_rollout_lifecycle(self):
+        mock_rm = MagicMock()
+        self.provider.rollout_manager = mock_rm
+
+        # 1. Create rollout
+        mock_rm.create_rollout.return_value = {
+            "id": 1,
+            "name": "Upgrade Fleet",
+            "status": "RUNNING",
+        }
+        created = self.provider.create_rollout(
+            name="Upgrade Fleet",
+            target_filter={"make": "Acme"},
+            target_payload={"system": {"software": {"system": "2.0.0"}}},
+            batch_size=5,
+            total_devices=10,
+        )
+        self.assertEqual(created["id"], 1)
+        self.assertEqual(created["status"], "RUNNING")
+        self.assertEqual(created["name"], "Upgrade Fleet")
+        mock_rm.create_rollout.assert_called_once()
+
+        # 2. List rollouts
+        mock_rm.list_rollouts.return_value = [created]
+        rollouts = self.provider.list_rollouts()
+        self.assertEqual(len(rollouts), 1)
+        self.assertEqual(rollouts[0]["id"], 1)
+
+        # 3. Get rollout
+        mock_rm.get_rollout.return_value = created
+        rollout = self.provider.get_rollout(1)
+        self.assertIsNotNone(rollout)
+        self.assertEqual(rollout["id"], 1)
+
+        # 4. Update rollout with status="PAUSED"
+        mock_rm.update_rollout.return_value = {
+            "id": 1,
+            "name": "Upgrade Fleet",
+            "status": "PAUSED",
+        }
+        paused = self.provider.update_rollout(1, status="PAUSED")
+        self.assertEqual(paused["status"], "PAUSED")
+        mock_rm.update_rollout.assert_called_with(
+            rollout_id=1,
+            status="PAUSED",
+            converged_devices=None,
+            failed_devices=None,
+        )
+
+        # 5. Non-existent rollout
+        mock_rm.get_rollout.return_value = None
+        mock_rm.update_rollout.return_value = None
+        self.assertIsNone(self.provider.get_rollout(999))
+        self.assertIsNone(self.provider.update_rollout(999, status="PAUSED"))
+
 
 class TestButlerMcpServer(unittest.TestCase):
     """Tests for ButlerMcpServer handling JSON-RPC 2.0 requests."""
@@ -330,9 +389,52 @@ class TestButlerMcpServer(unittest.TestCase):
             "get_alerts",
             "get_devices",
             "get_device_detail",
+            "create_rollout",
+            "list_rollouts",
+            "get_rollout",
+            "update_rollout",
         ]
         for exp in expected:
             self.assertIn(exp, tool_names)
+
+    def test_tools_call_rollout_methods(self):
+        # 1. create_rollout tool
+        self.mock_provider.create_rollout.return_value = {"id": 1, "status": "RUNNING", "name": "Rollout 1"}
+        req = {
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "tools/call",
+            "params": {
+                "name": "create_rollout",
+                "arguments": {
+                    "name": "Rollout 1",
+                    "target_payload": {"system": {"software": {"system": "1.0"}}},
+                },
+            },
+        }
+        resp = self.server.handle_request(req)
+        self.assertFalse(resp["result"]["isError"])
+        res_data = json.loads(resp["result"]["content"][0]["text"])
+        self.assertEqual(res_data["id"], 1)
+
+        # 2. update_rollout tool
+        self.mock_provider.update_rollout.return_value = {"id": 1, "status": "PAUSED"}
+        req_update = {
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "tools/call",
+            "params": {
+                "name": "update_rollout",
+                "arguments": {
+                    "rollout_id": 1,
+                    "status": "PAUSED",
+                },
+            },
+        }
+        resp_update = self.server.handle_request(req_update)
+        self.assertFalse(resp_update["result"]["isError"])
+        res_update = json.loads(resp_update["result"]["content"][0]["text"])
+        self.assertEqual(res_update["status"], "PAUSED")
 
     def test_tools_call_get_discovered_devices(self):
         self.mock_provider.get_discovered_devices.return_value = [
@@ -470,7 +572,28 @@ class TestButlerClientIntegration(unittest.TestCase):
 
     def test_client_tools_list(self):
         tools = self.client.tools_list()
-        self.assertGreaterEqual(len(tools), 12)
+        self.assertGreaterEqual(len(tools), 16)
+
+    def test_client_rollouts(self):
+        self.mock_provider.create_rollout.return_value = {"id": 1, "status": "RUNNING"}
+        created = self.client.create_rollout(
+            name="R1",
+            target_filter={},
+            target_payload={"system": {}},
+        )
+        self.assertEqual(created["id"], 1)
+
+        self.mock_provider.list_rollouts.return_value = [{"id": 1, "status": "RUNNING"}]
+        rollouts = self.client.list_rollouts()
+        self.assertEqual(len(rollouts), 1)
+
+        self.mock_provider.get_rollout.return_value = {"id": 1, "status": "RUNNING"}
+        r = self.client.get_rollout(1)
+        self.assertEqual(r["id"], 1)
+
+        self.mock_provider.update_rollout.return_value = {"id": 1, "status": "PAUSED"}
+        up = self.client.update_rollout(1, status="PAUSED")
+        self.assertEqual(up["status"], "PAUSED")
 
 
 class TestButlerMcpStdioRunner(unittest.TestCase):
@@ -503,6 +626,10 @@ class TestButlerMcpStdioRunner(unittest.TestCase):
             self.assertIn("record_message", tool_names)
             self.assertIn("get_device_telemetry", tool_names)
             self.assertIn("health", tool_names)
+            self.assertIn("create_rollout", tool_names)
+            self.assertIn("list_rollouts", tool_names)
+            self.assertIn("get_rollout", tool_names)
+            self.assertIn("update_rollout", tool_names)
 
         finally:
             proc.terminate()

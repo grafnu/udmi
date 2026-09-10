@@ -836,7 +836,7 @@ class GummiDB:
                 "error": error,
             },
             "registries_count": registries,
-            "active_rollouts_count": 1,
+            "active_rollouts_count": len([r for r in self._mock_rollouts.values() if r.get("status") == "RUNNING"]),
             "critical_alerts_24h": 3,
         }
 
