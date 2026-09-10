@@ -469,3 +469,278 @@ body {
   font-size: 0.85rem;
   font-weight: 500;
 }
+
+/* --------------------------------------------------------------------------
+   Jetski Task Console Styles
+   -------------------------------------------------------------------------- */
+
+.btn-jetski {
+  color: #ffffff;
+  border: none;
+  font-weight: 600;
+  font-size: 0.8rem;
+  border-radius: 14px;
+  padding: 0.35rem 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+/* Blue: Not running, no error (Default state) */
+.btn-jetski,
+.btn-jetski.btn-jetski-blue,
+.btn-jetski.state-blue,
+.btn-jetski.state-not-running,
+.btn-jetski[data-color="blue"] {
+  background: linear-gradient(135deg, #1a73e8, #4285f4);
+  color: #ffffff;
+  box-shadow: 0 1px 3px rgba(26, 115, 232, 0.3);
+}
+
+.btn-jetski:hover,
+.btn-jetski.btn-jetski-blue:hover,
+.btn-jetski.state-blue:hover,
+.btn-jetski.state-not-running:hover,
+.btn-jetski[data-color="blue"]:hover {
+  background: linear-gradient(135deg, #1557b0, #1a73e8);
+  box-shadow: 0 2px 6px rgba(26, 115, 232, 0.4);
+  transform: translateY(-1px);
+}
+
+/* Red: Not running, error */
+.btn-jetski.btn-jetski-red,
+.btn-jetski.state-red,
+.btn-jetski.state-error,
+.btn-jetski[data-color="red"] {
+  background: linear-gradient(135deg, #d93025, #ea4335);
+  color: #ffffff;
+  box-shadow: 0 1px 3px rgba(217, 48, 37, 0.35);
+}
+
+.btn-jetski.btn-jetski-red:hover,
+.btn-jetski.state-red:hover,
+.btn-jetski.state-error:hover,
+.btn-jetski[data-color="red"]:hover {
+  background: linear-gradient(135deg, #b31412, #d93025);
+  box-shadow: 0 2px 6px rgba(217, 48, 37, 0.45);
+  transform: translateY(-1px);
+}
+
+/* Yellow: Actively doing something */
+.btn-jetski.btn-jetski-yellow,
+.btn-jetski.state-yellow,
+.btn-jetski.state-active,
+.btn-jetski.state-busy,
+.btn-jetski[data-color="yellow"] {
+  background: linear-gradient(135deg, #f9ab00, #f29900);
+  color: #202124;
+  box-shadow: 0 1px 3px rgba(249, 171, 0, 0.4);
+}
+
+.btn-jetski.btn-jetski-yellow:hover,
+.btn-jetski.state-yellow:hover,
+.btn-jetski.state-active:hover,
+.btn-jetski.state-busy:hover,
+.btn-jetski[data-color="yellow"]:hover {
+  background: linear-gradient(135deg, #e37400, #f9ab00);
+  box-shadow: 0 2px 6px rgba(227, 116, 0, 0.45);
+  transform: translateY(-1px);
+}
+
+/* Green: Running, idle */
+.btn-jetski.btn-jetski-green,
+.btn-jetski.state-green,
+.btn-jetski.state-idle,
+.btn-jetski.state-running-idle,
+.btn-jetski[data-color="green"] {
+  background: linear-gradient(135deg, #1e8e3e, #34a853);
+  color: #ffffff;
+  box-shadow: 0 1px 3px rgba(30, 142, 62, 0.35);
+}
+
+.btn-jetski.btn-jetski-green:hover,
+.btn-jetski.state-green:hover,
+.btn-jetski.state-idle:hover,
+.btn-jetski.state-running-idle:hover,
+.btn-jetski[data-color="green"]:hover {
+  background: linear-gradient(135deg, #137333, #1e8e3e);
+  box-shadow: 0 2px 6px rgba(30, 142, 62, 0.45);
+  transform: translateY(-1px);
+}
+
+.console-pane {
+  position: sticky;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  width: 100%;
+  height: 380px;
+  background-color: #ffffff;
+  color: var(--text-main);
+  border-top: 2px solid var(--primary-color);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  z-index: 1000;
+  transition: height 0.2s ease-in-out;
+}
+
+.console-pane.expanded {
+  height: calc(100vh - 110px);
+}
+
+.console-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: #ffffff;
+  padding: 0.4rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+  user-select: none;
+}
+
+.console-title-area {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.console-icon {
+  font-size: 1.1rem;
+}
+
+.console-title-area h3 {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-main);
+  margin: 0;
+}
+
+.console-status-text {
+  font-size: 0.75rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 12px;
+  background: #f1f3f4;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  font-weight: 500;
+  transition: all 0.2s ease;
+  margin-left: 0.25rem;
+}
+
+.console-status-text.status-active {
+  background: #e6f4ea;
+  color: var(--success);
+  border-color: #ceead6;
+}
+
+.console-status-text.status-warning {
+  background: #fef7e0;
+  color: #b06000;
+  border-color: #fdd663;
+  font-weight: 600;
+}
+
+.console-status-text.status-error {
+  background: #fce8e6;
+  color: var(--danger);
+  border-color: #fad2cf;
+  font-weight: 600;
+}
+
+.console-status-text.status-info {
+  background: #e8f0fe;
+  color: var(--primary-color);
+  border-color: #d2e3fc;
+}
+
+.console-alert-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  background: #fef7e0;
+  border-bottom: 1px solid #f9ab00;
+  color: #b06000;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  flex-shrink: 0;
+}
+
+.console-alert-banner.alert-error {
+  background: #fce8e6;
+  border-bottom-color: #ea4335;
+  color: #c5221f;
+}
+
+.console-alert-icon {
+  font-size: 1.15rem;
+  flex-shrink: 0;
+}
+
+.console-alert-text {
+  flex: 1;
+}
+
+.console-alert-text code {
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  color: #202124;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  font-weight: 600;
+}
+
+.btn-alert-restart {
+  background: #f9ab00;
+  color: #202124;
+  border: none;
+  font-weight: 600;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0.25rem 0.65rem;
+  white-space: nowrap;
+}
+
+.btn-alert-restart:hover {
+  background: #fdd663;
+}
+
+.console-controls {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.btn-outline-danger {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.btn-outline-danger:hover {
+  background: rgba(217, 48, 37, 0.08);
+}
+
+.terminal-container {
+  flex: 1 1 0;
+  width: 100%;
+  min-height: 0;
+  background-color: #ffffff;
+  padding: 4px 8px;
+  box-sizing: border-box;
+  overflow: hidden;
+  position: relative;
+}
+
+.terminal-container .xterm {
+  height: 100%;
+  width: 100%;
+}
+
+.terminal-container .xterm .xterm-viewport {
+  background-color: #ffffff !important;
+}

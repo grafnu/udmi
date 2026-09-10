@@ -31,6 +31,7 @@ document.addEventListener("DOMContentLoaded", () => {
   setupNavigation();
   setupEventHandlers();
   setupSSE();
+  setupConsole();
 
   // Initial load
   loadCapabilities();
@@ -582,3 +583,527 @@ function formatIso(isoStr) {
   }
   return s;
 }
+
+// -----------------------------------------------------------------------------
+// Jetski Task Console (xterm.js & backend tmux gummi~agent)
+// -----------------------------------------------------------------------------
+
+let term = null;
+let fitAddon = null;
+let isConsoleOpen = false;
+let consoleOffset = 0;
+let consolePollTimer = null;
+let terminalResizeObserver = null;
+let hasWrittenTerminalNotice = false;
+const CONSOLE_PROJECT = "gummi";
+
+function updateJetskiButtonState(buttonState, tooltip) {
+  const btnJetski = document.getElementById("btn-jetski");
+  if (!btnJetski) return;
+
+  let state = "blue";
+  const s = String(buttonState || "").toLowerCase();
+  if (s === "red" || s === "error") {
+    state = "red";
+  } else if (s === "yellow" || s === "active" || s === "busy" || s === "working") {
+    state = "yellow";
+  } else if (s === "green" || s === "idle" || s === "running_idle" || s === "ready") {
+    state = "green";
+  } else if (s === "blue" || s === "not_running" || s === "stopped") {
+    state = "blue";
+  }
+
+  btnJetski.classList.remove(
+    "btn-jetski-blue", "btn-jetski-red", "btn-jetski-yellow", "btn-jetski-green",
+    "state-blue", "state-red", "state-yellow", "state-green",
+    "state-not-running", "state-error", "state-active", "state-idle"
+  );
+
+  btnJetski.classList.add(`btn-jetski-${state}`);
+  btnJetski.classList.add(`state-${state}`);
+  btnJetski.setAttribute("data-color", state);
+
+  if (state === "blue") {
+    btnJetski.classList.add("state-not-running");
+    btnJetski.title = tooltip || "Jetski Agent: Not running, no error";
+  } else if (state === "red") {
+    btnJetski.classList.add("state-error");
+    btnJetski.title = tooltip || "Jetski Agent: Not running, error";
+  } else if (state === "yellow") {
+    btnJetski.classList.add("state-active");
+    btnJetski.title = tooltip || "Jetski Agent: Actively doing something";
+  } else if (state === "green") {
+    btnJetski.classList.add("state-idle");
+    btnJetski.title = tooltip || "Jetski Agent: Running, idle";
+  }
+}
+
+async function checkJetskiStatus() {
+  try {
+    const res = await fetch(`${API_BASE}/api/project/status?project=${encodeURIComponent(CONSOLE_PROJECT)}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.diagnostics) {
+        const diag = Object.assign({}, data.diagnostics, {
+          running: data.running,
+          button_state: data.button_state || data.diagnostics.button_state,
+        });
+        updateDiagnosticsUI(diag, data.running);
+      } else if (data.button_state) {
+        updateJetskiButtonState(data.button_state);
+      } else if (data.running) {
+        updateJetskiButtonState("green");
+      } else {
+        updateJetskiButtonState("blue");
+      }
+    }
+  } catch (e) {}
+}
+
+function setupConsole() {
+  const btnJetski = document.getElementById("btn-jetski");
+  const btnClose = document.getElementById("btn-close-console");
+  const btnExpand = document.getElementById("btn-expand-console");
+  const btnClear = document.getElementById("btn-clear-console");
+  const btnKill = document.getElementById("btn-kill-console");
+  const btnAlertRestart = document.getElementById("btn-alert-restart");
+
+  if (btnJetski) {
+    btnJetski.addEventListener("click", () => toggleConsole());
+  }
+  if (btnClose) {
+    btnClose.addEventListener("click", () => setConsoleVisible(false));
+  }
+  if (btnExpand) {
+    btnExpand.addEventListener("click", () => toggleConsoleExpand());
+  }
+  if (btnClear) {
+    btnClear.addEventListener("click", () => clearConsole());
+  }
+  if (btnKill) {
+    btnKill.addEventListener("click", () => killAndRestartConsole());
+  }
+  if (btnAlertRestart) {
+    btnAlertRestart.addEventListener("click", () => killAndRestartConsole());
+  }
+
+  // Handle window resize for xterm
+  window.addEventListener("resize", () => {
+    if (isConsoleOpen && fitAddon && term) {
+      try {
+        fitAddon.fit();
+        syncTermSize();
+      } catch (e) {}
+    }
+  });
+
+  // Initial status check and periodic polling
+  checkJetskiStatus();
+  setInterval(checkJetskiStatus, 2000);
+}
+
+function updateDiagnosticsUI(diag, isRunning) {
+  if (!diag) return;
+  const statusText = document.getElementById("console-status-text");
+  const alertBanner = document.getElementById("console-alert-banner");
+  const alertMsg = document.getElementById("console-alert-msg");
+  const sessionBadge = document.getElementById("console-session-badge");
+
+  // Determine running state accurately
+  let running = false;
+  if (isRunning !== undefined) {
+    running = !!isRunning;
+  } else if (diag.running !== undefined) {
+    running = !!diag.running;
+  } else if (diag.state === "active" || diag.state === "busy" || diag.state === "idle" || diag.state === "auth_required") {
+    running = (diag.state !== "not_running" && diag.state !== "error");
+  }
+
+  let buttonState = diag.button_state;
+  if (!buttonState) {
+    if (!running) {
+      if (diag.severity === "error" || diag.state === "error" || (diag.exit_code !== undefined && diag.exit_code !== 0)) {
+        buttonState = "red";
+      } else {
+        buttonState = "blue";
+      }
+    } else {
+      // Session is running!
+      if (diag.active || diag.state === "active" || diag.state === "busy" || diag.state === "working") {
+        buttonState = "yellow";
+      } else {
+        buttonState = "green";
+      }
+    }
+  }
+  updateJetskiButtonState(buttonState, diag.status_text);
+
+  if (sessionBadge) {
+    if (!running) {
+      sessionBadge.className = "badge badge-neutral";
+    } else if (buttonState === "yellow") {
+      sessionBadge.className = "badge badge-warning";
+    } else {
+      sessionBadge.className = "badge badge-success";
+    }
+  }
+
+  if (statusText) {
+    statusText.textContent = diag.status_text || (buttonState === "yellow" ? "Actively Working" : (buttonState === "green" ? "Idle" : "Not Running"));
+    statusText.className = "console-status-text";
+    if (diag.severity === "warning" || diag.state === "auth_required") {
+      statusText.classList.add("status-warning");
+    } else if (diag.severity === "error" || diag.state === "error" || diag.state === "key_error" || buttonState === "red") {
+      statusText.classList.add("status-error");
+    } else if (buttonState === "yellow" || diag.state === "active") {
+      statusText.classList.add("status-warning");
+    } else if (diag.severity === "success" || buttonState === "green" || diag.state === "idle") {
+      statusText.classList.add("status-active");
+    } else {
+      statusText.classList.add("status-info");
+    }
+  }
+
+  if (alertBanner && alertMsg) {
+    if (diag.alert) {
+      alertBanner.style.display = "flex";
+      alertBanner.className = "console-alert-banner " + (diag.severity === "error" ? "alert-error" : "");
+      alertMsg.innerHTML = escapeHtml(diag.alert).replace(
+        /&quot;glogin&quot;|&#39;glogin&#39;|'glogin'/g,
+        "<code>glogin</code>"
+      );
+    } else {
+      alertBanner.style.display = "none";
+    }
+  }
+}
+
+function initTerminal() {
+  if (term) return;
+
+  const container = document.getElementById("terminal-container");
+  if (!container) return;
+
+  if (typeof Terminal === "undefined") {
+    console.warn("xterm Terminal is not defined; verify vendor assets are loaded.");
+    return;
+  }
+
+  term = new Terminal({
+    convertEol: false,
+    scrollback: 10000,
+    theme: {
+      background: "#ffffff",
+      foreground: "#202124",
+      cursor: "#1a73e8",
+      cursorAccent: "#ffffff",
+      selectionBackground: "rgba(26, 115, 232, 0.25)",
+      black: "#202124",
+      red: "#c5221f",
+      green: "#137333",
+      yellow: "#b06000",
+      blue: "#1a73e8",
+      magenta: "#a142f4",
+      cyan: "#007b83",
+      white: "#dadce0",
+      brightBlack: "#5f6368",
+      brightRed: "#d93025",
+      brightGreen: "#1e8e3e",
+      brightYellow: "#f9ab00",
+      brightBlue: "#4285f4",
+      brightMagenta: "#af5cf7",
+      brightCyan: "#12b5cb",
+      brightWhite: "#ffffff",
+    },
+    fontFamily: '"Roboto Mono", monospace',
+    fontSize: 13,
+  });
+
+  if (typeof FitAddon !== "undefined" && FitAddon.FitAddon) {
+    fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+  }
+
+  term.open(container);
+
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type === "keydown") {
+      e.stopPropagation();
+    }
+    return true;
+  });
+
+  term.onSelectionChange(() => {
+    const sel = term.getSelection();
+    if (sel && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(sel).catch(() => {});
+    }
+  });
+
+  const encoder = new TextEncoder();
+  term.onData((data) => {
+    const bytes = encoder.encode(data);
+    const hexKeys = [];
+    for (let i = 0; i < bytes.length; i++) {
+      hexKeys.push(bytes[i].toString(16).padStart(2, "0"));
+    }
+    fetch(`${API_BASE}/api/project/term-input`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectName: CONSOLE_PROJECT, hexKeys: hexKeys }),
+    }).catch((err) => console.error("Error sending input to term:", err));
+  });
+
+  container.addEventListener("click", () => {
+    if (term) {
+      term.focus();
+      term.scrollToBottom();
+    }
+  });
+
+  if (!terminalResizeObserver && typeof ResizeObserver !== "undefined") {
+    let lastW = 0;
+    let lastH = 0;
+    terminalResizeObserver = new ResizeObserver(() => {
+      const pane = document.getElementById("console-pane");
+      if (pane && pane.style.display === "flex") {
+        const w = container.clientWidth;
+        const h = container.clientHeight;
+        if (Math.abs(w - lastW) > 2 || Math.abs(h - lastH) > 2) {
+          lastW = w;
+          lastH = h;
+          if (fitAddon) {
+            try {
+              fitAddon.fit();
+              syncTermSize();
+              if (term) term.scrollToBottom();
+            } catch (e) {}
+          }
+        }
+      }
+    });
+    terminalResizeObserver.observe(container);
+  }
+
+  window.term = term;
+}
+
+async function syncTermSize() {
+  if (!term) return;
+  const cols = term.cols || 120;
+  const rows = term.rows || 30;
+  try {
+    await fetch(`${API_BASE}/api/project/term-resize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectName: CONSOLE_PROJECT, cols: cols, rows: rows }),
+    });
+  } catch (e) {}
+}
+
+async function toggleConsole() {
+  setConsoleVisible(!isConsoleOpen);
+}
+
+async function setConsoleVisible(visible) {
+  isConsoleOpen = visible;
+  const pane = document.getElementById("console-pane");
+  if (!pane) return;
+
+  if (visible) {
+    pane.style.display = "flex";
+    initTerminal();
+
+    const statusText = document.getElementById("console-status-text");
+    if (statusText) {
+      statusText.textContent = "Connecting to gummi~agent...";
+      statusText.className = "console-status-text status-info";
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/api/project/jetski`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectName: CONSOLE_PROJECT }),
+      });
+      if (!res.ok && statusText) {
+        statusText.textContent = "Error starting session";
+        statusText.className = "console-status-text status-error";
+      }
+    } catch (e) {
+      if (statusText) {
+        statusText.textContent = "Disconnected";
+        statusText.className = "console-status-text status-error";
+      }
+    }
+
+    try {
+      const stRes = await fetch(`${API_BASE}/api/project/status?project=${encodeURIComponent(CONSOLE_PROJECT)}`);
+      if (stRes.ok) {
+        const stData = await stRes.json();
+        if (stData.diagnostics) {
+          updateDiagnosticsUI(stData.diagnostics);
+        }
+      }
+    } catch (e) {}
+
+    setTimeout(() => {
+      if (fitAddon) {
+        try {
+          fitAddon.fit();
+          syncTermSize();
+          if (term) term.scrollToBottom();
+        } catch (e) {}
+      }
+      if (term) term.focus();
+    }, 50);
+
+    setTimeout(() => {
+      if (fitAddon) {
+        try {
+          fitAddon.fit();
+          syncTermSize();
+          if (term) term.scrollToBottom();
+        } catch (e) {}
+      }
+    }, 250);
+
+    pollConsoleLog();
+  } else {
+    pane.style.display = "none";
+    if (consolePollTimer) {
+      clearTimeout(consolePollTimer);
+      consolePollTimer = null;
+    }
+  }
+}
+
+function toggleConsoleExpand() {
+  const pane = document.getElementById("console-pane");
+  const btn = document.getElementById("btn-expand-console");
+  if (!pane) return;
+  pane.classList.toggle("expanded");
+  if (btn) {
+    btn.textContent = pane.classList.contains("expanded") ? "Restore" : "Expand";
+  }
+  setTimeout(() => {
+    if (fitAddon) {
+      try {
+        fitAddon.fit();
+        syncTermSize();
+        if (term) term.scrollToBottom();
+      } catch (e) {}
+    }
+    if (term) term.focus();
+  }, 100);
+  setTimeout(() => {
+    if (fitAddon) {
+      try {
+        fitAddon.fit();
+        syncTermSize();
+        if (term) term.scrollToBottom();
+      } catch (e) {}
+    }
+  }, 250);
+}
+
+function clearConsole() {
+  if (term) term.reset();
+  consoleOffset = 0;
+  hasWrittenTerminalNotice = false;
+}
+
+async function killAndRestartConsole() {
+  const statusText = document.getElementById("console-status-text");
+  if (statusText) {
+    statusText.textContent = "Killing session...";
+    statusText.className = "console-status-text status-warning";
+  }
+  try {
+    await fetch(`${API_BASE}/api/project/term-kill`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectName: CONSOLE_PROJECT }),
+    });
+  } catch (e) {}
+  clearConsole();
+  if (statusText) {
+    statusText.textContent = "Restarting...";
+    statusText.className = "console-status-text status-info";
+  }
+  try {
+    await fetch(`${API_BASE}/api/project/jetski`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectName: CONSOLE_PROJECT }),
+    });
+  } catch (e) {}
+  pollConsoleLog();
+}
+
+async function pollConsoleLog() {
+  if (!isConsoleOpen) return;
+  if (consolePollTimer) {
+    clearTimeout(consolePollTimer);
+    consolePollTimer = null;
+  }
+
+  try {
+    const res = await fetch(
+      `${API_BASE}/api/project/term-log?project=${encodeURIComponent(CONSOLE_PROJECT)}&offset=${consoleOffset}`
+    );
+    if (res.ok) {
+      const data = await res.json();
+      if (data.cleared) {
+        if (term) term.reset();
+        consoleOffset = 0;
+        hasWrittenTerminalNotice = false;
+      }
+      if (data.diagnostics) {
+        const diag = Object.assign({}, data.diagnostics, {
+          running: data.running,
+          button_state: data.button_state || data.diagnostics.button_state,
+        });
+        updateDiagnosticsUI(diag, data.running);
+        if (
+          data.diagnostics.alert &&
+          !hasWrittenTerminalNotice &&
+          term &&
+          (!data.data || data.data.length === 0)
+        ) {
+          term.write(
+            `\r\n\x1b[1;33m[GUMMI Task Console]\x1b[0m ${data.diagnostics.status_text}\r\n` +
+            `\x1b[33m${data.diagnostics.alert}\x1b[0m\r\n\r\n`
+          );
+          hasWrittenTerminalNotice = true;
+        }
+      }
+      if (data.data && term) {
+        const rawString = window.atob(data.data);
+        const bytes = new Uint8Array(rawString.length);
+        for (let i = 0; i < rawString.length; i++) {
+          bytes[i] = rawString.charCodeAt(i);
+        }
+        term.write(bytes, () => {
+          term.scrollToBottom();
+        });
+      }
+      if (data.offset !== undefined) {
+        consoleOffset = data.offset;
+      }
+    }
+  } catch (e) {
+    console.error("Error polling console log:", e);
+  }
+
+  if (isConsoleOpen) {
+    consolePollTimer = setTimeout(pollConsoleLog, 150);
+  }
+}
+
+window.toggleConsole = toggleConsole;
+window.setConsoleVisible = setConsoleVisible;
+window.pollConsoleLog = pollConsoleLog;
+window.updateDiagnosticsUI = updateDiagnosticsUI;
+window.updateJetskiButtonState = updateJetskiButtonState;
+window.checkJetskiStatus = checkJetskiStatus;

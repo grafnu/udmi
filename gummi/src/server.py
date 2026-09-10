@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from gummi.src.db import GummiDB
 from gummi.src.uufi import GummiUUFIClient
+from gummi.src.console import GummiConsoleManager
 
 
 class GummiRequestHandler(SimpleHTTPRequestHandler):
@@ -33,6 +34,10 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
     @property
     def uufi(self) -> GummiUUFIClient:
         return self.server.uufi
+
+    @property
+    def console(self) -> GummiConsoleManager:
+        return getattr(self.server, "console", None)
 
     def _send_json(self, data: Any, status_code: int = 200) -> None:
         """Helper to send JSON responses with CORS headers."""
@@ -85,6 +90,7 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
                     "config_management",
                     "managed_rollout",
                     "bridgehead_admin",
+                    "jetski_console",
                 ]
                 if enable_mapping_seed:
                     features.append("mapping_seed")
@@ -172,6 +178,40 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
             if path == "/api/stream/events":
                 return self._handle_sse()
 
+            # 8. Terminal Console Log & Status
+            if path in ("/api/project/term-log", "/api/console/log"):
+                offset = int(query.get("offset", ["0"])[0])
+                if not self.console:
+                    return self._send_json({"data": "", "offset": 0, "cleared": False, "running": False})
+                res = self.console.get_log(offset=offset)
+                return self._send_json(res)
+
+            if path in ("/api/project/status", "/api/console/status"):
+                running = self.console.is_running() if self.console else False
+                session_name = self.console.session_name if self.console else "gummi~agent"
+                diag = self.console.get_diagnostics() if self.console else {
+                    "state": "not_running",
+                    "status_text": "Not Running",
+                    "severity": "neutral",
+                    "button_state": "blue",
+                    "running": False,
+                    "active": False,
+                    "alert": None,
+                }
+                button_state = diag.get("button_state", "blue" if not running else "green")
+                return self._send_json({
+                    "active_task": {
+                        "name": "Jetski (GUMMI)",
+                        "session": session_name,
+                        "command": "jetski --repl_mode",
+                        "start_time": time.time(),
+                    } if running else None,
+                    "running": running,
+                    "session": session_name,
+                    "diagnostics": diag,
+                    "button_state": button_state,
+                })
+
         except ConnectionError as e:
             return self._send_json({"error": "Service unavailable", "message": str(e)}, status_code=503)
         except Exception as e:
@@ -239,6 +279,38 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
                 reg_id = body.get("registry_id", "ZZ-TRI-FECTA")
                 result = self.db.populate_mapping_scenario(reg_id)
                 return self._send_json(result, status_code=200)
+
+            # 5. Terminal Console Operations
+            if path in ("/api/project/jetski", "/api/console/start", "/api/console/jetski"):
+                prompt = body.get("prompt")
+                cols = body.get("cols")
+                rows = body.get("rows")
+                if not self.console:
+                    return self._send_json({"error": "Console manager unavailable"}, status_code=503)
+                res = self.console.start_jetski(prompt=prompt, cols=cols, rows=rows)
+                return self._send_json(res, status_code=200)
+
+            if path in ("/api/project/term-input", "/api/console/input"):
+                hex_keys = body.get("hexKeys") or []
+                if not self.console:
+                    return self._send_json({"error": "Console manager unavailable"}, status_code=503)
+                ok, err = self.console.send_keys(hex_keys)
+                if not ok:
+                    code = 404 if "not exist" in err else 500
+                    return self._send_json({"error": err}, status_code=code)
+                return self._send_json({"status": "ok"}, status_code=200)
+
+            if path in ("/api/project/term-resize", "/api/console/resize"):
+                cols = int(body.get("cols", 120))
+                rows = int(body.get("rows", 30))
+                if self.console:
+                    self.console.resize(cols, rows)
+                return self._send_json({"status": "resized"}, status_code=200)
+
+            if path in ("/api/project/term-kill", "/api/project/kill", "/api/console/kill"):
+                if self.console:
+                    self.console.kill()
+                return self._send_json({"status": "killed"}, status_code=200)
 
             return self._send_json({"error": "Not Found"}, status_code=404)
 
@@ -322,6 +394,10 @@ class GummiServer:
             mock_mode=mock_mode,
         )
         self.uufi.db = self.db
+        self.console = GummiConsoleManager(
+            session_name="gummi~agent",
+            mock_mode=mock_mode,
+        )
         self.httpd: Optional[ThreadingHTTPServer] = None
 
     def start(self) -> None:
@@ -334,6 +410,7 @@ class GummiServer:
         self.httpd.enable_mapping_seed = self.enable_mapping_seed
         self.httpd.db = self.db
         self.httpd.uufi = self.uufi
+        self.httpd.console = self.console
         mode_str = " [MOCK MODE]" if self.mock_mode else ""
         seed_str = " [MAPPING SEED ENABLED]" if self.enable_mapping_seed else ""
         print(f"GUMMI Server listening on http://{self.host}:{self.port}{mode_str}{seed_str}")

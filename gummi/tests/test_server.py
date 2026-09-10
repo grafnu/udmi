@@ -39,6 +39,7 @@ def gummi_server():
     httpd.mock_mode = server.mock_mode
     httpd.db = server.db
     httpd.uufi = server.uufi
+    httpd.console = server.console
     server.httpd = httpd
 
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -326,6 +327,7 @@ class TestGummiServer:
         httpd.enable_mapping_seed = server.enable_mapping_seed
         httpd.db = server.db
         httpd.uufi = server.uufi
+        httpd.console = server.console
         server.httpd = httpd
 
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -348,5 +350,80 @@ class TestGummiServer:
             except Exception:
                 pass
             server.uufi.stop()
+
+    def test_api_console_endpoints(self, gummi_server):
+        # 1. Verify jetski_console is listed in capabilities
+        caps = http_get_json(f"{gummi_server}/api/system/capabilities")
+        assert "jetski_console" in caps.get("features", [])
+
+        # 2. Start jetski console session
+        start_res = http_post_json(f"{gummi_server}/api/project/jetski", {"projectName": "gummi"})
+        assert start_res.get("status") in ("started", "already_running")
+        assert start_res.get("session") == "gummi~agent"
+
+        # 3. Check console status
+        status_res = http_get_json(f"{gummi_server}/api/project/status")
+        assert status_res.get("running") is True
+        assert status_res.get("session") == "gummi~agent"
+        assert "diagnostics" in status_res
+        assert "state" in status_res["diagnostics"]
+
+        # 4. Read terminal log
+        log_res = http_get_json(f"{gummi_server}/api/project/term-log?project=gummi&offset=0")
+        assert "data" in log_res
+        assert "offset" in log_res
+        assert "running" in log_res
+        assert "diagnostics" in log_res
+
+        # 5. Send terminal input
+        input_res = http_post_json(f"{gummi_server}/api/project/term-input", {"projectName": "gummi", "hexKeys": ["61", "62"]})
+        assert input_res.get("status") == "ok"
+
+        # 6. Resize terminal
+        resize_res = http_post_json(f"{gummi_server}/api/project/term-resize", {"projectName": "gummi", "cols": 120, "rows": 30})
+        assert resize_res.get("status") == "resized"
+
+        # 7. Kill console
+        kill_res = http_post_json(f"{gummi_server}/api/project/term-kill", {"projectName": "gummi"})
+        assert kill_res.get("status") == "killed"
+
+        # 8. Check status after kill -> not running, no error -> button_state == "blue"
+        status_after_kill = http_get_json(f"{gummi_server}/api/project/status")
+        assert status_after_kill.get("running") is False
+        assert status_after_kill.get("button_state") == "blue"
+
+    def test_console_button_states(self):
+        """Verifies color-coded button state transitions in backend diagnostics."""
+        from gummi.src.console import GummiConsoleManager
+        console = GummiConsoleManager(mock_mode=True)
+
+        # 1. Blue: Not running, no error
+        console._mock_running = False
+        console._mock_error = False
+        console._mock_exit_code = 0
+        diag = console.get_diagnostics()
+        assert diag["button_state"] == "blue"
+
+        # 2. Red: Not running, error
+        console._mock_running = False
+        console._mock_error = True
+        console._mock_exit_code = 1
+        diag = console.get_diagnostics()
+        assert diag["button_state"] == "red"
+
+        # 3. Yellow: Actively doing something
+        console._mock_running = True
+        console._mock_active = True
+        console._mock_error = False
+        diag = console.get_diagnostics()
+        assert diag["button_state"] == "yellow"
+
+        # 4. Green: Running, idle
+        console._mock_running = True
+        console._mock_active = False
+        console._mock_error = False
+        diag = console.get_diagnostics()
+        assert diag["button_state"] == "green"
+
 
 

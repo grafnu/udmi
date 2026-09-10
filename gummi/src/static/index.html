@@ -5,9 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>GUMMI — Fleet Management Interface</title>
   <link rel="stylesheet" href="/css/app.css">
+  <link rel="stylesheet" href="/vendor/xterm/xterm.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="/vendor/xterm/xterm.js"></script>
+  <script src="/vendor/xterm/xterm-addon-fit.js"></script>
 </head>
 <body>
   <div id="app" class="app-layout">
@@ -21,6 +24,9 @@
         </div>
       </div>
       <div class="header-status">
+        <button id="btn-jetski" class="btn btn-sm btn-jetski" title="Open Jetski Task Console (gummi~agent)">
+          ⚡ jetski!
+        </button>
         <div id="system-badge" class="badge badge-neutral">
           <span class="indicator-dot"></span>
           <span id="system-status-text">Probing System...</span>
@@ -385,6 +391,32 @@
         </div>
       </section>
     </main>
+
+    <!-- Embedded Task Console Pane -->
+    <div id="console-pane" class="console-pane" style="display: none;">
+      <div class="console-header">
+        <div class="console-title-area">
+          <span class="console-icon">⚡</span>
+          <h3>Jetski Task Console</h3>
+          <span id="console-session-badge" class="badge badge-success">gummi~agent</span>
+          <span id="console-status-text" class="console-status-text">Active</span>
+        </div>
+        <div class="console-controls">
+          <button id="btn-kill-console" class="btn btn-sm btn-outline-danger" title="Restart / Reset Session">Kill</button>
+          <button id="btn-clear-console" class="btn btn-sm btn-secondary" title="Clear Terminal">Clear</button>
+          <button id="btn-expand-console" class="btn btn-sm btn-secondary" title="Expand / Restore Height">Expand</button>
+          <button id="btn-close-console" class="btn btn-sm btn-secondary" title="Close Console">✕</button>
+        </div>
+      </div>
+      <div id="console-alert-banner" class="console-alert-banner" style="display: none;">
+        <span class="console-alert-icon">⚠️</span>
+        <div class="console-alert-text">
+          <span id="console-alert-msg"></span>
+        </div>
+        <button id="btn-alert-restart" class="btn btn-xs btn-alert-restart" title="Restart agent session">Restart Agent</button>
+      </div>
+      <div id="terminal-container" class="terminal-container"></div>
+    </div>
   </div>
 
   <script src="/js/app.js"></script>

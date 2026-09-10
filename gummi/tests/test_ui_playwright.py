@@ -33,6 +33,7 @@ def gummi_server_url():
     httpd.daemon_threads = True
     httpd.db = server.db
     httpd.uufi = server.uufi
+    httpd.console = server.console
     server.httpd = httpd
 
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -145,3 +146,158 @@ def test_gummi_device_filtering_and_pagination(gummi_server_url: str, browser_co
 
     assert len(page_errors) == 0, f"JavaScript errors during filtering: {page_errors}"
     page.close()
+
+
+def test_gummi_jetski_task_console(gummi_server_url: str, browser_context: Browser):
+    """Verifies embedded Jetski task console creation, xterm rendering, expand/collapse, and input."""
+    page: Page = browser_context.new_page()
+    page_errors: List[str] = []
+    page.on("pageerror", lambda err: page_errors.append(str(err)))
+
+    page.goto(gummi_server_url)
+    page.wait_for_load_state("domcontentloaded")
+
+    # 1. Verify "jetski!" button is visible in top header
+    btn_jetski = page.locator("#btn-jetski")
+    expect(btn_jetski).to_be_visible()
+    expect(btn_jetski).to_contain_text("jetski!")
+
+    # Console pane should initially be hidden
+    console_pane = page.locator("#console-pane")
+    expect(console_pane).to_be_hidden()
+
+    # 2. Click "jetski!" button to open embedded console window
+    btn_jetski.click()
+
+    expect(console_pane).to_be_visible()
+    expect(page.locator("#console-session-badge")).to_contain_text("gummi~agent")
+    expect(page.locator(".console-title-area h3")).to_contain_text("Jetski Task Console")
+
+    # Verify console pane and terminal container background color is white
+    bg_pane = page.evaluate("() => window.getComputedStyle(document.getElementById('console-pane')).backgroundColor")
+    assert bg_pane in ("rgb(255, 255, 255)", "#ffffff", "white"), f"Expected white background for console pane, got {bg_pane}"
+    bg_term = page.evaluate("() => window.getComputedStyle(document.getElementById('terminal-container')).backgroundColor")
+    assert bg_term in ("rgb(255, 255, 255)", "#ffffff", "white"), f"Expected white background for terminal container, got {bg_term}"
+
+    # 3. Verify terminal container contains initialized xterm DOM
+    page.wait_for_function('document.querySelectorAll("#terminal-container .xterm").length > 0')
+    xterm_el = page.locator("#terminal-container .xterm")
+    expect(xterm_el).to_be_visible()
+
+    # 4. Test Expand and Restore controls
+    btn_expand = page.locator("#btn-expand-console")
+    btn_expand.click()
+    expect(console_pane).to_have_class(re.compile(r"\bexpanded\b"))
+    expect(btn_expand).to_have_text("Restore")
+
+    btn_expand.click()
+    expect(console_pane).not_to_have_class(re.compile(r"\bexpanded\b"))
+    expect(btn_expand).to_have_text("Expand")
+
+    # 5. Type input into terminal
+    page.locator("#terminal-container .xterm-helper-textarea").focus()
+    page.keyboard.type("echo hello\n")
+
+    # 6. Test Close console
+    btn_close = page.locator("#btn-close-console")
+    btn_close.click()
+    expect(console_pane).to_be_hidden()
+
+    # 7. Test clicking GUMMI brand header does NOT open console
+    brand_header = page.locator(".header-brand")
+    brand_header.click()
+    expect(console_pane).to_be_hidden()
+
+    # 8. Test clicking btn-jetski opens console again
+    btn_jetski.click()
+    expect(console_pane).to_be_visible()
+
+    # 9. Test diagnostics indicator rendering via term-log polling
+    import json
+    page.route("**/api/project/term-log*", lambda route: route.fulfill(
+        status=200,
+        content_type="application/json",
+        body=json.dumps({
+            "data": "",
+            "offset": 100,
+            "cleared": False,
+            "running": True,
+            "diagnostics": {
+                "state": "auth_required",
+                "status_text": "Auth Required (run 'glogin')",
+                "severity": "warning",
+                "alert": "Authentication Required: Google ThinMint certificate expired. Run 'glogin' to authenticate."
+            }
+        })
+    ))
+    expect(page.locator("#console-status-text")).to_have_text("Auth Required (run 'glogin')")
+    expect(page.locator("#console-status-text")).to_have_class(re.compile(r"\bstatus-warning\b"))
+    expect(page.locator("#console-alert-banner")).to_be_visible()
+    expect(page.locator("#console-alert-msg")).to_contain_text("Authentication Required")
+    expect(page.locator("#btn-alert-restart")).to_be_visible()
+
+    assert len(page_errors) == 0, f"JavaScript errors during console interactions: {page_errors}"
+    page.close()
+
+
+def test_gummi_jetski_button_color_coding(gummi_server_url: str, browser_context: Browser):
+    """Verifies color coding on #btn-jetski:
+    Blue == not running, no error
+    Red == not running, error
+    Yellow == actively doing something
+    Green == running, idle
+    """
+    page: Page = browser_context.new_page()
+    page_errors: List[str] = []
+    page.on("pageerror", lambda err: page_errors.append(str(err)))
+
+    page.goto(gummi_server_url)
+    page.wait_for_load_state("domcontentloaded")
+
+    btn = page.locator("#btn-jetski")
+    expect(btn).to_be_visible()
+
+    # 1. Blue: Not running, no error
+    page.evaluate("() => window.updateJetskiButtonState('blue')")
+    expect(btn).to_have_attribute("data-color", "blue")
+    expect(btn).to_have_class(re.compile(r"\bstate-blue\b"))
+    expect(btn).to_have_class(re.compile(r"\bstate-not-running\b"))
+
+    # 2. Red: Not running, error
+    page.evaluate("() => window.updateJetskiButtonState('red')")
+    expect(btn).to_have_attribute("data-color", "red")
+    expect(btn).to_have_class(re.compile(r"\bstate-red\b"))
+    expect(btn).to_have_class(re.compile(r"\bstate-error\b"))
+
+    # 3. Yellow: Actively doing something
+    page.evaluate("() => window.updateJetskiButtonState('yellow')")
+    expect(btn).to_have_attribute("data-color", "yellow")
+    expect(btn).to_have_class(re.compile(r"\bstate-yellow\b"))
+    expect(btn).to_have_class(re.compile(r"\bstate-active\b"))
+
+    # 4. Green: Running, idle
+    page.evaluate("() => window.updateJetskiButtonState('green')")
+    expect(btn).to_have_attribute("data-color", "green")
+    expect(btn).to_have_class(re.compile(r"\bstate-green\b"))
+    expect(btn).to_have_class(re.compile(r"\bstate-idle\b"))
+
+    # 5. Verify updateDiagnosticsUI sets the proper button state automatically
+    # 5a. Not running, no error -> blue
+    page.evaluate("() => window.updateDiagnosticsUI({ running: false, severity: 'neutral' })")
+    expect(btn).to_have_attribute("data-color", "blue")
+
+    # 5b. Not running, error -> red
+    page.evaluate("() => window.updateDiagnosticsUI({ running: false, severity: 'error', exit_code: 1 })")
+    expect(btn).to_have_attribute("data-color", "red")
+
+    # 5c. Running, active -> yellow
+    page.evaluate("() => window.updateDiagnosticsUI({ running: true, active: true, state: 'active' })")
+    expect(btn).to_have_attribute("data-color", "yellow")
+
+    # 5d. Running, idle -> green
+    page.evaluate("() => window.updateDiagnosticsUI({ running: true, active: false, state: 'idle' })")
+    expect(btn).to_have_attribute("data-color", "green")
+
+    assert len(page_errors) == 0, f"JavaScript errors during button color test: {page_errors}"
+    page.close()
+
