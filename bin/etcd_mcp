@@ -1,7 +1,7 @@
 #!/bin/bash
-# UDMI Test Infrastructure MCP Server Runner
+# UDMI ETCD MCP Server Runner
 
 UDMI_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 export PYTHONPATH="$UDMI_ROOT:${PYTHONPATH:-}"
 
-exec python3 "$UDMI_ROOT/mcp/infra/server.py" mcp "$@"
+exec python3 "$UDMI_ROOT/mcp/etcd/server.py" "$@"

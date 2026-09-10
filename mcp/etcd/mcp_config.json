@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "udmi-etcd": {
+      "command": "bin/etcd_mcp",
+      "args": ["mcp"],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}

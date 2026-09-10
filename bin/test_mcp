@@ -49,6 +49,10 @@ proc.stdin.close()
 proc.wait()
 '
 
+# 1b. Test ETCD MCP stdio JSON-RPC protocol & unit tests
+echo "Step 1b: Verifying ETCD MCP JSON-RPC protocol, provider, and UI indirection..."
+python3 -m unittest tests/test_mcp_etcd.py
+
 # 2. Test CLI ensure command
 echo "Step 2: Starting test infrastructure via CLI (bin/test_setup ensure)..."
 CONN_INFO=$(bin/test_setup ensure "$TEST_ID" "$SITE_MODEL" --json)
