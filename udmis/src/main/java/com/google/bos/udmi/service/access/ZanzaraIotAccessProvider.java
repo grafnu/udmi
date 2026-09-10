@@ -124,7 +124,7 @@ public class ZanzaraIotAccessProvider extends IotAccessBase {
   private static final String CREATED_AT_PROPERTY = "created_at";
   private static final String REGISTRIES_KEY = "registries";
   private static final String NUM_ID_PROPERTY = "num_id";
-  private static final String IMPLICIT_DATABASE_COMPONENT = "database";
+  private static final String DATABASE_COMPONENT = "database";
   private static final String CLIENT_ID_FORMAT = "/r/%s/d/%s";
   private static final String CLIENT_PREFIX = "/r";
   private static final String AUTH_PASSWORD_PROPERTY = "auth_pass";
@@ -493,7 +493,7 @@ public class ZanzaraIotAccessProvider extends IotAccessBase {
       envelope.deviceRegistryId = registryId;
       envelope.deviceId = deviceId;
       envelope.subType = SubType.CONFIG;
-      envelope.source = IotProvider.IMPLICIT.value();
+      envelope.source = IotProvider.ZANZARA.value();
 
       Bundle bundle = new Bundle(envelope, MessageDispatcher.rawString(payload));
       mqttPipe.publish(bundle);
@@ -632,7 +632,7 @@ public class ZanzaraIotAccessProvider extends IotAccessBase {
 
   @Override
   public void activate() {
-    database = UdmiServicePod.getComponent(IMPLICIT_DATABASE_COMPONENT);
+    database = UdmiServicePod.getComponent(DATABASE_COMPONENT);
     super.activate();
     if (isPublishEnabled()) {
       connectMqttClient();
