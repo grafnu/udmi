@@ -54,6 +54,7 @@ codebase
 cognisant
 comms
 Config
+ConfigMaps
 config
 conn
 contextualise
@@ -257,6 +258,8 @@ repo
 Responder
 responders
 rightarrow
+Rollout
+rollout
 RPC
 RSA
 RTU
