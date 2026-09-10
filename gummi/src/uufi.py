@@ -1,10 +1,15 @@
-"""UUFI client, configuration dispatcher, and rollout manager for GUMMI."""
+"""UUFI client, configuration dispatcher, and rollout manager for GUMMI.
+
+Integrates GUMMI's management plane with the external UUFI messaging fabric
+via the UUFI MCP Client, providing declarative configuration dispatch,
+rollout orchestration, and real-time SSE streaming without direct paho-mqtt
+broker dependencies.
+"""
 
 from datetime import datetime, timezone
 import json
 import os
 import queue
-import socket
 import sys
 import threading
 import time
@@ -12,147 +17,133 @@ from typing import Any, Callable, Dict, List, Optional
 import uuid
 
 try:
-    import paho.mqtt.client as mqtt
-except ImportError:
-    mqtt = None
+    from mcp.uufi.client import UUFIClient
+except (ImportError, ModuleNotFoundError):
+    from udmi.mcp.uufi.client import UUFIClient
 
 
 class GummiUUFIClient:
-    """Manages UUFI broker connections, configuration mutations, and live event distribution."""
+    """Manages UUFI messaging, configuration mutations, and live event distribution for GUMMI."""
 
     def __init__(
         self,
         project_spec: Optional[str] = None,
         site_model: Optional[str] = None,
+        uufi_port: Optional[int] = None,
+        uufi_client: Optional[Any] = None,
+        mock_mode: bool = False,
     ):
-        self.project_spec = project_spec or os.environ.get("TARGET_PROJECT", "//mqtt/localhost")
+        self.mock_mode = mock_mode
+        self.project_spec = project_spec
         self.site_model = site_model
+        self.uufi_port = uufi_port or int(os.environ.get("UUFI_PORT", "8087"))
         self.client_id = f"gummi_{uuid.uuid4().hex[:8]}"
-        self.mqtt_client: Optional[Any] = None
-        self.is_connected = False
+
+        # Canonical UUFI MCP client interface (no opportunistic fallback heuristics)
+        if self.mock_mode:
+            self.uufi = None
+        elif uufi_client is not None:
+            self.uufi = uufi_client
+        else:
+            self.uufi = UUFIClient(port=self.uufi_port)
+
         self.event_subscribers: List[queue.Queue] = []
         self._lock = threading.RLock()
+        self.cursor = 0
 
         # In-memory staged rollout tracker
         self.rollouts: Dict[int, Dict[str, Any]] = {}
         self._rollout_id_counter = 1
 
-        # Background thread
+        # Background polling worker thread
         self._thread: Optional[threading.Thread] = None
         self._running = False
 
-    def start(self) -> None:
-        """Starts background MQTT connection and rollout monitoring."""
-        if not mqtt:
-            print("Note: paho-mqtt not available, running in mock/offline mode", file=sys.stderr)
-            return
+    @property
+    def is_connected(self) -> bool:
+        """Reports whether the underlying UUFI transport is connected."""
+        if self.mock_mode:
+            return True
+        if not self.uufi:
+            return False
+        try:
+            h = self.uufi.health()
+            return h.get("status") in ("UP", "REACHABLE", "ACTIVE")
+        except Exception:
+            return False
 
+    def start(self) -> None:
+        """Starts background event polling loop and rollout monitoring."""
         self._running = True
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
-        """Stops background connection."""
+        """Stops background connection and polling."""
         self._running = False
-        if self.mqtt_client:
-            try:
-                self.mqtt_client.disconnect()
-                self.mqtt_client.loop_stop()
-            except Exception:
-                pass
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
 
     def _run_loop(self) -> None:
-        """Background connection loop with automatic reconnect."""
+        """Background loop polling UUFI events and updating SSE subscribers and rollouts."""
+        if self.mock_mode:
+            while self._running:
+                time.sleep(0.5)
+            return
+
+        last_health_check = 0.0
         while self._running:
             try:
-                port = int(os.environ.get("MQTT_PORT", "1883"))
-                host = os.environ.get("MQTT_HOST", "127.0.0.1")
+                # Poll events from UUFI MCP server
+                res = self.uufi.poll_events(cursor=self.cursor, timeout_sec=0.5)
+                events = res.get("events", []) if isinstance(res, dict) else []
+                new_cursor = res.get("cursor", self.cursor) if isinstance(res, dict) else self.cursor
 
-                # Parse port from project_spec if specified e.g. //mqtt/localhost:18833
-                if ":" in self.project_spec:
-                    parts = self.project_spec.split(":")
-                    if len(parts) >= 2:
-                        try:
-                            port = int(parts[-1].split("/")[0])
-                        except ValueError:
-                            pass
+                for ev in events:
+                    ev_id = ev.get("id", 0)
+                    if ev_id > self.cursor:
+                        self.cursor = ev_id
 
-                client = mqtt.Client(client_id=self.client_id)
+                    sub_type = ev.get("subType")
+                    sub_folder = ev.get("subFolder")
+                    reg_id = ev.get("deviceRegistryId", "default")
+                    dev_id = ev.get("deviceId", "unknown")
+                    payload = ev.get("payload", {})
 
-                def on_connect(c, userdata, flags, rc):
-                    if rc == 0:
-                        self.is_connected = True
-                        c.subscribe("/uufi/r/+/d/+/c/#")
-                        self.broadcast_event("system_status", {"uufi": "CONNECTED", "port": port})
+                    if sub_type == "state":
+                        self.broadcast_event("device_state", {
+                            "registry_id": reg_id,
+                            "device_id": dev_id,
+                            "sub_folder": sub_folder,
+                            "timestamp": ev.get("timestamp"),
+                        })
+                        self._evaluate_rollout_convergence(reg_id, dev_id, sub_folder, payload)
+                    elif sub_folder in ("status", "validation"):
+                        self.broadcast_event("alert", {
+                            "topic": ev.get("topic"),
+                            "payload": payload,
+                            "timestamp": ev.get("timestamp"),
+                        })
 
-                def on_disconnect(c, userdata, rc):
-                    self.is_connected = False
-                    self.broadcast_event("system_status", {"uufi": "DISCONNECTED"})
+                if new_cursor > self.cursor:
+                    self.cursor = new_cursor
 
-                def on_message(c, userdata, msg):
+                # Periodically broadcast system status
+                now = time.time()
+                if now - last_health_check >= 5.0:
+                    last_health_check = now
                     try:
-                        payload = json.loads(msg.payload.decode("utf-8"))
-                        topic = msg.topic
-                        self._handle_inbound_message(topic, payload)
+                        h = self.uufi.health()
+                        st = "CONNECTED" if h.get("status") in ("UP", "REACHABLE", "ACTIVE") else "DISCONNECTED"
+                        self.broadcast_event("system_status", {"uufi": st, "broker": h.get("broker")})
                     except Exception:
-                        pass
-
-                client.on_connect = on_connect
-                client.on_disconnect = on_disconnect
-                client.on_message = on_message
-
-                try:
-                    # Quick socket check before blocking connect
-                    with socket.create_connection((host, port), timeout=0.5):
-                        pass
-                    client.connect(host, port, keepalive=30)
-                    self.mqtt_client = client
-                    client.loop_start()
-
-                    while self._running and self.is_connected:
-                        time.sleep(0.5)
-                except Exception:
-                    self.is_connected = False
-                    for _ in range(20):
-                        if not self._running:
-                            break
-                        time.sleep(0.1)
+                        self.broadcast_event("system_status", {"uufi": "DISCONNECTED"})
 
             except Exception:
-                self.is_connected = False
-                for _ in range(20):
+                for _ in range(10):
                     if not self._running:
                         break
                     time.sleep(0.1)
-
-    def _handle_inbound_message(self, topic: str, payload: Dict[str, Any]) -> None:
-        """Dispatches inbound message to SSE subscribers and rollout monitor."""
-        # Broadcast state diff or alert
-        if "/state/" in topic:
-            parts = topic.split("/")
-            # Topic format: .../r/<reg>/d/<dev>/c/state/<subfolder>
-            reg_idx = parts.index("r") + 1 if "r" in parts else -1
-            dev_idx = parts.index("d") + 1 if "d" in parts else -1
-            subfolder = parts[-1]
-            reg_id = parts[reg_idx] if reg_idx > 0 and reg_idx < len(parts) else "default"
-            dev_id = parts[dev_idx] if dev_idx > 0 and dev_idx < len(parts) else "unknown"
-
-            self.broadcast_event("device_state", {
-                "registry_id": reg_id,
-                "device_id": dev_id,
-                "sub_folder": subfolder,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
-
-            # Check rollout convergence
-            self._evaluate_rollout_convergence(reg_id, dev_id, subfolder, payload)
-
-        elif "/events/status" in topic or "/events/validation" in topic:
-            self.broadcast_event("alert", {
-                "topic": topic,
-                "payload": payload,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
 
     # --------------------------------------------------------------------------
     # Configuration Mutation
@@ -165,48 +156,50 @@ class GummiUUFIClient:
         sub_folder: str,
         payload: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Publishes configuration update to the UUFI broker."""
+        """Publishes configuration update via the UUFI MCP client."""
         tx_id = str(uuid.uuid4())
         topic = f"/uufi/r/{registry_id}/d/{device_id}/c/config/{sub_folder}"
 
-        message_envelope = {
-            "version": "1.5.2",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "transactionId": tx_id,
-            "deviceRegistryId": registry_id,
-            "deviceId": device_id,
-            "subFolder": sub_folder,
-            "subType": "config",
-            "principal": "gummi.operator@localhost",
-        }
+        if self.mock_mode:
+            self.broadcast_event("config_dispatched", {
+                "registry_id": registry_id,
+                "device_id": device_id,
+                "sub_folder": sub_folder,
+                "transaction_id": tx_id,
+                "dispatched": False,
+                "simulated": True,
+            })
+            return {
+                "status": "SIMULATED",
+                "transaction_id": tx_id,
+                "topic": topic,
+                "message": "Configuration simulated in mock mode.",
+            }
 
-        # Merge or embed payload
-        outbound_payload = dict(payload)
-        outbound_payload["timestamp"] = message_envelope["timestamp"]
+        if not self.uufi:
+            raise ConnectionError("UUFI client is not configured or unavailable")
 
-        dispatched = False
-        if self.mqtt_client and self.is_connected:
-            try:
-                self.mqtt_client.publish(topic, json.dumps(outbound_payload), qos=1)
-                dispatched = True
-            except Exception as e:
-                print(f"Warning: Failed to publish MQTT config: {e}", file=sys.stderr)
+        res = self.uufi.publish_config(registry_id, device_id, sub_folder, payload)
+        if not isinstance(res, dict) or res.get("status") != "DISPATCHED":
+            err_msg = res.get("error") if isinstance(res, dict) else "Unknown dispatch error"
+            raise RuntimeError(f"Failed to dispatch config to UUFI bus: {err_msg}")
+
+        tx_id = res.get("transactionId") or res.get("transaction_id") or tx_id
+        topic = res.get("topic") or topic
 
         self.broadcast_event("config_dispatched", {
             "registry_id": registry_id,
             "device_id": device_id,
             "sub_folder": sub_folder,
             "transaction_id": tx_id,
-            "dispatched": dispatched,
+            "dispatched": True,
         })
 
         return {
-            "status": "DISPATCHED" if dispatched else "SIMULATED",
+            "status": "DISPATCHED",
             "transaction_id": tx_id,
             "topic": topic,
-            "message": "Configuration successfully published to UUFI bus."
-            if dispatched
-            else "Configuration queued in local mock environment.",
+            "message": "Configuration successfully published to UUFI bus.",
         }
 
     # --------------------------------------------------------------------------

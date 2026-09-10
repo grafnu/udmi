@@ -30,7 +30,7 @@ def gummi_server():
     port = s.getsockname()[1]
     s.close()
 
-    server = GummiServer(host="127.0.0.1", port=port)
+    server = GummiServer(host="127.0.0.1", port=port, mock_mode=True)
     server_address = (server.host, server.port)
     httpd = ThreadingHTTPServer(server_address, GummiRequestHandler)
     httpd.daemon_threads = True
@@ -71,7 +71,7 @@ class TestGummiMappingLifecycle:
 
     def test_gummi_db_populate_and_get_messages(self):
         """Validates that GummiDB can populate and query the 3-stage message lifecycle."""
-        db = GummiDB()
+        db = GummiDB(mock_mode=True)
         res = db.populate_mapping_scenario(registry_id="ZZ-TRI-FECTA")
         assert res["status"] == "SUCCESS"
         assert res["records_inserted"] == 4

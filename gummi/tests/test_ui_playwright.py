@@ -26,7 +26,7 @@ def gummi_server_url():
     port = s.getsockname()[1]
     s.close()
 
-    server = GummiServer(host="127.0.0.1", port=port)
+    server = GummiServer(host="127.0.0.1", port=port, mock_mode=True)
     server_address = (server.host, server.port)
     httpd = ThreadingHTTPServer(server_address, GummiRequestHandler)
     httpd.daemon_threads = True

@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from typing import Any, Dict
+import urllib.error
 import urllib.request
 import pytest
 
@@ -30,10 +31,11 @@ def gummi_server():
     port = s.getsockname()[1]
     s.close()
 
-    server = GummiServer(host="127.0.0.1", port=port)
+    server = GummiServer(host="127.0.0.1", port=port, mock_mode=True)
     server_address = (server.host, server.port)
     httpd = ThreadingHTTPServer(server_address, GummiRequestHandler)
     httpd.daemon_threads = True
+    httpd.mock_mode = server.mock_mode
     httpd.db = server.db
     httpd.uufi = server.uufi
     server.httpd = httpd
@@ -89,18 +91,21 @@ class TestGummiServer:
 
     def test_api_system_capabilities(self, gummi_server):
         data = http_get_json(f"{gummi_server}/api/system/capabilities")
-        assert data.get("environment") == "LOCAL_BRIDGEHEAD"
+        assert data.get("environment") == "MOCK_MODE"
+        assert data.get("mock_mode") is True
         assert "portfolio" in data.get("features", [])
         assert "devices" in data.get("features", [])
         assert "managed_rollout" in data.get("features", [])
 
     def test_api_bridgehead_status(self, gummi_server):
         data = http_get_json(f"{gummi_server}/api/bridgehead/status")
-        assert "overall_status" in data
+        assert data.get("overall_status") == "MOCK_MODE"
         assert "components" in data
         assert "postgres" in data["components"]
         assert "influxdb" in data["components"]
         assert "mqtt_broker" in data["components"]
+        assert "uufi_service" in data["components"]
+        assert data["components"]["uufi_service"]["status"] == "MOCK_MODE"
 
     def test_api_portfolio_summary(self, gummi_server):
         data = http_get_json(f"{gummi_server}/api/portfolio/summary")
@@ -167,3 +172,106 @@ class TestGummiServer:
         # 4. Cancel Rollout
         cancelled = http_post_json(f"{gummi_server}/api/rollouts/{rollout_id}/cancel", {})
         assert cancelled.get("status") == "CANCELLED"
+
+    def test_uufi_mcp_integration(self):
+        """Verifies GummiUUFIClient consumes UUFIClient interface cleanly."""
+        from unittest.mock import MagicMock
+        mock_uufi = MagicMock()
+        mock_uufi.health.return_value = {
+            "status": "UP",
+            "broker": "127.0.0.1:1883",
+            "latency_ms": 1.5,
+        }
+        mock_uufi.publish_config.return_value = {
+            "status": "DISPATCHED",
+            "transactionId": "TX-12345",
+            "topic": "/uufi/r/ZZ-TRI-FECTA/d/AHU-1/c/config/system",
+        }
+
+        client = GummiUUFIClient(uufi_client=mock_uufi)
+        assert client.is_connected is True
+
+        res = client.publish_config("ZZ-TRI-FECTA", "AHU-1", "system", {"software": {"system": "1.0.0"}})
+        assert res["status"] == "DISPATCHED"
+        assert res["transaction_id"] == "TX-12345"
+        mock_uufi.publish_config.assert_called_once_with(
+            "ZZ-TRI-FECTA", "AHU-1", "system", {"software": {"system": "1.0.0"}}
+        )
+
+    def test_mock_mode_disabled_health_and_query_failures(self):
+        """Verifies that with mock_mode=False and unavailable backends, GummiDB fails fast."""
+        from udmi.common.db.influx import InfluxManager
+        from udmi.common.db.postgres import PostgresManager
+
+        # Explicit unreachable endpoints to test fail-fast in isolated environment
+        unreachable_influx = InfluxManager(url="http://127.0.0.1:59999")
+        unreachable_pg = PostgresManager(port=59998)
+        db = GummiDB(pg_manager=unreachable_pg, influx_manager=unreachable_influx, mock_mode=False)
+        health = db.check_component_health()
+        assert health["overall_status"] == "DEGRADED"
+        assert health["components"]["postgres"]["status"] == "DOWN"
+        assert health["components"]["influxdb"]["status"] == "DOWN"
+        assert health["components"]["uufi_service"]["status"] == "DOWN"
+
+        with pytest.raises(ConnectionError):
+            db.get_portfolio_summary()
+
+        with pytest.raises(ConnectionError):
+            db.get_alerts()
+
+        with pytest.raises(ConnectionError):
+            db.get_devices()
+
+        with pytest.raises(ConnectionError):
+            db.get_device_detail("REG", "DEV")
+
+        with pytest.raises(ConnectionError):
+            db.get_device_messages("REG", "DEV")
+
+        with pytest.raises(ConnectionError):
+            db.get_device_telemetry("REG", "DEV", ["temperature"])
+
+    def test_live_server_error_responses(self):
+        """Verifies that live server returns HTTP 503 instead of falling back to mock data."""
+        import socket
+        from udmi.common.db.postgres import PostgresManager
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+
+        server = GummiServer(host="127.0.0.1", port=port, mock_mode=False)
+        # Ensure postgres points to unreachable port so it fails cleanly
+        server.db.pg = PostgresManager(port=59998)
+        server_address = (server.host, server.port)
+        httpd = ThreadingHTTPServer(server_address, GummiRequestHandler)
+        httpd.daemon_threads = True
+        httpd.mock_mode = server.mock_mode
+        httpd.db = server.db
+        httpd.uufi = server.uufi
+        server.httpd = httpd
+
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        time.sleep(0.2)
+        base_url = f"http://127.0.0.1:{port}"
+
+        try:
+            # Capabilities should report live environment and mock_mode=False
+            caps = http_get_json(f"{base_url}/api/system/capabilities")
+            assert caps.get("mock_mode") is False
+            assert caps.get("environment") == "LOCAL_BRIDGEHEAD"
+
+            # Endpoints requiring DB should fail with HTTP 503 Service Unavailable
+            for endpoint in ["/api/devices", "/api/portfolio/summary", "/api/portfolio/alerts", "/api/devices/REG/DEV"]:
+                url = f"{base_url}{endpoint}"
+                with pytest.raises(urllib.error.HTTPError) as exc_info:
+                    urllib.request.urlopen(urllib.request.Request(url))
+                assert exc_info.value.code == 503
+        finally:
+            try:
+                httpd.server_close()
+            except Exception:
+                pass
+            server.uufi.stop()
+

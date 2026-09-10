@@ -1,4 +1,4 @@
-"""Database access adapter for GUMMI querying Butler data stores with mock data fallbacks."""
+"""Database access adapter for GUMMI querying Butler data stores or mock mode."""
 
 from datetime import datetime, timezone, timedelta
 import json
@@ -26,11 +26,24 @@ class GummiDB:
         self,
         pg_manager: Optional[Any] = None,
         influx_manager: Optional[Any] = None,
+        uufi_client: Optional[Any] = None,
+        mock_mode: bool = False,
     ):
-        self.pg = pg_manager or (PostgresManager() if PostgresManager else None)
-        self.influx = influx_manager or (InfluxManager() if InfluxManager else None)
-        self._mock_fleet = self._generate_mock_fleet()
-        self._mock_messages = self._generate_mock_messages()
+        self.mock_mode = mock_mode
+        self.pg = None if mock_mode else (pg_manager or (PostgresManager() if PostgresManager else None))
+        self.influx = None if mock_mode else (influx_manager or (InfluxManager() if InfluxManager else None))
+        self.uufi = None if mock_mode else uufi_client
+        self._mock_fleet = self._generate_mock_fleet() if mock_mode else []
+        self._mock_messages = self._generate_mock_messages() if mock_mode else {}
+
+    def _get_pg_connection(self):
+        """Returns a PostgreSQL connection or raises ConnectionError if unconfigured or unreachable."""
+        if not self.pg:
+            raise ConnectionError("PostgreSQL manager is not configured or unavailable")
+        try:
+            return self.pg.get_connection()
+        except Exception as e:
+            raise ConnectionError(f"PostgreSQL connection failed: {e}") from e
 
     # --------------------------------------------------------------------------
     # Health & Connectivity
@@ -38,14 +51,59 @@ class GummiDB:
 
     def check_component_health(self) -> Dict[str, Any]:
         """Probes local database and broker components to report latency and status."""
+        if self.mock_mode:
+            components = {
+                "postgres": {
+                    "status": "MOCK_MODE",
+                    "endpoint": "mock://postgres",
+                    "latency_ms": 0.0,
+                    "note": "Running in mock mode",
+                },
+                "influxdb": {
+                    "status": "MOCK_MODE",
+                    "endpoint": "mock://influxdb",
+                    "latency_ms": 0.0,
+                    "note": "Running in mock mode",
+                },
+                "uufi_service": {
+                    "status": "MOCK_MODE",
+                    "endpoint": "mock://uufi",
+                    "latency_ms": 0.0,
+                    "note": "Running in mock mode",
+                },
+                "mqtt_broker": {
+                    "status": "MOCK_MODE",
+                    "endpoint": "mock://uufi",
+                    "latency_ms": 0.0,
+                    "note": "Running in mock mode",
+                },
+                "etcd": {
+                    "status": "MOCK_MODE",
+                    "endpoint": "mock://etcd",
+                    "latency_ms": 0.0,
+                    "note": "Running in mock mode",
+                },
+            }
+            return {
+                "overall_status": "MOCK_MODE",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "components": components,
+            }
+
         components: Dict[str, Any] = {}
 
         # 1. PostgreSQL Probe
         pg_host = os.environ.get("POSTGRES_HOST", "127.0.0.1")
         pg_port = int(os.environ.get("POSTGRES_PORT", "5432"))
-        t0 = time.perf_counter()
-        try:
-            if self.pg:
+        if not self.pg:
+            components["postgres"] = {
+                "status": "DOWN",
+                "endpoint": f"{pg_host}:{pg_port}",
+                "error": "PostgresManager not configured or unavailable",
+            }
+        else:
+            t0 = time.perf_counter()
+            try:
                 conn = self.pg.get_connection()
                 with conn.cursor() as cur:
                     cur.execute("SELECT 1;")
@@ -57,57 +115,72 @@ class GummiDB:
                     "endpoint": f"{pg_host}:{pg_port}",
                     "latency_ms": latency,
                 }
-            else:
-                components["postgres"] = {"status": "MOCK_MODE", "endpoint": f"{pg_host}:{pg_port}", "latency_ms": 0}
-        except Exception:
-            components["postgres"] = {
-                "status": "MOCK_MODE",
-                "endpoint": f"{pg_host}:{pg_port}",
-                "note": "Running standalone mock mode",
-            }
+            except Exception as e:
+                components["postgres"] = {
+                    "status": "DOWN",
+                    "endpoint": f"{pg_host}:{pg_port}",
+                    "error": str(e),
+                }
 
         # 2. InfluxDB Probe
         influx_port = int(os.environ.get("INFLUX_PORT", os.environ.get("INFLUXDB_PORT", "8086")))
         influx_host = os.environ.get("INFLUXDB_HOST", "127.0.0.1")
-        t0 = time.perf_counter()
-        try:
-            if self.influx:
+        if not self.influx:
+            components["influxdb"] = {
+                "status": "DOWN",
+                "endpoint": f"{influx_host}:{influx_port}",
+                "error": "InfluxManager not configured or unavailable",
+            }
+        else:
+            t0 = time.perf_counter()
+            try:
                 client = self.influx.get_client()
                 ready = client.ready()
                 latency = round((time.perf_counter() - t0) * 1000, 2)
-                status_str = "UP" if (ready and getattr(ready, "status", None) == "ready") else "UP"
+                status_str = "UP" if (ready and getattr(ready, "status", None) == "ready") else "DOWN"
                 components["influxdb"] = {
                     "status": status_str,
                     "endpoint": f"{influx_host}:{influx_port}",
                     "latency_ms": latency,
                 }
-            else:
-                components["influxdb"] = {"status": "MOCK_MODE", "endpoint": f"{influx_host}:{influx_port}", "latency_ms": 0}
-        except Exception:
-            components["influxdb"] = {
-                "status": "MOCK_MODE",
-                "endpoint": f"{influx_host}:{influx_port}",
-                "note": "Running standalone mock mode",
-            }
-
-        # 3. Mosquitto MQTT Broker Probe
-        mqtt_port = int(os.environ.get("MQTT_PORT", "1883"))
-        mqtt_host = os.environ.get("MQTT_HOST", "127.0.0.1")
-        t0 = time.perf_counter()
-        try:
-            with socket.create_connection((mqtt_host, mqtt_port), timeout=0.5):
-                latency = round((time.perf_counter() - t0) * 1000, 2)
-                components["mqtt_broker"] = {
-                    "status": "UP",
-                    "endpoint": f"{mqtt_host}:{mqtt_port}",
-                    "latency_ms": latency,
+            except Exception as e:
+                components["influxdb"] = {
+                    "status": "DOWN",
+                    "endpoint": f"{influx_host}:{influx_port}",
+                    "error": str(e),
                 }
-        except Exception:
-            components["mqtt_broker"] = {
-                "status": "MOCK_MODE",
-                "endpoint": f"{mqtt_host}:{mqtt_port}",
-                "note": "Running standalone mock mode",
+
+        # 3. UUFI Messaging Service Probe
+        if not self.uufi:
+            uufi_comp = {
+                "status": "DOWN",
+                "endpoint": "uufi-service",
+                "error": "UUFI client not configured or unavailable",
             }
+        else:
+            try:
+                h = self.uufi.health()
+                if h.get("status") in ("UP", "REACHABLE", "ACTIVE"):
+                    uufi_comp = {
+                        "status": "UP",
+                        "endpoint": h.get("broker", "uufi-service"),
+                        "latency_ms": h.get("latency_ms", 0.0),
+                    }
+                else:
+                    uufi_comp = {
+                        "status": "DOWN",
+                        "endpoint": h.get("broker", "uufi-service"),
+                        "error": h.get("error", "UUFI Service unreachable"),
+                    }
+            except Exception as e:
+                uufi_comp = {
+                    "status": "DOWN",
+                    "endpoint": "uufi-service",
+                    "error": str(e),
+                }
+
+        components["uufi_service"] = uufi_comp
+        components["mqtt_broker"] = uufi_comp
 
         # 4. etcd Probe
         etcd_port = int(os.environ.get("ETCD_PORT", "2379"))
@@ -121,14 +194,15 @@ class GummiDB:
                     "endpoint": f"{etcd_host}:{etcd_port}",
                     "latency_ms": latency,
                 }
-        except Exception:
+        except Exception as e:
             components["etcd"] = {
-                "status": "MOCK_MODE",
+                "status": "DOWN",
                 "endpoint": f"{etcd_host}:{etcd_port}",
-                "note": "Running standalone mock mode",
+                "error": str(e),
             }
 
-        overall = "HEALTHY" if all(c.get("status") in ("UP", "MOCK_MODE") for c in components.values()) else "DEGRADED"
+        all_up = all(c.get("status") == "UP" for c in components.values())
+        overall = "HEALTHY" if all_up else "DEGRADED"
         return {
             "overall_status": overall,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -141,11 +215,11 @@ class GummiDB:
 
     def get_portfolio_summary(self) -> Dict[str, Any]:
         """Returns aggregate device counts, online/offline breakdown, and recent alerts."""
-        if not self.pg:
+        if self.mock_mode:
             return self._mock_portfolio_summary()
 
+        conn = self._get_pg_connection()
         try:
-            conn = self.pg.get_connection()
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT 
@@ -173,11 +247,6 @@ class GummiDB:
                 err_row = cur.fetchone()
                 error_devices = err_row[0] if err_row else 0
 
-            conn.close()
-
-            if total_devices == 0:
-                return self._mock_portfolio_summary()
-
             online_devices = max(0, total_devices - error_devices)
             offline_devices = 0
 
@@ -192,16 +261,16 @@ class GummiDB:
                 "active_rollouts_count": 0,
                 "critical_alerts_24h": critical_alerts_24h,
             }
-        except Exception:
-            return self._mock_portfolio_summary()
+        finally:
+            conn.close()
 
     def get_alerts(self, limit: int = 50, min_level: int = 500) -> List[Dict[str, Any]]:
         """Queries recent validation and alarm events."""
-        if not self.pg:
+        if self.mock_mode:
             return self._mock_alerts(limit=limit, min_level=min_level)
 
+        conn = self._get_pg_connection()
         try:
-            conn = self.pg.get_connection()
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT id, device_registry_id, device_id, level, category, message, detail, timestamp
@@ -211,10 +280,6 @@ class GummiDB:
                     LIMIT %s;
                 """, (min_level, limit))
                 rows = cur.fetchall()
-            conn.close()
-
-            if not rows:
-                return self._mock_alerts(limit=limit, min_level=min_level)
 
             alerts = []
             for r in rows:
@@ -229,8 +294,8 @@ class GummiDB:
                     "timestamp": r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7]),
                 })
             return alerts
-        except Exception:
-            return self._mock_alerts(limit=limit, min_level=min_level)
+        finally:
+            conn.close()
 
     # --------------------------------------------------------------------------
     # Devices Explorer Queries
@@ -248,7 +313,7 @@ class GummiDB:
         search: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Fetches a paginated, filtered list of devices from udmi_system_state."""
-        if not self.pg:
+        if self.mock_mode:
             return self._filter_mock_devices(
                 limit=limit,
                 offset=offset,
@@ -260,8 +325,8 @@ class GummiDB:
                 search=search,
             )
 
+        conn = self._get_pg_connection()
         try:
-            conn = self.pg.get_connection()
             conditions = ["1=1"]
             params: List[Any] = []
 
@@ -293,17 +358,12 @@ class GummiDB:
                 total = cur.fetchone()[0]
 
                 if total == 0:
-                    conn.close()
-                    return self._filter_mock_devices(
-                        limit=limit,
-                        offset=offset,
-                        registry_id=registry_id,
-                        device_prefix=device_prefix,
-                        make=make,
-                        model=model,
-                        status=status,
-                        search=search,
-                    )
+                    return {
+                        "total": 0,
+                        "limit": limit,
+                        "offset": offset,
+                        "devices": [],
+                    }
 
                 data_query = f"""
                     SELECT DISTINCT ON (s.device_registry_id, s.device_id)
@@ -322,8 +382,6 @@ class GummiDB:
                 """
                 cur.execute(data_query, params + [limit, offset])
                 rows = cur.fetchall()
-
-            conn.close()
 
             devices = []
             for r in rows:
@@ -352,17 +410,8 @@ class GummiDB:
                 "offset": offset,
                 "devices": devices,
             }
-        except Exception:
-            return self._filter_mock_devices(
-                limit=limit,
-                offset=offset,
-                registry_id=registry_id,
-                device_prefix=device_prefix,
-                make=make,
-                model=model,
-                status=status,
-                search=search,
-            )
+        finally:
+            conn.close()
 
     # --------------------------------------------------------------------------
     # Device Detail & Telemetry Queries
@@ -370,11 +419,11 @@ class GummiDB:
 
     def get_device_detail(self, registry_id: str, device_id: str) -> Optional[Dict[str, Any]]:
         """Returns metadata, system state, point states, and recent validation errors for a device."""
-        if not self.pg:
+        if self.mock_mode:
             return self._mock_device_detail(registry_id, device_id)
 
+        conn = self._get_pg_connection()
         try:
-            conn = self.pg.get_connection()
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT make, model, serial_no, rev, sku, software, timestamp
@@ -386,8 +435,7 @@ class GummiDB:
                 sys_row = cur.fetchone()
 
                 if not sys_row:
-                    conn.close()
-                    return self._mock_device_detail(registry_id, device_id)
+                    return None
 
                 cur.execute("""
                     SELECT system_location_room, system_location_floor, metadata
@@ -416,7 +464,13 @@ class GummiDB:
                 """, (registry_id, device_id))
                 val_rows = cur.fetchall()
 
-            conn.close()
+            meta_dict = meta_row[2] if (meta_row and isinstance(meta_row[2], dict)) else {}
+            meta_dict.setdefault("make", sys_row[0] or "Unknown")
+            meta_dict.setdefault("model", sys_row[1] or "Unknown")
+            meta_dict.setdefault("serial_no", sys_row[2])
+            meta_dict.setdefault("room", meta_row[0] if meta_row else None)
+            meta_dict.setdefault("floor", meta_row[1] if meta_row else None)
+            meta_dict.setdefault("last_seen", sys_row[6].isoformat() if hasattr(sys_row[6], "isoformat") else str(sys_row[6]))
 
             points_map = {}
             for pr in point_rows:
@@ -425,8 +479,7 @@ class GummiDB:
                     "units": pr[2],
                     "level": pr[3],
                     "message": pr[4],
-                    "status_timestamp": pr[5].isoformat() if hasattr(pr[5], "isoformat") else str(pr[5]) if pr[5] else None,
-                    "timestamp": pr[6].isoformat() if hasattr(pr[6], "isoformat") else str(pr[6]) if pr[6] else None,
+                    "status_timestamp": pr[5].isoformat() if hasattr(pr[5], "isoformat") else str(pr[5]),
                 }
 
             events = [
@@ -452,17 +505,7 @@ class GummiDB:
             return {
                 "registry_id": registry_id,
                 "device_id": device_id,
-                "metadata": {
-                    "make": sys_row[0] if sys_row else "Unknown",
-                    "model": sys_row[1] if sys_row else "Unknown",
-                    "serial_no": sys_row[2] if sys_row else None,
-                    "rev": sys_row[3] if sys_row else None,
-                    "sku": sys_row[4] if sys_row else None,
-                    "room": meta_row[0] if meta_row else None,
-                    "floor": meta_row[1] if meta_row else None,
-                    "software": software_dict,
-                    "last_seen": sys_row[6].isoformat() if sys_row and hasattr(sys_row[6], "isoformat") else None,
-                },
+                "metadata": meta_dict,
                 "state": {
                     "system": {
                         "software": software_dict,
@@ -478,8 +521,8 @@ class GummiDB:
                 },
                 "events": events,
             }
-        except Exception:
-            return self._mock_device_detail(registry_id, device_id)
+        finally:
+            conn.close()
 
     def get_device_telemetry(
         self,
@@ -490,57 +533,57 @@ class GummiDB:
         stop: str = "now()",
     ) -> Dict[str, Any]:
         """Queries InfluxDB for time-series point values."""
-        if not self.influx:
+        if self.mock_mode:
             return self._mock_telemetry(registry_id, device_id, point_names)
+
+        if not self.influx:
+            raise ConnectionError("InfluxDB manager is not configured or unavailable")
+
+        client = self.influx.get_client()
+        query_api = client.query_api()
+
+        point_filters = " or ".join([f'r["point_name"] == "{p.strip()}"' for p in point_names if p.strip()])
+        if not point_filters:
+            point_filters = 'true'
+
+        flux_query = f"""
+            from(bucket: "{self.influx.bucket}")
+              |> range(start: {start}, stop: {stop})
+              |> filter(fn: (r) => r["_measurement"] == "point_value")
+              |> filter(fn: (r) => r["device_id"] == "{device_id}")
+              |> filter(fn: (r) => {point_filters})
+              |> yield(name: "points")
+        """
 
         try:
-            client = self.influx.get_client()
-            query_api = client.query_api()
-
-            point_filters = " or ".join([f'r["point_name"] == "{p.strip()}"' for p in point_names if p.strip()])
-            if not point_filters:
-                point_filters = 'true'
-
-            flux_query = f"""
-                from(bucket: "{self.influx.bucket}")
-                  |> range(start: {start}, stop: {stop})
-                  |> filter(fn: (r) => r["_measurement"] == "point_value")
-                  |> filter(fn: (r) => r["device_id"] == "{device_id}")
-                  |> filter(fn: (r) => {point_filters})
-                  |> yield(name: "points")
-            """
-
             tables = query_api.query(flux_query)
-            series_by_point: Dict[str, List[Dict[str, Any]]] = {}
+        except Exception as e:
+            raise ConnectionError(f"InfluxDB query failed: {e}") from e
+        series_by_point: Dict[str, List[Dict[str, Any]]] = {}
 
-            for table in tables:
-                for record in table.records:
-                    pt_name = record.values.get("point_name")
-                    val = record.get_value()
-                    ts = record.get_time()
-                    if pt_name not in series_by_point:
-                        series_by_point[pt_name] = []
-                    series_by_point[pt_name].append({
-                        "time": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
-                        "value": val,
-                        "field": record.get_field(),
-                    })
+        for table in tables:
+            for record in table.records:
+                pt_name = record.values.get("point_name")
+                val = record.get_value()
+                ts = record.get_time()
+                if pt_name not in series_by_point:
+                    series_by_point[pt_name] = []
+                series_by_point[pt_name].append({
+                    "time": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                    "value": val,
+                    "field": record.get_field(),
+                })
 
-            if not series_by_point:
-                return self._mock_telemetry(registry_id, device_id, point_names)
+        series_list = [
+            {"point_name": k, "values": v}
+            for k, v in series_by_point.items()
+        ]
 
-            series_list = [
-                {"point_name": k, "values": v}
-                for k, v in series_by_point.items()
-            ]
-
-            return {
-                "registry_id": registry_id,
-                "device_id": device_id,
-                "series": series_list,
-            }
-        except Exception:
-            return self._mock_telemetry(registry_id, device_id, point_names)
+        return {
+            "registry_id": registry_id,
+            "device_id": device_id,
+            "series": series_list,
+        }
 
     # --------------------------------------------------------------------------
     # Message Lifecycle & Mapping Queries (Model -> Discovery -> Proposal)
@@ -552,11 +595,11 @@ class GummiDB:
         device_id: str,
     ) -> List[Dict[str, Any]]:
         """Queries udmi_messages for all lifecycle messages (model, discovery, propose) for a device."""
-        if not self.pg:
+        if self.mock_mode:
             return self._mock_device_messages(registry_id, device_id)
 
+        conn = self._get_pg_connection()
         try:
-            conn = self.pg.get_connection()
             with conn.cursor() as cur:
                 # Query messages for this device directly, or discovery events that reference this device
                 cur.execute("""
@@ -567,10 +610,6 @@ class GummiDB:
                     ORDER BY timestamp ASC, id ASC;
                 """, (registry_id, device_id, device_id, f'%"{device_id}"%'))
                 rows = cur.fetchall()
-            conn.close()
-
-            if not rows:
-                return self._mock_device_messages(registry_id, device_id)
 
             messages = []
             for r in rows:
@@ -600,8 +639,8 @@ class GummiDB:
                     "transaction_id": attrs.get("transactionId"),
                 })
             return messages
-        except Exception:
-            return self._mock_device_messages(registry_id, device_id)
+        finally:
+            conn.close()
 
     def populate_mapping_scenario(
         self,
@@ -707,9 +746,9 @@ class GummiDB:
             },
         ]
 
-        if self.pg:
+        if not self.mock_mode:
+            conn = self._get_pg_connection()
             try:
-                conn = self.pg.get_connection()
                 with conn.cursor() as cur:
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS udmi_messages (
@@ -737,11 +776,20 @@ class GummiDB:
                             json.dumps(r["attributes"]),
                         ))
                     conn.commit()
+            finally:
                 conn.close()
-            except Exception as e:
-                print(f"Warning: Failed to insert mapping records to postgres: {e}", file=sys.stderr)
 
-        # Also store in mock store
+            # Query real messages back from postgres
+            messages = self.get_device_messages(registry_id, "AHU-22")
+            return {
+                "status": "SUCCESS",
+                "registry_id": registry_id,
+                "device_id": "AHU-22",
+                "records_inserted": len(records),
+                "messages": messages,
+            }
+
+        # Mock mode store
         key = (registry_id, "AHU-22")
         self._mock_messages[key] = [
             {

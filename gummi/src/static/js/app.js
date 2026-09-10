@@ -113,7 +113,7 @@ async function loadBridgeheadStatus() {
 
     // Update component cards in Admin view
     if (data.components) {
-      updateComponentCard("card-mqtt", data.components.mqtt_broker);
+      updateComponentCard("card-uufi", data.components.uufi_service || data.components.mqtt_broker);
       updateComponentCard("card-pg", data.components.postgres);
       updateComponentCard("card-influx", data.components.influxdb);
       updateComponentCard("card-etcd", data.components.etcd);
