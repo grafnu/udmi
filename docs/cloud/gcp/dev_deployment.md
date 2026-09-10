@@ -1,8 +1,8 @@
-[**UDMI**](./) / [Dev Deployment](#)
+[**UDMI**](../../../) / [**Docs**](../../) / [**Cloud**](../) / [**GCP**](./) / [Dev Deployment](#)
 
 # UDMI Dev Deployment Architecture & Verification Guide
 
-This document details the architecture, component topology, authentication mechanisms, build/deployment workflows, verification procedures, and configuration migration steps required for development and production deployments (e.g., `bos-platform-dev` and `bos-platform-prod`).
+This document details the architecture, component topology, authentication mechanisms, build/deployment workflows, and verification procedures required for development and production deployments (e.g., `bos-platform-dev` and `bos-platform-prod`).
 
 ---
 
