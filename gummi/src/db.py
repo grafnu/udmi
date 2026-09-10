@@ -667,6 +667,10 @@ class GummiDB:
 
     def _generate_mock_fleet(self) -> List[Dict[str, Any]]:
         """Generates realistic mock device catalog."""
+        def _iso_z(dt: Optional[datetime] = None) -> str:
+            d = dt or datetime.now(timezone.utc)
+            return d.strftime("%Y-%m-%dT%H:%M:%SZ")
+
         devices = []
         registries = ["ZZ-TRI-FECTA", "US-MTV-1", "US-SFO-2"]
         makes_models = [
@@ -688,7 +692,7 @@ class GummiDB:
             "serial_no": "SN-AHU-22",
             "software_version": "2.4.1",
             "liveness_status": "ONLINE",
-            "last_seen": datetime.now(timezone.utc).isoformat(),
+            "last_seen": _iso_z(),
         })
         devices.append({
             "id": len(devices) + 1,
@@ -699,7 +703,7 @@ class GummiDB:
             "serial_no": "SN-GAT-123",
             "software_version": "4.2.0",
             "liveness_status": "ONLINE",
-            "last_seen": datetime.now(timezone.utc).isoformat(),
+            "last_seen": _iso_z(),
         })
         for i in range(1, 7):
             mm = makes_models[(i - 1) % len(makes_models)]
@@ -712,7 +716,7 @@ class GummiDB:
                 "serial_no": f"SN-AHU-990{i}",
                 "software_version": mm[2],
                 "liveness_status": "ONLINE" if i != 4 else "ERROR",
-                "last_seen": (datetime.now(timezone.utc) - timedelta(minutes=i * 2)).isoformat(),
+                "last_seen": _iso_z(datetime.now(timezone.utc) - timedelta(minutes=i * 2)),
             })
 
         # 2. Variable Air Volume Boxes (VAV)
@@ -727,7 +731,7 @@ class GummiDB:
                 "serial_no": f"SN-VAV-{i}X",
                 "software_version": mm[2],
                 "liveness_status": "ONLINE" if i != 108 else "OFFLINE",
-                "last_seen": (datetime.now(timezone.utc) - timedelta(minutes=(i % 10) * 3 + 1)).isoformat(),
+                "last_seen": _iso_z(datetime.now(timezone.utc) - timedelta(minutes=(i % 10) * 3 + 1)),
             })
 
         # 3. Chillers and Central Plant (CHILLER, PUMP, BOILER)
@@ -741,7 +745,7 @@ class GummiDB:
                 "serial_no": f"SN-CHIL-{i}00",
                 "software_version": "5.0.1",
                 "liveness_status": "ONLINE",
-                "last_seen": (datetime.now(timezone.utc) - timedelta(minutes=i)).isoformat(),
+                "last_seen": _iso_z(datetime.now(timezone.utc) - timedelta(minutes=i)),
             })
             devices.append({
                 "id": len(devices) + 1,
@@ -752,7 +756,7 @@ class GummiDB:
                 "serial_no": f"SN-PUMP-{i}99",
                 "software_version": "2.1.0",
                 "liveness_status": "ONLINE",
-                "last_seen": (datetime.now(timezone.utc) - timedelta(minutes=i + 3)).isoformat(),
+                "last_seen": _iso_z(datetime.now(timezone.utc) - timedelta(minutes=i + 3)),
             })
 
         # 4. Lighting & Power Meters
@@ -766,7 +770,7 @@ class GummiDB:
                 "serial_no": f"SN-LUT-{i}00",
                 "software_version": "3.8.2",
                 "liveness_status": "ONLINE",
-                "last_seen": (datetime.now(timezone.utc) - timedelta(minutes=4)).isoformat(),
+                "last_seen": _iso_z(datetime.now(timezone.utc) - timedelta(minutes=4)),
             })
             devices.append({
                 "id": len(devices) + 1,
@@ -777,7 +781,7 @@ class GummiDB:
                 "serial_no": f"SN-MET-{i}55",
                 "software_version": "1.4.0",
                 "liveness_status": "ONLINE" if i != 3 else "OFFLINE",
-                "last_seen": (datetime.now(timezone.utc) - timedelta(minutes=i * 12)).isoformat(),
+                "last_seen": _iso_z(datetime.now(timezone.utc) - timedelta(minutes=i * 12)),
             })
 
         return devices
@@ -881,7 +885,7 @@ class GummiDB:
         model = match["model"] if match else "HVAC-3000"
         serial = match["serial_no"] if match else f"SN-{device_id}-001"
         version = match["software_version"] if match else "2.4.1"
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         points_map = {
             "supply_air_temperature_sensor": {
@@ -939,6 +943,7 @@ class GummiDB:
                 "system": {
                     "software": {"system": version, "hvac_app": "1.2.0"},
                     "operational": True,
+                    "last_seen": now,
                 },
                 "pointset": {
                     "points": points_map,

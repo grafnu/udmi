@@ -222,7 +222,7 @@ function renderDevicesTable() {
         <td>${escapeHtml(dev.make)} / ${escapeHtml(dev.model)}</td>
         <td>${escapeHtml(dev.software_version || "—")}</td>
         <td><span class="badge badge-success">${dev.liveness_status}</span></td>
-        <td>${formatTime(dev.last_seen)}</td>
+        <td><code>${formatIso(dev.last_seen)}</code></td>
         <td>
           <button class="btn btn-secondary btn-sm" onclick="selectDevice('${escapeHtml(dev.registry_id)}', '${escapeHtml(dev.device_id)}')">
             Inspect
@@ -264,7 +264,7 @@ window.selectDevice = async function (registryId, deviceId) {
     document.getElementById("detail-serial").textContent = data.metadata.serial_no || "—";
     document.getElementById("detail-location").textContent = `${data.metadata.room || "Room ?"} / ${data.metadata.floor || "Floor ?"}`;
     document.getElementById("detail-software").textContent = JSON.stringify(data.metadata.software || {});
-    document.getElementById("detail-lastseen").textContent = formatTime(data.metadata.last_seen);
+    document.getElementById("detail-lastseen").textContent = formatIso(data.metadata?.last_seen || data.state?.system?.last_seen);
 
     // Render points table
     const pointsTbody = document.getElementById("detail-points-table");
@@ -568,4 +568,17 @@ function formatTime(isoStr) {
   } catch (e) {
     return isoStr;
   }
+}
+
+function formatIso(isoStr) {
+  if (!isoStr || isoStr === "None") return "—";
+  let s = String(isoStr).trim();
+  if (s.includes(" ") && !s.includes("T")) {
+    s = s.replace(" ", "T");
+  }
+  s = s.replace(/\.\d+/, "").replace(/\+00:00$/, "Z");
+  if (!s.endsWith("Z") && !s.includes("+") && !s.slice(10).includes("-")) {
+    s += "Z";
+  }
+  return s;
 }

@@ -274,6 +274,7 @@ class TestButlerProvider(unittest.TestCase):
         self.assertEqual(len(devs["devices"]), 1)
         self.assertEqual(devs["devices"][0]["device_id"], "DEV-1")
         self.assertEqual(devs["devices"][0]["software_version"], "1.0.0")
+        self.assertEqual(devs["devices"][0]["last_seen"], "2026-09-01T12:00:00Z")
 
     def test_get_device_detail(self):
         mock_conn = MagicMock()
@@ -292,6 +293,8 @@ class TestButlerProvider(unittest.TestCase):
         detail = self.provider.get_device_detail("REG-1", "DEV-1")
         self.assertIsNotNone(detail)
         self.assertEqual(detail["device_id"], "DEV-1")
+        self.assertEqual(detail["metadata"]["last_seen"], "2026-09-01T12:00:00Z")
+        self.assertEqual(detail["state"]["system"]["last_seen"], "2026-09-01T12:00:00Z")
         self.assertIn("temp", detail["state"]["pointset"]["points"])
         self.assertEqual(len(detail["events"]), 1)
 

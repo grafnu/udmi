@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -127,6 +128,9 @@ class TestGummiServer:
         assert "total" in data
         assert "devices" in data
         assert isinstance(data["devices"], list)
+        for dev in data["devices"]:
+            if dev.get("last_seen") and dev["last_seen"] != "None":
+                assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", dev["last_seen"]), f"Bad ISO format: {dev['last_seen']}"
 
     def test_api_device_detail(self, gummi_server):
         data = http_get_json(f"{gummi_server}/api/devices/ZZ-TRI-FECTA/AHU-1")
@@ -135,6 +139,9 @@ class TestGummiServer:
         assert "metadata" in data
         assert "state" in data
         assert "config" in data
+        last_seen = data["metadata"].get("last_seen") or data.get("state", {}).get("system", {}).get("last_seen")
+        if last_seen and last_seen != "None":
+            assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", last_seen), f"Bad ISO format: {last_seen}"
 
     def test_api_config_publish(self, gummi_server):
         payload = {

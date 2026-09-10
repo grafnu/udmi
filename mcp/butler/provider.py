@@ -5,12 +5,42 @@ pure domain-specific data access for device discovery, telemetry, and mapping fl
 without exposing database credentials, query languages, or internal storage schemas.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 import json
 import os
+import re
 import sys
 import threading
 from typing import Any, Dict, List, Optional, Union
+
+
+def _format_iso(val: Any) -> Optional[str]:
+    """Formats a datetime or timestamp string into canonical ISO 8601 UTC format (YYYY-MM-DDTHH:MM:SSZ)."""
+    if val is None:
+        return None
+    if isinstance(val, (datetime, date)):
+        if isinstance(val, datetime):
+            if val.tzinfo is not None:
+                val = val.astimezone(timezone.utc)
+            return val.strftime("%Y-%m-%dT%H:%M:%SZ")
+        return val.strftime("%Y-%m-%d")
+    s = str(val).strip()
+    if not s or s in ("None", "null", "—"):
+        return None
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc)
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception:
+        pass
+    if " " in s and "T" not in s:
+        s = s.replace(" ", "T")
+    s = re.sub(r"\.\d+", "", s)
+    s = re.sub(r"\+00:00$", "Z", s)
+    if "T" in s and not s.endswith("Z") and not s.endswith("+00:00"):
+        s += "Z"
+    return s
 
 try:
     from udmi.common.db.postgres import PostgresManager
@@ -166,7 +196,7 @@ class ButlerProvider:
                             "id": msg_id,
                             "gateway_id": dev_id,
                             "payload": payload,
-                            "timestamp": pub_time.isoformat() if hasattr(pub_time, "isoformat") else str(pub_time) if pub_time else None,
+                            "timestamp": _format_iso(pub_time),
                         })
                     return results
 
@@ -197,8 +227,8 @@ class ButlerProvider:
 
                 payload = {
                     "version": "1.5.7",
-                    "timestamp": ts.isoformat() if hasattr(ts, "isoformat") else str(ts) if ts else None,
-                    "generation": gen.isoformat() if hasattr(gen, "isoformat") else str(gen) if gen else None,
+                    "timestamp": _format_iso(ts),
+                    "generation": _format_iso(gen),
                     "family": fam,
                     "addr": bacnet or ipv4 or ether,
                     "families": families_dict,
@@ -325,7 +355,7 @@ class ButlerProvider:
                 tx_id = p_load.get("transactionId") if isinstance(p_load, dict) else None
 
                 pub_time = r[1]
-                ts_str = pub_time.isoformat() if hasattr(pub_time, "isoformat") else str(pub_time) if pub_time else None
+                ts_str = _format_iso(pub_time)
 
                 messages.append({
                     "id": r[0],
@@ -452,7 +482,7 @@ class ButlerProvider:
                     if pt_name not in series_by_point:
                         series_by_point[pt_name] = []
                     series_by_point[pt_name].append({
-                        "time": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                        "time": _format_iso(ts),
                         "value": val,
                         "field": record.get_field(),
                     })
@@ -645,7 +675,7 @@ class ButlerProvider:
                     "category": r[4] or "validation",
                     "message": r[5] or "Validation Notice",
                     "detail": r[6],
-                    "timestamp": r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7]),
+                    "timestamp": _format_iso(r[7]),
                 })
             return alerts
         finally:
@@ -742,7 +772,7 @@ class ButlerProvider:
                     "serial_no": r[5],
                     "software_version": software_ver,
                     "liveness_status": "ONLINE",
-                    "last_seen": r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7]),
+                    "last_seen": _format_iso(r[7]),
                 })
 
             return {
@@ -816,7 +846,7 @@ class ButlerProvider:
             meta_dict.setdefault("serial_no", sys_row[2])
             meta_dict.setdefault("room", meta_row[0] if meta_row else None)
             meta_dict.setdefault("floor", meta_row[1] if meta_row else None)
-            meta_dict.setdefault("last_seen", sys_row[6].isoformat() if hasattr(sys_row[6], "isoformat") else str(sys_row[6]))
+            meta_dict["last_seen"] = _format_iso(meta_dict.get("last_seen") or (sys_row[6] if sys_row else None))
 
             points_map = {}
             for pr in point_rows:
@@ -825,7 +855,7 @@ class ButlerProvider:
                     "units": pr[2],
                     "level": pr[3],
                     "message": pr[4],
-                    "status_timestamp": pr[5].isoformat() if hasattr(pr[5], "isoformat") else str(pr[5]),
+                    "status_timestamp": _format_iso(pr[5]),
                 }
 
             events = [
@@ -834,7 +864,7 @@ class ButlerProvider:
                     "category": vr[1],
                     "message": vr[2],
                     "detail": vr[3],
-                    "timestamp": vr[4].isoformat() if hasattr(vr[4], "isoformat") else str(vr[4]),
+                    "timestamp": _format_iso(vr[4]),
                 }
                 for vr in val_rows
             ]
@@ -858,7 +888,7 @@ class ButlerProvider:
                         "model": sys_row[1],
                         "serial_no": sys_row[2],
                         "software": software_dict,
-                        "last_seen": sys_row[6].isoformat() if hasattr(sys_row[6], "isoformat") else str(sys_row[6]),
+                        "last_seen": _format_iso(sys_row[6]) if sys_row else None,
                     },
                     "pointset": {
                         "points": points_map,

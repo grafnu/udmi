@@ -1,6 +1,7 @@
 """End-to-End browser UI automation test suite using Playwright."""
 
 import os
+import re
 import sys
 import threading
 import time
@@ -86,6 +87,8 @@ def test_gummi_page_load_and_navigation(gummi_server_url: str, browser_context: 
     page.wait_for_function('document.querySelectorAll("#devices-table-body tr").length > 0')
     count = device_rows.count()
     assert count > 1, f"Expected devices in table, got {count}"
+    last_seen_cell = page.locator("#devices-table-body tr td code").first
+    expect(last_seen_cell).to_have_text(re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"))
 
     # 4. Test Device Inspection -> Device Properties
     # Find Inspect button for AHU-22 (or first device)
@@ -94,6 +97,7 @@ def test_gummi_page_load_and_navigation(gummi_server_url: str, browser_context: 
 
     expect(page.locator("#pane-device-detail")).to_have_class("tab-pane active")
     expect(page.locator("#detail-device-title")).not_to_have_text("Select a Device")
+    expect(page.locator("#detail-lastseen")).to_have_text(re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"))
 
     # 5. Verify Message Lifecycle Section (Model -> Discovery -> Proposal)
     lifecycle_container = page.locator("#detail-messages-timeline")
