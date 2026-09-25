@@ -97,8 +97,8 @@ The web server environment is partitioned into two distinct planes:
 sequenceDiagram
   participant Ext as Browser Extension
   participant Agent as Agent Server
-  participant DataMCP as Data MCPs
   participant Git as Git Repository
+  participant DataMCP as Data MCPs
 
   Ext->>Agent: Send development prompt
   Agent->>DataMCP: External Data Queries
@@ -106,21 +106,16 @@ sequenceDiagram
   Agent->>Git: Commit/push code changes (produces <commit_hash>)
 ```
 
-* **Browser Extension $\rightarrow$ Agent Server**: Sends a development prompt to the **Agent Server**.
-* **Agent Server $\rightarrow$ Data MCPs**: Executes external data queries against external data sources.
-* **Data MCPs $\rightarrow$ Agent Server**: Returned domain data used to design interactive interface.
-* **Agent Server $\rightarrow$ Git Repository**: Commits and pushes code changes to produce `<commit_hash>`.
-
 ### 2. Deployment
 
 ```mermaid
 sequenceDiagram
+  participant Ext as Browser Extension
+  participant View as Browser Web View
   participant Agent as Agent Server
   participant WebMCP as Web MCP
   participant Git as Git Repository
   participant Web as Managed Web Server (tag)
-  participant Ext as Browser Extension
-  participant View as Browser Web View
 
   Agent->>WebMCP: start_server(tag, commit_hash, description)
   WebMCP->>Git: Fetch & verify <commit_hash>
@@ -130,11 +125,6 @@ sequenceDiagram
   Agent->>Ext: Navigate / reload Web View at <url>
   Ext->>View: Load <url>
 ```
-
-* **Agent Server $\rightarrow$ Web MCP**: Calls `start_server(tag, commit_hash, description)`.
-* **Web MCP $\rightarrow$ Git Repository**: Fetches and verifies `<commit_hash>`.
-* **Web MCP $\rightarrow$ Managed Web Server (`tag`)**: Deploys and launches session `<tag>` at `<commit_hash>`, waits for the endpoint to become ready, and returns `(running, url, cursor, logs)` to the **Agent Server**.
-* **Agent Server $\rightarrow$ Browser Extension $\rightarrow$ Browser Web View**: Instructs the **Browser Extension** to navigate or reload the **Browser Web View** at `<url>`.
 
 ### 3. Ongoing Use
 
@@ -149,10 +139,6 @@ sequenceDiagram
   DataMCP-->>Web: Domain data & external state
   Web-->>View: HTTP responses / application data
 ```
-
-* **Browser Web View $\rightarrow$ Managed Web Server (`tag`)**: Sends `HTTP (url)` requests directly to the running web server.
-* **Managed Web Server (`tag`) $\leftrightarrow$ Data MCPs**: Queries external data sources and domain services and receives domain data and external state.
-* **Managed Web Server (`tag`) $\rightarrow$ Browser Web View**: Returns rendered `HTTP` responses and application data to the browser.
 
 ---
 
