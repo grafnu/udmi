@@ -17,6 +17,27 @@ Rather than running ad-hoc shell commands against a mutable working tree, the ba
 
 ---
 
+## Critical User Journeys (CUJs)
+
+The following Critical User Journeys illustrate how `axoloctl` supports agent-first customization and operation of an interactive IoT fleet management web application backed by external device tables (as specified in [GUMMI.md](../../gummi/GUMMI.md)):
+
+1. **Portfolio Triage & Custom Alert Dashboarding (`Portfolio Overview`)**
+   > *"In order to **rapidly identify and triage offline or schema-violating IoT devices across multiple site registries**, as a **Fleet Operations Manager**, I need to **prompt the Agent via the Browser Extension to query fleet health aggregates from the Data MCPs, generate a customized Portfolio Overview table grouped by site and error severity, and automatically reload my Web View to inspect the live breakdown**."*
+
+2. **Multi-Attribute Fleet Filtering & Pagination (`Devices Explorer`)**
+   > *"In order to **isolate a specific cohort of 100k+ IoT devices by hardware make/model, software version, and `deviceId` prefix (e.g., `AHU-`)**, as a **Site Reliability Engineer**, I need to **ask the Agent to add tailored server-side filter controls and paginated tabular columns to the Devices Explorer and immediately use the reloaded Web View (`url`) to filter, sort, and inspect the matching device rows**."*
+
+3. **Single-Device State vs. Config Drift Diagnosis (`Device Properties` & `Configuration Management`)**
+   > *"In order to **diagnose why a specific field controller is rejecting its target setpoint configuration**, as a **Field Controls Technician**, I need to **select the anomalous device row in the Web View, forward its context through the Browser Extension's `agentapi` side-channel to have the Agent build a side-by-side State-vs-Config discrepancy inspector, and submit a validated desired configuration update back through the Data MCPs**."*
+
+4. **Staged Bulk Configuration Rollout (`Managed Rollout`)**
+   > *"In order to **declaratively stage a configuration update across a filtered subset of IoT devices and track their convergence**, as a **Deployment Engineer**, I need to **select target device rows in the Devices Explorer, prompt the Agent to wire a Managed Rollout convergence table backed by the Butler Data MCP (`AXOLOCTL_MCP_PROXY_URL`), and monitor real-time desired-vs-reported state convergence in the Web View**."*
+
+5. **Discovery Table Upload & Live UI Self-Healing (`Shared Runtime Data Plane` & `Unified Logs`)**
+   > *"In order to **import an unmapped site discovery table and reconcile discovered IoT points against the live device registry without losing my session state**, as an **Onboarding Specialist**, I need to **upload the discovery dataset through the Web View into the persistent per-tag Shared Runtime Directory (`AXOLOCTL_DATA_DIR`), have the Agent join the uploaded file against Data MCP device tables, and automatically fix and redeploy any UI or schema errors surfaced in the unified `read_logs(tag)` stream**."*
+
+---
+
 ## System Architecture
 
 The `axoloctl` system separates the **Code Plane** (immutable web server code and static assets delivered via Git `commit_hash` via the internal **Web MCP**) from the **Data Plane** (a dynamic **Shared Runtime Directory** inside the **Axoloctl Host** paired with external **Data MCPs** representing external data sources):
