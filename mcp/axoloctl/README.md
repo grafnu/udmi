@@ -19,7 +19,7 @@ Rather than running ad-hoc shell commands against a mutable working tree, the ba
 
 ## System Architecture
 
-The `axoloctl` system separates the **Code Plane** (immutable web server code and static assets delivered via Git `commit_hash` via the internal **Web MCP**) from the **Data Plane** (a dynamic **Shared Runtime Directory** inside the **Axoloctl Host** paired with an external **Data MCP** representing external data sources):
+The `axoloctl` system separates the **Code Plane** (immutable web server code and static assets delivered via Git `commit_hash` via the internal **Web MCP**) from the **Data Plane** (a dynamic **Shared Runtime Directory** inside the **Axoloctl Host** paired with external **Data MCPs** representing external data sources):
 
 ```mermaid
 flowchart TD
@@ -54,11 +54,12 @@ flowchart TD
     WebServer <-->|"Serve Content / Store Uploads"| SharedDir
   end
 
-  DataMCP["Data MCP\n(External Data Sources)"]
+  DataMCP["Data MCPs\n(External Data Sources)"]
 
   Extension <-->|"Agent Control & Telemetry"| Agent
   WebView <-->|"HTTP (url)"| WebServer
   Agent <-->|"External Data Queries"| DataMCP
+  WebServer <-->|"External Data Queries"| DataMCP
 ```
 
 ### Code Plane vs. Data Plane
@@ -69,19 +70,19 @@ The web server environment is partitioned into two distinct planes:
    * Corresponds to the root of the Git repository hierarchy where the web server application and static assets live.
    * Provisioned immutably by the **Web MCP** (`axoloctl`) when `start_server(tag, commit_hash, description)` checks out the target `commit_hash`.
    * Modifying the web server logic or static bundle requires committing to Git and passing the new `commit_hash` to `start_server`.
-2. **Data Plane — Shared Runtime Directory & External Data MCP**:
+2. **Data Plane — Shared Runtime Directory & External Data MCPs**:
    * **Shared Runtime Directory**: A dynamic runtime directory mounted/shared between the **Agent Server** and the **Managed Web Server** inside the **Axoloctl Host**.
-     * **Agent $\rightarrow$ Web Server**: The **Agent Server** can directly create or update files in the shared runtime directory (including data fetched from the external **Data MCP**) so the **Managed Web Server** immediately serves dynamic content without requiring a Git commit or server restart.
+     * **Agent $\rightarrow$ Web Server**: The **Agent Server** can directly create or update files in the shared runtime directory (including data fetched from external **Data MCPs**) so the **Managed Web Server** immediately serves dynamic content without requiring a Git commit or server restart.
      * **Web Server $\rightarrow$ Agent**: Files uploaded or generated via the **Managed Web Server** (e.g., user uploads from the **Web View**) are written to the shared runtime directory where the **Agent Server** can directly read and process them.
-   * **Data MCP (`External Data Sources`)**: External MCP server(s) located outside the **Axoloctl Host** that provide the **Agent Server** with access to external data sources, APIs, and domain services.
+   * **Data MCPs (`External Data Sources`)**: External MCP servers located outside the **Axoloctl Host** that provide both the **Agent Server** and the **Managed Web Server** with access to external data sources, APIs, and domain services.
 
 ### Components
 
 * **Axoloctl Host**:
-  * **Agent Server**: Queries external data sources via the **Data MCP**, commits/pushes application code changes to the Git repository (**Code Plane**), reads/writes dynamic artifacts in the **Shared Runtime Directory** (**Data Plane**), manages the web server lifecycle through the **Web MCP**, connects to the **Managed Web Server** over `HTTP (url)`, and communicates with the **Browser Extension**.
+  * **Agent Server**: Queries external data sources via the **Data MCPs**, commits/pushes application code changes to the Git repository (**Code Plane**), reads/writes dynamic artifacts in the **Shared Runtime Directory** (**Data Plane**), manages the web server lifecycle through the **Web MCP**, connects to the **Managed Web Server** over `HTTP (url)`, and communicates with the **Browser Extension**.
   * **Web MCP (`axoloctl`)**: Fetches the requested `commit_hash` from Git and manages the **Web Context** for each session `tag`.
-  * **Web Context**: Isolated runtime context managed by the **Web MCP** that binds the immutable **Static Files (`Git Root @ commit_hash`)** and the dynamic **Shared Runtime Directory** to the **Managed Web Server** (`HTTP (url)` endpoint for both the **Agent Server** and the **Web View**).
-* **Data MCP (`External Data Sources`)**: External MCP interface providing domain data and external system state to the **Agent Server**.
+  * **Web Context**: Isolated runtime context managed by the **Web MCP** that binds the immutable **Static Files (`Git Root @ commit_hash`)** and the dynamic **Shared Runtime Directory** to the **Managed Web Server** (`HTTP (url)` endpoint for both the **Agent Server** and the **Web View**, with direct connectivity to external **Data MCPs**).
+* **Data MCPs (`External Data Sources`)**: External MCP interfaces providing domain data and external system state to both the **Agent Server** and the **Managed Web Server**.
 * **Web Browser**:
   * **Web View**: Connects to the **Managed Web Server** over `HTTP (url)` to render the web application and upload/download data-plane content.
   * **Browser Extension**: Connects directly to the **Agent Server** to coordinate browser navigation, page reloads, and client-side telemetry on the **Web View**.
@@ -92,32 +93,50 @@ The web server environment is partitioned into two distinct planes:
 
 ```mermaid
 sequenceDiagram
+  participant Ext as Browser Extension
+  participant View as Browser Web View
   participant Agent as Agent Server
   participant Git as Git Repository
-  participant MCP as axoloctl MCP Server
+  participant WebMCP as Web MCP
   participant Web as Managed Web Server (tag)
-  participant View as Browser Web View
-  participant Ext as Browser Extension
+  participant DataMCP as Data MCPs
 
+  Note over Ext, DataMCP: 1. Development
+  Ext->>Agent: Send development prompt
+  Agent->>DataMCP: External Data Queries
+  DataMCP-->>Agent: Returned domain data used to design interactive interface
   Agent->>Git: Commit/push code changes (produces <commit_hash>)
-  Agent->>MCP: start_server(tag, commit_hash, description)
-  MCP->>Git: Fetch & verify <commit_hash>
-  MCP->>Web: Deploy & launch session <tag> at <commit_hash>
-  Web-->>MCP: Endpoint ready & streaming stdout/stderr logs
-  MCP-->>Agent: Return (running, url, cursor, logs)
+
+  Note over Ext, Web: 2. Deployment
+  Agent->>WebMCP: start_server(tag, commit_hash, description)
+  WebMCP->>Git: Fetch & verify <commit_hash>
+  WebMCP->>Web: Deploy & launch session <tag> at <commit_hash>
+  Web-->>WebMCP: Endpoint ready & streaming stdout/stderr logs
+  WebMCP-->>Agent: Return (running, url, cursor, logs)
   Agent->>Ext: Navigate / reload Web View at <url>
   Ext->>View: Load <url>
-  View->>Web: HTTP / WebSocket requests
-  Agent->>MCP: list_servers()
-  MCP-->>Agent: Return active servers (tag, description)
-  Agent->>MCP: get_status(tag)
-  MCP-->>Agent: Return (running, commit_hash, exit_code)
-  Agent->>MCP: read_logs(tag, cursor)
-  MCP-->>Agent: Return (running, lines, next_cursor)
-  Agent->>MCP: stop_server(tag)
-  MCP->>Web: Terminate session <tag>
-  MCP-->>Agent: Return (running, exit_code, logs)
+
+  Note over View, DataMCP: 3. Ongoing Use
+  View->>Web: HTTP (url) requests
+  Web->>DataMCP: External Data Queries
+  DataMCP-->>Web: Domain data & external state
+  Web-->>View: HTTP responses / application data
 ```
+
+1. **Development**:
+   * **Browser Extension $\rightarrow$ Agent Server**: Sends a development prompt to the **Agent Server**.
+   * **Agent Server $\rightarrow$ Data MCPs**: Executes external data queries against external data sources.
+   * **Data MCPs $\rightarrow$ Agent Server**: Returned domain data used to design interactive interface.
+   * **Agent Server $\rightarrow$ Git Repository**: Commits and pushes code changes to produce `<commit_hash>`.
+2. **Deployment**:
+   * **Agent Server $\rightarrow$ Web MCP**: Calls `start_server(tag, commit_hash, description)`.
+   * **Web MCP $\rightarrow$ Git Repository**: Fetches and verifies `<commit_hash>`.
+   * **Web MCP $\rightarrow$ Managed Web Server (`tag`)**: Deploys and launches session `<tag>` at `<commit_hash>`, waits for the endpoint to become ready, and returns `(running, url, cursor, logs)` to the **Agent Server**.
+   * **Agent Server $\rightarrow$ Browser Extension $\rightarrow$ Browser Web View**: Instructs the **Browser Extension** to navigate or reload the **Browser Web View** at `<url>`.
+3. **Ongoing Use**:
+   * **Browser Web View $\rightarrow$ Managed Web Server (`tag`)**: Sends `HTTP (url)` requests directly to the running web server.
+   * **Managed Web Server (`tag`) $\leftrightarrow$ Data MCPs**: Queries external data sources and domain services and receives domain data and external state.
+   * **Managed Web Server (`tag`) $\rightarrow$ Browser Web View**: Returns rendered `HTTP` responses and application data to the browser.
 
 ---
 
