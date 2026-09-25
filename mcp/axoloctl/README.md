@@ -22,15 +22,13 @@ Rather than running ad-hoc shell commands against a mutable working tree, the ba
 The `axoloctl` system separates the **Code Plane** (immutable web server code and static assets delivered via Git `commit_hash` via the internal **Web MCP**) from the **Data Plane** (a dynamic **Shared Runtime Directory** inside the **Axoloctl Host** paired with an external **Data MCP** representing external data sources):
 
 ```mermaid
-flowchart LR
+flowchart TD
   subgraph Browser["Web Browser"]
-    direction TB
+    direction LR
     Extension["Browser Extension"]
     WebView["Web View"]
     Extension -. "Inspects / Reloads" .-> WebView
   end
-
-  DataMCP["Data MCP\n(External Data Sources)"]
 
   subgraph AxoloctlHost["Axoloctl Host"]
     direction TB
@@ -55,6 +53,8 @@ flowchart LR
     Agent <-->|"Direct File Read / Write"| SharedDir
     WebServer <-->|"Serve Content / Store Uploads"| SharedDir
   end
+
+  DataMCP["Data MCP\n(External Data Sources)"]
 
   Extension <-->|"Agent Control & Telemetry"| Agent
   WebView <-->|"HTTP (url)"| WebServer
