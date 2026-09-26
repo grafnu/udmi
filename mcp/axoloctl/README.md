@@ -17,6 +17,21 @@ Rather than running ad-hoc shell commands against a mutable working tree, the ba
 
 ---
 
+## Theory of Operation
+
+`axoloctl` is designed around a collaborative workflow where the **Agent** serves as the operator's primary entry point for investigation and workflow discovery, and progressively transitions high-volume execution into a custom-built, tabular **Web View**:
+
+1. **Conversational Discovery & Single-Example Triage**:
+   The operator begins by working directly with the Agent in chat to describe an operational goal or diagnose an initial problem. During this preliminary phase, the Agent queries the external **Data MCPs** (`butler`, `barbican`, `uufi`) to verify that the necessary data is available, confirm how records across services correlate, and walk through a concrete single-device or small-sample example with the operator.
+2. **Shaping the Interface Through Dialogue**:
+   While conversational chat is ideal for open-ended reasoning and rapid diagnosis on a single example, it scales poorly when inspecting or acting upon thousands of IoT devices. As the operator and Agent iterate on the initial example—identifying which device attributes matter, what filter criteria isolate the target cohort, and how reported state should be compared against target configuration—those exact decisions define the specification for a scalable graphical utility.
+3. **Background Synthesis of the Tabular Web Interface**:
+   Once the data structure and workflow are validated on the representative example, the Agent automatically constructs or updates a custom web interface in the background. This web application translates the conversational workflow into a purpose-built tabular interface capable of filtering, correlating, and managing the entire fleet.
+4. **Automated Testing, Deployment & Live Handoff**:
+   Before exposing any changes to the operator, the Agent validates the web server code against both backend unit tests and end-to-end Playwright browser tests. Once all tests pass, the Agent commits and pushes the code to the local Git repository, deploys the immutable revision via `start_server(tag, commit_hash, description)`, verifies clean runtime logs via `read_logs`, and notifies the operator that the graphical interface is live and ready to scale their workflow across the full system.
+
+---
+
 ## Critical User Journeys (CUJs)
 
 The following Critical User Journeys describe the core operator goals and workflows for managing large-scale tables of IoT devices (see [GUMMI.md](../../gummi/GUMMI.md)):
@@ -322,6 +337,118 @@ Because the Chrome Extension only hosts the control bar, the single `<iframe id=
 | **`cliView`** | `/ui/cli` | Host serves an `xterm.js` terminal page connected over WebSocket to the **Agent CLI** PTY. | 100% CLI feature parity; focused stream of agent actions without extra navigation chrome. |
 | **`hubView`** | `/ui/hub` | Proxies/serves the native **Agent Web Hub** (framed via a static Manifest V3 `declarativeNetRequest` rule). | Complete rich GUI (Markdown, Mermaid diagrams, artifacts, interactive `ask_question` modals) with zero UI re-implementation. |
 | **`apiView`** | `/ui/api` | Host serves a streamlined, custom HTML/JS chat page powered by the **Agent API** (`agentapi`). | Purpose-built, simplified user interface tailored specifically for non-developer audiences. |
+
+---
+
+## Agentic Web Application Engineering & Verification
+
+While the [Theory of Operation](#theory-of-operation) describes the human-facing workflow, this section defines how the active **Agent** pragmatically engineers, tests, and deploys web server code. Authoritative operational rules for the Agent are maintained in [`AGENTS.md`](AGENTS.md).
+
+### 1. Data MCP Probing & Schema Discovery
+
+Before writing or modifying any web server code, the Agent directly queries the external **Data MCPs** (`butler`, `barbican`, `uufi`) during the initial chat session with the operator to:
+* Inspect the exact structure, column names, nested JSON paths, and data types returned by the MCP tools.
+* Verify that the target records exist and test candidate filter predicates, joins, and correlations on a concrete sample device or site.
+* Use the operator's conversational feedback (which filters are needed, how columns should be grouped or compared, and what actions should be exposed) as the specification for the web application's backend API routes and tabular frontend columns.
+
+### 2. Background Web Application Synthesis
+
+While working through the preliminary example with the operator in chat, the Agent delegates or executes web application construction in the background inside `var/axoloctl/workspace/` so conversational interaction remains responsive:
+* **Server-Side Tabular Processing**: The web server queries the **Data MCPs** through `AXOLOCTL_MCP_PROXY_URL` (`POST /mcp/<server_name>/<tool_name>`) or reads staged datasets in `AXOLOCTL_DATA_DIR`, performing all filtering, multi-source correlation, sorting, and pagination (`LIMIT` / `OFFSET`) on the server rather than shipping unbounded fleet tables to the browser.
+* **Code vs. Data Plane Separation**: All code and templates are committed to the Git working tree (`var/axoloctl/workspace/`) and started via `./bin/serve` on `AXOLOCTL_PORT`. All mutable state (SQLite databases, user filter presets, staging imports) is written exclusively to `AXOLOCTL_DATA_DIR`.
+
+### 3. Mandatory Verification Gate (Unit + Playwright E2E Tests)
+
+No web server revision may be pushed or deployed via `start_server` until it passes both automated test tiers in `var/axoloctl/workspace/`:
+
+1. **Backend Unit Tests (`pytest tests/unit`)**:
+   * Validate backend route handlers, MCP proxy payload parsing, filter/correlation logic, pagination bounds, and fail-fast error responses against representative fixture data.
+2. **Playwright End-to-End Browser Tests (`pytest tests/e2e`)**:
+   * Launch the web application against an isolated test port and `AXOLOCTL_DATA_DIR`, and drive a headless Chromium instance via Playwright to verify the complete operator workflow:
+     * Tabular columns render the expected device rows and correlated attributes.
+     * Interactive filter controls, search inputs, and pagination update the rendered table state deterministically.
+     * Detail views and mutation workflows (e.g., configuration diff inspection or staged rollouts) execute end-to-end.
+     * Zero client-side `console.error` messages, uncaught `pageerror` exceptions, or HTTP `5xx` responses occur during test execution.
+
+### 4. Git Deployment & Operator Handoff
+
+Once both unit and Playwright test suites pass:
+
+```bash
+# 1. Run backend unit tests and Playwright E2E browser tests
+pytest tests/unit tests/e2e
+
+# 2. Commit and push the verified revision to the local bare Git repository
+git -C var/axoloctl/workspace add -A
+git -C var/axoloctl/workspace commit -m "Add tabular view and filters for <workflow>"
+git -C var/axoloctl/workspace push origin main
+COMMIT_HASH=$(git -C var/axoloctl/workspace rev-parse HEAD)
+```
+
+The Agent then invokes `start_server(tag, commit_hash, description)` via `Web MCP`, inspects `read_logs(tag)` to confirm zero `[server]` or `[browser]` startup errors, and notifies the operator in chat that the custom web utility is live at `url` (and automatically reloaded in their **Browser Web View**).
+
+---
+
+## Local Development Setup
+
+In a local UDMI development environment, the external **Data MCPs** are the standard UDMI MCP servers (`butler`, `barbican`, `uufi`), the **Git Repository** is a local on-disk bare repository, and process isolation is managed across **two dedicated `tmux` sessions** (one for the **Agent**, one for the **Web Server**) alongside the standard UDMI service sessions.
+
+### 1. Required Components Overview
+
+1. **UDMI Backend & Data MCPs**:
+   * Standard UDMI local services (`udmi_barbican` and `udmi_butler` `tmux` sessions started via `bin/udmi start`).
+   * UDMI Data MCP entrypoints: [`bin/mcp_butler`](../../bin/mcp_butler) (device inventory, state/config tables, managed rollouts), [`bin/mcp_barbican`](../../bin/mcp_barbican) (etcd/mosquitto/UDMIS state), and [`bin/mcp_uufi`](../../bin/mcp_uufi) (UUFI operations).
+2. **On-Disk Runtime Layout (`$UDMI_ROOT/var/axoloctl/`)**:
+   * `repo.git/`: Local bare Git repository acting as the immutable **Code Plane** remote (`file://$UDMI_ROOT/var/axoloctl/repo.git`).
+   * `workspace/`: Local Git working tree where the **Agent Server** edits code, commits, and pushes to `repo.git`.
+   * `sessions/<tag>/code/`: Read-only (`chmod -R a-w`) checkout of `<commit_hash>` provisioned by `Web MCP` on `start_server`.
+   * `shared/<tag>/`: Persistent per-tag **Shared Runtime Directory** (`AXOLOCTL_DATA_DIR`) shared between the **Agent Server** and the **Managed Web Server**.
+3. **Two Dedicated `axoloctl` `tmux` Sessions**:
+   * **`udmi_axoloctl_agent` (Agent Session)**:
+     * `agent`: Runs the **Agent Server / CLI** inside `var/axoloctl/workspace/`, configured with `Web MCP` (`axoloctl`) and the UDMI **Data MCPs** (`butler`, `barbican`, `uufi`).
+     * `ui_host`: Runs the host gateway serving `GET /api/uis`, the pluggable Agent UIs (`/ui/cli`, `/ui/hub`, `/ui/api`), the `agentapi` side-channel, and the HTTP-to-MCP proxy (`AXOLOCTL_MCP_PROXY_URL`).
+   * **`udmi_axoloctl_web` (Web Server Session)**:
+     * `web_mcp`: Runs the `axoloctl` **Web MCP** lifecycle daemon and browser reload/log collector.
+     * `<tag>` (e.g., `gummi`): Dedicated `tmux` window per active session `tag` executing `./bin/serve` from `var/axoloctl/sessions/<tag>/code/`.
+4. **Additional Developer Prerequisites**:
+   * **Unified `mcp_config.json`**: Registers `axoloctl` (`Web MCP`) alongside `butler`, `barbican`, and `uufi` (**Data MCPs**) so both the **Agent Server** and `AXOLOCTL_MCP_PROXY_URL` share a single source of truth.
+   * **Seed Repository Commit (`bin/serve`)**: The local `repo.git` is initialized with a baseline commit containing an executable `bin/serve` script (e.g., launching the GUMMI Flask server on `AXOLOCTL_PORT`) so the initial session can be started immediately.
+   * **Unpacked Chrome Extension**: Loaded once in Chrome (`chrome://extensions` $\rightarrow$ *Developer mode* $\rightarrow$ *Load unpacked* pointing to `mcp/axoloctl/extension/`).
+
+### 2. Step-by-Step Developer Bootstrap
+
+```bash
+# 1. Install base dependencies (unprivileged user-space default)
+bin/setup_base
+
+# 2. Start local UDMI infrastructure (Barbican & Butler) on unprivileged ports
+bin/udmi start sites/udmi_site_model //mqtt/localhost:18833
+
+# 3. Initialize local on-disk Git repository, workspace, and shared runtime directories
+mkdir -p var/axoloctl/shared
+git init --bare var/axoloctl/repo.git
+git clone var/axoloctl/repo.git var/axoloctl/workspace
+
+# 4. Seed baseline executable entrypoint (bin/serve) in the local workspace and push
+mkdir -p var/axoloctl/workspace/bin
+cp -r gummi/* var/axoloctl/workspace/
+chmod +x var/axoloctl/workspace/bin/serve
+git -C var/axoloctl/workspace add -A
+git -C var/axoloctl/workspace commit -m "Initial web app baseline"
+git -C var/axoloctl/workspace push -u origin main
+
+# 5. Start the two axoloctl tmux sessions (udmi_axoloctl_web and udmi_axoloctl_agent)
+bin/tmux_axoloctl start //mqtt/localhost:18833
+```
+
+### 3. Inspecting & Attaching to the `tmux` Sessions
+
+| Session Name | Windows | Purpose | Command to Inspect / Attach |
+| :--- | :--- | :--- | :--- |
+| **`udmi_axoloctl_agent`** | `agent`, `ui_host` | Runs the **Agent Server** in `var/axoloctl/workspace/`, the host UI endpoints (`/ui/*`), and `AXOLOCTL_MCP_PROXY_URL`. | `tmux attach -t udmi_axoloctl_agent` |
+| **`udmi_axoloctl_web`** | `web_mcp`, `<tag>` | Runs the **Web MCP** controller and each deployed **Managed Web Server** session window (`<tag>`). | `tmux attach -t udmi_axoloctl_web` |
+| **`udmi_butler`** | `postgres`, `influxdb`, `butler`, `registrar` | Backing datastore and Butler service for [`bin/mcp_butler`](../../bin/mcp_butler). | `bin/tmux_butler status` |
+| **`udmi_barbican`** | `mosquitto`, `etcd`, `udmis` | Backing MQTT broker, etcd state store, and UDMIS pipeline for [`bin/mcp_barbican`](../../bin/mcp_barbican). | `bin/tmux_barbican status` |
 
 ---
 
