@@ -1,0 +1,41 @@
+#!/bin/bash -e
+#
+# Unit test suite for Axoloctl MCP.
+#
+
+UDMI_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+cd "$UDMI_ROOT"
+
+source "$UDMI_ROOT/etc/shell_common.sh"
+
+echo "=========================================================================="
+echo "Running Axoloctl Unit Tests..."
+echo "=========================================================================="
+
+venv/bin/pytest -v mcp/axoloctl/tests/
+
+echo ""
+echo "=========================================================================="
+echo "Testing Axoloctl Server Control Flow..."
+echo "=========================================================================="
+
+# Start the test infrastructure
+bin/tmux_axoloctl start
+
+# Wait a moment for daemons to bind
+sleep 2
+
+# Check if UI API is alive
+echo "Checking /api/uis..."
+curl -s -f http://127.0.0.1:9290/api/uis > /dev/null
+
+echo "Checking /status..."
+curl -s -f http://127.0.0.1:9291/status > /dev/null
+
+# Clean up
+bin/tmux_axoloctl stop
+
+echo ""
+echo "=========================================================================="
+echo "SUCCESS: Axoloctl Test Suite Passed!"
+echo "=========================================================================="

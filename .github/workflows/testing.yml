@@ -813,6 +813,28 @@ jobs:
           path: |
             out/udmis*.log
 
+  axoloctl:
+    name: Axoloctl Agent Services
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Setup Base
+        run: sudo bin/setup_base
+      - name: Run Axoloctl Tests
+        run: |
+          bin/test_axoloctl
+      - name: Upload logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: axoloctl-logs
+          path: |
+            var/axoloctl/sessions/*/unified.log
+
   spotter:
     name: Spotter Agent Tests
     runs-on: ubuntu-24.04
