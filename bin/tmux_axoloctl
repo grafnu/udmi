@@ -1,0 +1,80 @@
+#!/bin/bash -e
+# Tmux-encapsulated controller for Axoloctl MCP Server & UIs
+
+UDMI_ROOT=$(dirname $(realpath $0))/..
+source $UDMI_ROOT/etc/tmux_common.sh
+
+SESSION_AGENT="udmi_axoloctl_agent"
+SESSION_WEB="udmi_axoloctl_web"
+ALLOWED_SERVICES=(agent ui_host web_mcp)
+
+parse_tmux_args "$@"
+# Skip generic validate_services, since we use custom logic across 2 sessions
+
+case "$TMUX_ACTION" in
+    stop)
+        tmux_stop_session "$SESSION_AGENT"
+        tmux_stop_session "$SESSION_WEB"
+        ;;
+    clean)
+        echo "Purging axoloctl runtime state..."
+        rm -rf "$UDMI_ROOT/var/axoloctl"
+        ;;
+    status)
+        tmux_session_status "$SESSION_AGENT" "agent" "ui_host"
+        tmux_session_status "$SESSION_WEB" "web_mcp"
+        ;;
+    attach)
+        if [ "$TMUX_TARGET_ID" == "web" ]; then
+            tmux_attach_session "$SESSION_WEB" ""
+        else
+            tmux_attach_session "$SESSION_AGENT" "$TMUX_TARGET_ID"
+        fi
+        ;;
+    restart)
+        tmux_stop_session "$SESSION_AGENT"
+        tmux_stop_session "$SESSION_WEB"
+        ;&
+    start)
+        tmux_stop_session "$SESSION_AGENT"
+        tmux_stop_session "$SESSION_WEB"
+
+        echo "=== Starting Axoloctl Services ==="
+
+        cd "$UDMI_ROOT"
+        mkdir -p "$UDMI_ROOT/var/axoloctl/shared"
+        mkdir -p "$UDMI_ROOT/var/axoloctl/sessions"
+
+        # Initialize bare repo if missing
+        if [ ! -d "$UDMI_ROOT/var/axoloctl/repo.git" ]; then
+            git init --bare "$UDMI_ROOT/var/axoloctl/repo.git"
+            git clone "$UDMI_ROOT/var/axoloctl/repo.git" "$UDMI_ROOT/var/axoloctl/workspace"
+        fi
+
+        export AXOLOCTL_HOST_PORT=9290
+        export AXOLOCTL_WEBMCP_PORT=9291
+        
+        # 1. udmi_axoloctl_web
+        # Starts web_mcp daemon
+        tmux_init_or_add_window "$SESSION_WEB" "web_mcp" "PYTHONPATH=\"$UDMI_ROOT:\${PYTHONPATH:-}\" python3 mcp/axoloctl/src/web_mcp.py"
+
+        # 2. udmi_axoloctl_agent
+        # Starts ui_host and agent CLI placeholder
+        tmux_init_or_add_window "$SESSION_AGENT" "ui_host" "PYTHONPATH=\"$UDMI_ROOT:\${PYTHONPATH:-}\" python3 mcp/axoloctl/src/ui_host.py"
+        
+        # Agent placeholder (could be standard jetski/agentcli, we'll open a bash shell with hints for now)
+        tmux_init_or_add_window "$SESSION_AGENT" "agent" "cd $UDMI_ROOT/var/axoloctl/workspace && exec bash --init-file <(echo 'echo \"Agent Workspace. Use axoloctl MCP.\"; export PS1=\"[axoloctl-agent] \W $ \"')"
+
+        echo "Axoloctl sessions '$SESSION_AGENT' and '$SESSION_WEB' initialized."
+        tmux_session_status "$SESSION_AGENT" "agent" "ui_host"
+        tmux_session_status "$SESSION_WEB" "web_mcp"
+        ;;
+    help|"")
+        echo "Usage: bin/tmux_axoloctl {start|stop|restart|clean|status|attach} [args]"
+        exit 0
+        ;;
+    *)
+        echo "Unknown action: $TMUX_ACTION"
+        exit 1
+        ;;
+esac
