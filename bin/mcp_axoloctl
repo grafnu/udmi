@@ -13,44 +13,47 @@ WEBMCP_PORT = os.environ.get("AXOLOCTL_WEBMCP_PORT", "9291")
 WEBMCP_URL = f"http://localhost:{WEBMCP_PORT}/mcp"
 
 def process_request(req):
-    data = json.dumps(req).encode('utf-8')
-    try:
-        req_obj = urllib.request.Request(WEBMCP_URL, data=data, headers={'Content-Type': 'application/json'})
-        with urllib.request.urlopen(req_obj) as response:
-            return json.loads(response.read().decode('utf-8'))
-    except urllib.error.URLError as e:
-        return {
-            "jsonrpc": "2.0",
-            "id": req.get("id"),
-            "error": {
-                "code": -32603,
-                "message": f"Failed to connect to web_mcp daemon at {WEBMCP_URL}: {e}"
-            }
-        }
-    except Exception as e:
-        return {
-            "jsonrpc": "2.0",
-            "id": req.get("id"),
-            "error": {
-                "code": -32603,
-                "message": f"Internal wrapper error: {e}"
-            }
-        }
+  """Process a single JSON-RPC request by forwarding to web_mcp."""
+  data = json.dumps(req).encode("utf-8")
+  try:
+    headers = {"Content-Type": "application/json"}
+    req_obj = urllib.request.Request(WEBMCP_URL, data=data, headers=headers)
+    with urllib.request.urlopen(req_obj) as response:
+      return json.loads(response.read().decode("utf-8"))
+  except urllib.error.URLError as e:
+    return {
+      "jsonrpc": "2.0",
+      "id": req.get("id"),
+      "error": {
+        "code": -32603,
+        "message": f"Failed to connect to web_mcp daemon: {e}"
+      }
+    }
+  except Exception as e: # pylint: disable=broad-exception-caught
+    return {
+      "jsonrpc": "2.0",
+      "id": req.get("id"),
+      "error": {
+        "code": -32603,
+        "message": f"Internal wrapper error: {e}"
+      }
+    }
 
 def main():
-    for line in sys.stdin:
-        if not line.strip():
-            continue
-        try:
-            req = json.loads(line)
-            res = process_request(req)
-            print(json.dumps(res), flush=True)
-        except json.JSONDecodeError:
-            err = {
-                "jsonrpc": "2.0",
-                "error": {"code": -32700, "message": "Parse error"}
-            }
-            print(json.dumps(err), flush=True)
+  """Main loop to read from stdin and write to stdout."""
+  for line in sys.stdin:
+    if not line.strip():
+      continue
+    try:
+      req = json.loads(line)
+      res = process_request(req)
+      print(json.dumps(res), flush=True)
+    except json.JSONDecodeError:
+      err = {
+        "jsonrpc": "2.0",
+        "error": {"code": -32700, "message": "Parse error"}
+      }
+      print(json.dumps(err), flush=True)
 
 if __name__ == "__main__":
-    main()
+  main()
