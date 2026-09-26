@@ -251,6 +251,10 @@ Streams captured unified log lines (`[server]` `stdout`/`stderr` from `bin/serve
   * `AXOLOCTL_COMMIT`: Deployed 40-character hexadecimal Git commit SHA (`commit_hash`).
 
 ### 2. Sticky URL & Port Allocation per `tag`
+* **Default Unprivileged Port Layout**:
+  * **`9290` (`AXOLOCTL_HOST_PORT`)**: Host UI gateway (`GET /api/uis`, `/ui/cli`, `/ui/hub`, `/ui/api`) and HTTP-to-MCP proxy (`AXOLOCTL_MCP_PROXY_URL`).
+  * **`9291` (`AXOLOCTL_WEBMCP_PORT`)**: Fixed offset for the `Web MCP` lifecycle daemon, browser reload notifications, and `[browser]` telemetry ingestion.
+  * **`9300+` (`AXOLOCTL_PORT`)**: Sequential base range for sticky per-`tag` **Managed Web Server** instances, persisted in `var/axoloctl/sessions/ports.json`.
 * Each session `tag` is assigned a sticky local port (`AXOLOCTL_PORT`) and access `url` that remains constant across `start_server` redeployments and across `stop_server` / restart cycles for the same `tag`.
 * Keeping the origin (`url`) invariant across iterative commits preserves browser state (`localStorage`, session cookies, DevTools state) and allows the **Browser Extension** to reload the **Web View** in place.
 
@@ -317,9 +321,9 @@ Because the Chrome Extension only hosts the control bar, the single `<iframe id=
      {
        "default_ui": "cliView",
        "uis": [
-         { "id": "cliView", "label": "CLI Console", "url": "http://localhost:8080/ui/cli" },
-         { "id": "hubView", "label": "Web Hub", "url": "http://localhost:8080/ui/hub" },
-         { "id": "apiView", "label": "Custom Chat (Agent API)", "url": "http://localhost:8080/ui/api" }
+         { "id": "cliView", "label": "CLI Console", "url": "http://localhost:9290/ui/cli" },
+         { "id": "hubView", "label": "Web Hub", "url": "http://localhost:9290/ui/hub" },
+         { "id": "apiView", "label": "Custom Chat (Agent API)", "url": "http://localhost:9290/ui/api" }
        ]
      }
      ```
@@ -406,10 +410,10 @@ In a local UDMI development environment, the external **Data MCPs** are the stan
 3. **Two Dedicated `axoloctl` `tmux` Sessions**:
    * **`udmi_axoloctl_agent` (Agent Session)**:
      * `agent`: Runs the **Agent Server / CLI** inside `var/axoloctl/workspace/`, configured with `Web MCP` (`axoloctl`) and the UDMI **Data MCPs** (`butler`, `barbican`, `uufi`).
-     * `ui_host`: Runs the host gateway serving `GET /api/uis`, the pluggable Agent UIs (`/ui/cli`, `/ui/hub`, `/ui/api`), the `agentapi` side-channel, and the HTTP-to-MCP proxy (`AXOLOCTL_MCP_PROXY_URL`).
+     * `ui_host`: Runs the host gateway on port `9290` (`AXOLOCTL_HOST_PORT`) serving `GET /api/uis`, the pluggable Agent UIs (`/ui/cli`, `/ui/hub`, `/ui/api`), the `agentapi` side-channel, and the HTTP-to-MCP proxy (`AXOLOCTL_MCP_PROXY_URL`).
    * **`udmi_axoloctl_web` (Web Server Session)**:
-     * `web_mcp`: Runs the `axoloctl` **Web MCP** lifecycle daemon and browser reload/log collector.
-     * `<tag>` (e.g., `gummi`): Dedicated `tmux` window per active session `tag` executing `./bin/serve` from `var/axoloctl/sessions/<tag>/code/`.
+     * `web_mcp`: Runs the `axoloctl` **Web MCP** lifecycle daemon and browser reload/log collector on port `9291` (`AXOLOCTL_WEBMCP_PORT`).
+     * `<tag>` (e.g., `gummi`): Dedicated `tmux` window per active session `tag` executing `./bin/serve` on its sticky port (`9300+`, `AXOLOCTL_PORT`) from `var/axoloctl/sessions/<tag>/code/`.
 4. **Additional Developer Prerequisites**:
    * **Unified `mcp_config.json`**: Registers `axoloctl` (`Web MCP`) alongside `butler`, `barbican`, and `uufi` (**Data MCPs**) so both the **Agent Server** and `AXOLOCTL_MCP_PROXY_URL` share a single source of truth.
    * **Seed Repository Commit (`bin/serve`)**: The local `repo.git` is initialized with a baseline commit containing an executable `bin/serve` script (e.g., launching the GUMMI Flask server on `AXOLOCTL_PORT`) so the initial session can be started immediately.
@@ -445,8 +449,8 @@ bin/tmux_axoloctl start //mqtt/localhost:18833
 
 | Session Name | Windows | Purpose | Command to Inspect / Attach |
 | :--- | :--- | :--- | :--- |
-| **`udmi_axoloctl_agent`** | `agent`, `ui_host` | Runs the **Agent Server** in `var/axoloctl/workspace/`, the host UI endpoints (`/ui/*`), and `AXOLOCTL_MCP_PROXY_URL`. | `tmux attach -t udmi_axoloctl_agent` |
-| **`udmi_axoloctl_web`** | `web_mcp`, `<tag>` | Runs the **Web MCP** controller and each deployed **Managed Web Server** session window (`<tag>`). | `tmux attach -t udmi_axoloctl_web` |
+| **`udmi_axoloctl_agent`** | `agent`, `ui_host` | Runs the **Agent Server** in `var/axoloctl/workspace/`, the host UI endpoints (`/ui/*`), and `AXOLOCTL_MCP_PROXY_URL` (`:9290`). | `tmux attach -t udmi_axoloctl_agent` |
+| **`udmi_axoloctl_web`** | `web_mcp`, `<tag>` | Runs the **Web MCP** daemon (`:9291`) and each deployed **Managed Web Server** session window (`<tag>` on `:9300+`). | `tmux attach -t udmi_axoloctl_web` |
 | **`udmi_butler`** | `postgres`, `influxdb`, `butler`, `registrar` | Backing datastore and Butler service for [`bin/mcp_butler`](../../bin/mcp_butler). | `bin/tmux_butler status` |
 | **`udmi_barbican`** | `mosquitto`, `etcd`, `udmis` | Backing MQTT broker, etcd state store, and UDMIS pipeline for [`bin/mcp_barbican`](../../bin/mcp_barbican). | `bin/tmux_barbican status` |
 
