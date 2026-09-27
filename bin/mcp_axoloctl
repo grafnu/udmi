@@ -1,32 +1,80 @@
 #!/usr/bin/env python3
-"""Axoloctl MCP Stdio Adapter.
-Forwards stdio JSON-RPC requests to the web_mcp daemon on AXOLOCTL_WEBMCP_PORT.
+"""Axoloctl MCP Stdio Adapter & CLI Tool.
+
+Supports:
+1. Standard MCP JSON-RPC 2.0 protocol over stdio (default or 'mcp' subcommand).
+2. Direct CLI subcommands (start, stop, status, list, logs) for operator and
+   CI workflows.
 """
 
+import argparse
 import json
 import os
 import sys
-import urllib.request
 import urllib.error
+import urllib.request
 
-WEBMCP_PORT = os.environ.get("AXOLOCTL_WEBMCP_PORT", "9291")
-WEBMCP_URL = f"http://localhost:{WEBMCP_PORT}/mcp"
+UDMI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ACTIVE_CONFIG_POINTER = os.path.join(
+  UDMI_ROOT, "var", "axoloctl", "active_config.json"
+)
 
-def process_request(req):
-  """Process a single JSON-RPC request by forwarding to web_mcp."""
+
+def resolve_webmcp_url(config_arg="", port_arg=None):
+  """Resolves the target Web MCP HTTP URL from config or environment."""
+  if port_arg:
+    return f"http://127.0.0.1:{int(port_arg)}/mcp"
+
+  env_port = os.environ.get("AXOLOCTL_WEBMCP_PORT")
+  if env_port:
+    return f"http://127.0.0.1:{int(env_port)}/mcp"
+
+  cfg_path = config_arg or os.environ.get("AXOLOCTL_CONFIG", "")
+  if not cfg_path and os.path.isfile(ACTIVE_CONFIG_POINTER):
+    try:
+      with open(ACTIVE_CONFIG_POINTER, "r", encoding="utf-8") as f:
+        ptr = json.load(f)
+        cfg_path = ptr.get("config_path", "")
+    except Exception: # pylint: disable=broad-exception-caught
+      cfg_path = ""
+
+  if not cfg_path:
+    raise RuntimeError(
+      "Axoloctl configuration not found. Pass --config <path>, set "
+      "AXOLOCTL_CONFIG, or start services via 'bin/tmux_axoloctl start <cfg>'."
+    )
+
+  if not os.path.isabs(cfg_path):
+    cfg_path = os.path.abspath(os.path.join(UDMI_ROOT, cfg_path))
+  if not os.path.isfile(cfg_path):
+    raise RuntimeError(f"Axoloctl config file not found: {cfg_path}")
+
+  with open(cfg_path, "r", encoding="utf-8") as f:
+    raw = json.load(f)
+  if "webmcp_port" not in raw:
+    raise RuntimeError(f"Missing 'webmcp_port' in {cfg_path}")
+  port = int(raw["webmcp_port"])
+  return f"http://127.0.0.1:{port}/mcp"
+
+
+def send_jsonrpc(webmcp_url, req):
+  """Forwards a single JSON-RPC 2.0 request to the web_mcp daemon."""
   data = json.dumps(req).encode("utf-8")
   try:
     headers = {"Content-Type": "application/json"}
-    req_obj = urllib.request.Request(WEBMCP_URL, data=data, headers=headers)
-    with urllib.request.urlopen(req_obj) as response:
-      return json.loads(response.read().decode("utf-8"))
+    req_obj = urllib.request.Request(webmcp_url, data=data, headers=headers)
+    with urllib.request.urlopen(req_obj, timeout=20) as response:
+      if response.status == 204:
+        return None
+      body = response.read().decode("utf-8").strip()
+      return json.loads(body) if body else None
   except urllib.error.URLError as e:
     return {
       "jsonrpc": "2.0",
       "id": req.get("id"),
       "error": {
         "code": -32603,
-        "message": f"Failed to connect to web_mcp daemon: {e}"
+        "message": f"Failed to connect to web_mcp daemon at {webmcp_url}: {e}"
       }
     }
   except Exception as e: # pylint: disable=broad-exception-caught
@@ -39,21 +87,151 @@ def process_request(req):
       }
     }
 
-def main():
-  """Main loop to read from stdin and write to stdout."""
+
+def run_stdio(webmcp_url):
+  """Main stdio loop reading JSON-RPC lines from stdin and writing to stdout."""
   for line in sys.stdin:
     if not line.strip():
       continue
     try:
       req = json.loads(line)
-      res = process_request(req)
-      print(json.dumps(res), flush=True)
+      res = send_jsonrpc(webmcp_url, req)
+      if res is not None:
+        print(json.dumps(res), flush=True)
     except json.JSONDecodeError:
       err = {
         "jsonrpc": "2.0",
+        "id": None,
         "error": {"code": -32700, "message": "Parse error"}
       }
       print(json.dumps(err), flush=True)
+
+
+def invoke_cli_tool(webmcp_url, tool_name, arguments):
+  """Invokes an MCP tool via JSON-RPC and prints/returns the parsed result."""
+  req = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": tool_name,
+      "arguments": arguments
+    }
+  }
+  res = send_jsonrpc(webmcp_url, req)
+  if not res:
+    sys.stderr.write("Error: Empty response from web_mcp daemon.\n")
+    sys.exit(1)
+  if "error" in res:
+    msg = res["error"].get("message", str(res["error"]))
+    sys.stderr.write(f"Error: {msg}\n")
+    sys.exit(1)
+  result_obj = res.get("result", {})
+  content = result_obj.get("content", [])
+  if content and "text" in content[0]:
+    parsed = json.loads(content[0]["text"])
+    print(json.dumps(parsed, indent=2))
+    if tool_name == "start_server" and not parsed.get("running", False):
+      sys.exit(1)
+    return
+  print(json.dumps(result_obj, indent=2))
+
+
+def build_parser():
+  """Builds the argument parser for CLI and MCP execution modes."""
+  parser = argparse.ArgumentParser(
+    description="Axoloctl MCP Server & CLI Lifecycle Controller"
+  )
+  parser.add_argument(
+    "--config",
+    default="",
+    help="Explicit path to Axoloctl JSON configuration file"
+  )
+  parser.add_argument(
+    "--port",
+    type=int,
+    default=None,
+    help="Explicit web_mcp TCP port override"
+  )
+  subparsers = parser.add_subparsers(dest="command")
+
+  subparsers.add_parser("mcp", help="Run in stdio MCP server mode")
+
+  start_p = subparsers.add_parser(
+    "start", help="Deploy commit_hash and start a web server session"
+  )
+  start_p.add_argument("tag", help="Session tag identifier (e.g. gummi)")
+  start_p.add_argument("commit_hash", help="40-character Git commit SHA")
+  start_p.add_argument(
+    "description",
+    nargs="?",
+    default="Managed web server session",
+    help="Human-readable session description"
+  )
+
+  stop_p = subparsers.add_parser("stop", help="Stop a running session by tag")
+  stop_p.add_argument("tag", help="Session tag identifier")
+
+  status_p = subparsers.add_parser(
+    "status", help="Get lifecycle status and commit_hash for a session tag"
+  )
+  status_p.add_argument("tag", help="Session tag identifier")
+
+  subparsers.add_parser("list", help="List all active web server sessions")
+
+  logs_p = subparsers.add_parser(
+    "logs", help="Read unified [server] and [browser] logs for a session tag"
+  )
+  logs_p.add_argument("tag", help="Session tag identifier")
+  logs_p.add_argument(
+    "--cursor", type=int, default=0, help="Zero-based line cursor offset"
+  )
+  logs_p.add_argument(
+    "--max-lines", type=int, default=200, help="Maximum lines to return"
+  )
+  return parser
+
+
+def main():
+  """Entrypoint for bin/mcp_axoloctl."""
+  parser = build_parser()
+  args = parser.parse_args()
+
+  try:
+    webmcp_url = resolve_webmcp_url(args.config, args.port)
+  except RuntimeError as e:
+    sys.stderr.write(f"ERROR: {e}\n")
+    sys.exit(1)
+
+  if args.command in (None, "mcp"):
+    run_stdio(webmcp_url)
+  elif args.command == "start":
+    invoke_cli_tool(
+      webmcp_url,
+      "start_server",
+      {
+        "tag": args.tag,
+        "commit_hash": args.commit_hash,
+        "description": args.description
+      }
+    )
+  elif args.command == "stop":
+    invoke_cli_tool(webmcp_url, "stop_server", {"tag": args.tag})
+  elif args.command == "status":
+    invoke_cli_tool(webmcp_url, "get_status", {"tag": args.tag})
+  elif args.command == "list":
+    invoke_cli_tool(webmcp_url, "list_servers", {})
+  elif args.command == "logs":
+    invoke_cli_tool(
+      webmcp_url,
+      "read_logs",
+      {
+        "tag": args.tag,
+        "cursor": args.cursor,
+        "max_lines": args.max_lines
+      }
+    )
+
 
 if __name__ == "__main__":
   main()

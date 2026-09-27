@@ -33,7 +33,11 @@ class GummiConsoleManager:
         self.repo_root = repo_root or os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "..")
         )
-        self.runtime_dir = runtime_dir or os.path.join(self.repo_root, "var")
+        self.runtime_dir = (
+            runtime_dir
+            or os.environ.get("AXOLOCTL_DATA_DIR")
+            or os.path.join(self.repo_root, "var")
+        )
         os.makedirs(self.runtime_dir, exist_ok=True)
         self.log_file = os.path.join(self.runtime_dir, "gummi_agent.log")
         self.exit_file = os.path.join(self.runtime_dir, "gummi_agent.exit")

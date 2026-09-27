@@ -183,10 +183,10 @@ sequenceDiagram
 `axoloctl` exposes five canonical MCP tools:
 
 ### 1. `start_server`
-Deploys the specified Git commit hash for the given session `tag` and starts the web server via `bin/serve`. If a session with the same `tag` is already running, `start_server` cleanly stops the existing instance before starting the new revision on the same sticky port and `url`.
+Deploys the specified Git commit hash from the configured repository (`repo_path`) for the given session `tag` and starts the web server via the configured `entrypoint` inside `app_subpath`. If a session with the same `tag` is already running, `start_server` cleanly stops the existing instance before starting the new revision on the same sticky port and `url`.
 
 * **Arguments**:
-  * `tag` (`string`, **required**): Unique identifier for the web server session (e.g., `"ui-dev"`, `"pr-42"`).
+  * `tag` (`string`, **required**): Unique identifier for the web server session (e.g., `"gummi"`, `"ui-dev"`).
   * `commit_hash` (`string`, **required**): The 40-character hexadecimal Git commit SHA (`^[0-9a-f]{40}$`) of the code to run.
   * `description` (`string`, **required**): Human-readable description of the web server session (returned by `list_servers`).
 * **Returns**:
@@ -225,7 +225,7 @@ Lists all currently active remote web server sessions.
     * `description` (`string`): Description provided when the session was started.
 
 ### 5. `read_logs`
-Streams captured unified log lines (`[server]` `stdout`/`stderr` from `bin/serve` and `[browser]` client-side console/runtime errors forwarded from the **Web View**) for the session identified by `tag` starting from a line offset cursor.
+Streams captured unified log lines (`[server]` `stdout`/`stderr` from the configured `entrypoint` and `[browser]` client-side console/runtime errors forwarded from the **Web View**) for the session identified by `tag` starting from a line offset cursor.
 
 * **Arguments**:
   * `tag` (`string`, **required**): Session identifier of the web server whose logs are being read.
@@ -240,38 +240,52 @@ Streams captured unified log lines (`[server]` `stdout`/`stderr` from `bin/serve
 
 ## Runtime & Boundary Specifications
 
-### 1. Web Context Execution Contract
-* **Read-Only Code Plane**: When `start_server(tag, commit_hash, description)` is invoked, `Web MCP` checks out `<commit_hash>` into an isolated session code directory (`<runtime_root>/sessions/<tag>/code`) and marks the tree read-only (`chmod -R a-w`). Any runtime file writes attempted inside the Code Plane fail immediately at the OS level, enforcing that mutable state goes to the Data Plane.
-* **Canonical Entrypoint (`bin/serve`)**: `Web MCP` executes `./bin/serve` from the root of the read-only `<commit_hash>` checkout. If `bin/serve` is missing or not executable, `start_server` fails immediately.
-* **Environment Variables**: `Web MCP` injects the following canonical environment variables into the `bin/serve` process:
-  * `AXOLOCTL_PORT`: Local TCP port assigned to `tag`.
-  * `AXOLOCTL_DATA_DIR`: Absolute path to the session's persistent **Shared Runtime Directory** (`<shared_root>/<tag>/`).
-  * `AXOLOCTL_MCP_PROXY_URL`: Base HTTP URL of the host's local HTTP-to-MCP proxy for invoking external **Data MCPs**.
+### 1. Explicit Configuration Contract (No Implicit Project Defaults)
+`axoloctl` is project-agnostic and requires an explicit JSON configuration file passed to [`bin/tmux_axoloctl`](../../bin/tmux_axoloctl) (and [`bin/mcp_axoloctl`](../../bin/mcp_axoloctl) / [`web_mcp.py`](src/web_mcp.py) / [`ui_host.py`](src/ui_host.py)). If the configuration file or any required key is omitted, `axoloctl` fails immediately.
+
+Required configuration keys (see example [`etc/gummi_config.json`](etc/gummi_config.json)):
+* `repo_path`: Path to the existing Git repository containing the target web application (e.g., `"."` for the UDMI repository root).
+* `app_subpath`: Subdirectory within `repo_path` where the web application resides (e.g., `"gummi"` or `"ui"`).
+* `entrypoint`: Executable server command relative to `app_subpath` (e.g., `"bin/gummi"` or `"bin/serve"`).
+* `port_env_var` *(optional)*: Additional application-specific port environment variable to export alongside `AXOLOCTL_PORT` (e.g., `"GUMMI_PORT"`).
+* `host_port`: TCP port for the Host UI gateway and HTTP-to-MCP proxy (e.g., `9290`).
+* `webmcp_port`: TCP port for the `Web MCP` lifecycle daemon (e.g., `9291`).
+* `session_port_base`: Starting TCP port for sticky per-`tag` **Managed Web Server** instances (e.g., `9300`).
+* `mcp_config`: Path to the unified MCP server registry file (e.g., [`mcp/axoloctl/etc/mcp_config.json`](etc/mcp_config.json)).
+* `uis`: Host UI discovery catalog (`default_ui` and `items` array defining `id`, `label`, and `path`).
+
+### 2. Web Context Execution Contract
+* **Read-Only Code Plane**: When `start_server(tag, commit_hash, description)` is invoked, `Web MCP` verifies that `<commit_hash>` exists in `repo_path`, extracts the revision into an isolated session code directory (`var/axoloctl/sessions/<tag>/code`), and marks the source tree read-only (`chmod -R a-w`).
+* **Configured Entrypoint (`<app_subpath>/<entrypoint>`)**: `Web MCP` verifies that `code/<app_subpath>/<entrypoint>` exists and is executable, changes directory to `code/<app_subpath>`, and executes `./<entrypoint>`. If the entrypoint is missing or not executable, `start_server` fails immediately.
+* **Environment Variables**: `Web MCP` injects the following canonical environment variables into the server process:
+  * `AXOLOCTL_PORT` (and optional `port_env_var`): Local TCP port assigned to `tag`.
+  * `AXOLOCTL_DATA_DIR`: Absolute path to the session's persistent **Shared Runtime Directory** (`var/axoloctl/shared/<tag>/`).
+  * `AXOLOCTL_MCP_PROXY_URL`: Base HTTP URL of the host's local HTTP-to-MCP proxy (`http://127.0.0.1:<host_port>`).
   * `AXOLOCTL_TAG`: Active session identifier (`tag`).
   * `AXOLOCTL_COMMIT`: Deployed 40-character hexadecimal Git commit SHA (`commit_hash`).
 
-### 2. Sticky URL & Port Allocation per `tag`
-* **Default Unprivileged Port Layout**:
-  * **`9290` (`AXOLOCTL_HOST_PORT`)**: Host UI gateway (`GET /api/uis`, `/ui/cli`, `/ui/hub`, `/ui/api`) and HTTP-to-MCP proxy (`AXOLOCTL_MCP_PROXY_URL`).
-  * **`9291` (`AXOLOCTL_WEBMCP_PORT`)**: Fixed offset for the `Web MCP` lifecycle daemon, browser reload notifications, and `[browser]` telemetry ingestion.
-  * **`9300+` (`AXOLOCTL_PORT`)**: Sequential base range for sticky per-`tag` **Managed Web Server** instances, persisted in `var/axoloctl/sessions/ports.json`.
+### 3. Sticky URL & Port Allocation per `tag`
+* **Configured Unprivileged Port Layout** (as defined in [`etc/gummi_config.json`](etc/gummi_config.json)):
+  * **`9290` (`host_port`)**: Host UI gateway (`GET /api/uis`, `/ui/cli`, `/ui/hub`, `/ui/api`) and HTTP-to-MCP proxy (`AXOLOCTL_MCP_PROXY_URL`).
+  * **`9291` (`webmcp_port`)**: Fixed offset for the `Web MCP` lifecycle daemon, browser reload notifications (`GET /status`), and `[browser]` telemetry ingestion (`POST /telemetry`).
+  * **`9300+` (`session_port_base`)**: Sequential base range for sticky per-`tag` **Managed Web Server** instances, persisted in `var/axoloctl/sessions/ports.json`.
 * Each session `tag` is assigned a sticky local port (`AXOLOCTL_PORT`) and access `url` that remains constant across `start_server` redeployments and across `stop_server` / restart cycles for the same `tag`.
 * Keeping the origin (`url`) invariant across iterative commits preserves browser state (`localStorage`, session cookies, DevTools state) and allows the **Browser Extension** to reload the **Web View** in place.
 
-### 3. Per-Tag Shared Runtime Directory (`Data Plane`) Lifecycle
-* The **Shared Runtime Directory** is scoped per session `tag` at `<shared_root>/<tag>/` and exposed to both the **Agent Server** and the **Managed Web Server** (`AXOLOCTL_DATA_DIR`).
-* **Persistence**: Contents of `<shared_root>/<tag>/` are preserved across `start_server` code redeployments (which replace only the read-only `code/` directory) and across `stop_server(tag)` invocations, ensuring uploaded files, cached query results, and application state survive iterative development.
+### 4. Per-Tag Shared Runtime Directory (`Data Plane`) Lifecycle
+* The **Shared Runtime Directory** is scoped per session `tag` at `var/axoloctl/shared/<tag>/` and exposed to both the **Agent Server** and the **Managed Web Server** (`AXOLOCTL_DATA_DIR`).
+* **Persistence**: Contents of `var/axoloctl/shared/<tag>/` are preserved across `start_server` code redeployments (which replace only the read-only `code/` directory) and across `stop_server(tag)` invocations, ensuring uploaded files, cached query results, and application state survive iterative development.
 
-### 4. Data MCP Connectivity (`AXOLOCTL_MCP_PROXY_URL`)
+### 5. Data MCP Connectivity (`AXOLOCTL_MCP_PROXY_URL`)
 * To allow both the **Agent Server** and the **Managed Web Server** to query external **Data MCPs** concurrently without `stdio` pipe contention or requiring an MCP client SDK inside every web app, the **Axoloctl Host** exposes a local HTTP-to-MCP bridge at `AXOLOCTL_MCP_PROXY_URL`.
-* The **Managed Web Server** invokes **Data MCP** tools via standard HTTP JSON requests (`POST ${AXOLOCTL_MCP_PROXY_URL}/<mcp_server>/<tool_name>`) and receives structured JSON responses.
+* The **Managed Web Server** invokes **Data MCP** tools via standard HTTP JSON requests (`POST ${AXOLOCTL_MCP_PROXY_URL}/mcp/<mcp_server>/<tool_name>`) and receives structured JSON responses.
 
-### 5. Readiness Probe & Startup Failure Semantics
-* After spawning `bin/serve`, `Web MCP` polls `HTTP GET <url>` (succeeding on any HTTP status `< 500`) for up to a fixed startup timeout (`10 seconds`) while monitoring the child PID.
-* If `bin/serve` exits prematurely or fails to respond with HTTP `< 500` within `10 seconds`, `Web MCP` terminates the process tree and returns `{ running: false, url: null, cursor, logs }` containing the captured `stdout`/`stderr` output so the **Agent Server** can immediately diagnose the startup failure.
+### 6. Readiness Probe & Startup Failure Semantics
+* After spawning `./<entrypoint>`, `Web MCP` polls `HTTP GET <url>` (succeeding on any HTTP status `< 500`) for up to a fixed startup timeout (`10 seconds`) while monitoring the session window.
+* If the process exits prematurely or fails to respond with HTTP `< 500` within `10 seconds`, `Web MCP` terminates the session window and returns `{ running: false, url: null, cursor, logs }` containing the captured `stdout`/`stderr` output so the **Agent Server** can immediately diagnose the startup failure.
 
-### 6. Browser Extension Integration & Unified Log Stream
-* **Control Channel**: The **Browser Extension** connects directly to the **Agent Server** to accept navigation and page-reload commands after `start_server` succeeds.
+### 7. Browser Extension Integration & Unified Log Stream
+* **Control Channel**: The **Browser Extension** polls `Web MCP` (`GET /status`) for commit updates on active sessions and automatically reloads matching tabs after `start_server` succeeds.
 * **Unified Telemetry (`[server]` + `[browser]`)**: Client-side runtime errors (`console.error`, uncaught exceptions, failed resource loads) captured from the **Web View** are forwarded into the session's log buffer with a `[browser]` prefix alongside `[server]` `stdout`/`stderr` lines, allowing `read_logs(tag)` to provide a single, time-ordered diagnostic stream.
 
 ---
@@ -301,7 +315,7 @@ flowchart TB
 
     subgraph HostUIs["Host-Served Agent UIs"]
       direction LR
-      CLIView["cliView\n(/ui/cli — xterm.js + PTY)"]
+      CLIView["cliView\n(/ui/cli — CLI Console)"]
       HubView["hubView\n(/ui/hub — Agent Web Hub)"]
       APIView["apiView\n(/ui/api — Custom Agent API Chat)"]
     end
@@ -338,9 +352,9 @@ Because the Chrome Extension only hosts the control bar, the single `<iframe id=
 
 | UI ID | Host Endpoint | Underlying Mechanism | Strengths |
 | :--- | :--- | :--- | :--- |
-| **`cliView`** | `/ui/cli` | Host serves an `xterm.js` terminal page connected over WebSocket to the **Agent CLI** PTY. | 100% CLI feature parity; focused stream of agent actions without extra navigation chrome. |
-| **`hubView`** | `/ui/hub` | Proxies/serves the native **Agent Web Hub** (framed via a static Manifest V3 `declarativeNetRequest` rule). | Complete rich GUI (Markdown, Mermaid diagrams, artifacts, interactive `ask_question` modals) with zero UI re-implementation. |
-| **`apiView`** | `/ui/api` | Host serves a streamlined, custom HTML/JS chat page powered by the **Agent API** (`agentapi`). | Purpose-built, simplified user interface tailored specifically for non-developer audiences. |
+| **`cliView`** | `/ui/cli` | Host serves the CLI console status page for `udmi_axoloctl_agent:agent`. | Focused view of workspace configuration, active sessions, and CLI terminal attachment. |
+| **`hubView`** | `/ui/hub` | Host serves the Agent Web Hub overview with active session links and MCP server status. | Central overview of deployed web views and registered MCP servers. |
+| **`apiView`** | `/ui/api` | Host serves a streamlined, custom HTML/JS chat page powered by the **Agent API**. | Purpose-built, simplified user interface tailored specifically for non-developer audiences. |
 
 ---
 
@@ -357,17 +371,17 @@ Before writing or modifying any web server code, the Agent directly queries the 
 
 ### 2. Background Web Application Synthesis
 
-While working through the preliminary example with the operator in chat, the Agent delegates or executes web application construction in the background inside `var/axoloctl/workspace/` so conversational interaction remains responsive:
+While working through the preliminary example with the operator in chat, the Agent delegates or executes web application construction in the background inside the configured `<repo_path>/<app_subpath>` directory (e.g., `gummi/` or `ui/`) so conversational interaction remains responsive:
 * **Server-Side Tabular Processing**: The web server queries the **Data MCPs** through `AXOLOCTL_MCP_PROXY_URL` (`POST /mcp/<server_name>/<tool_name>`) or reads staged datasets in `AXOLOCTL_DATA_DIR`, performing all filtering, multi-source correlation, sorting, and pagination (`LIMIT` / `OFFSET`) on the server rather than shipping unbounded fleet tables to the browser.
-* **Code vs. Data Plane Separation**: All code and templates are committed to the Git working tree (`var/axoloctl/workspace/`) and started via `./bin/serve` on `AXOLOCTL_PORT`. All mutable state (SQLite databases, user filter presets, staging imports) is written exclusively to `AXOLOCTL_DATA_DIR`.
+* **Code vs. Data Plane Separation**: All code and templates are committed to the Git repository (`<repo_path>/<app_subpath>`) and started via `./<entrypoint>` on `AXOLOCTL_PORT`. All mutable state (SQLite databases, user filter presets, staging imports) is written exclusively to `AXOLOCTL_DATA_DIR`.
 
 ### 3. Mandatory Verification Gate (Unit + Playwright E2E Tests)
 
-No web server revision may be pushed or deployed via `start_server` until it passes both automated test tiers in `var/axoloctl/workspace/`:
+No web server revision may be committed or deployed via `start_server` until it passes both automated test tiers in `<repo_path>/<app_subpath>`:
 
-1. **Backend Unit Tests (`pytest tests/unit`)**:
+1. **Backend Unit Tests**:
    * Validate backend route handlers, MCP proxy payload parsing, filter/correlation logic, pagination bounds, and fail-fast error responses against representative fixture data.
-2. **Playwright End-to-End Browser Tests (`pytest tests/e2e`)**:
+2. **Playwright End-to-End Browser Tests**:
    * Launch the web application against an isolated test port and `AXOLOCTL_DATA_DIR`, and drive a headless Chromium instance via Playwright to verify the complete operator workflow:
      * Tabular columns render the expected device rows and correlated attributes.
      * Interactive filter controls, search inputs, and pagination update the rendered table state deterministically.
@@ -379,45 +393,47 @@ No web server revision may be pushed or deployed via `start_server` until it pas
 Once both unit and Playwright test suites pass:
 
 ```bash
-# 1. Run backend unit tests and Playwright E2E browser tests
-pytest tests/unit tests/e2e
+# 1. Run backend unit tests and Playwright E2E browser tests (example for gummi)
+venv/bin/pytest gummi/tests/
 
-# 2. Commit and push the verified revision to the local bare Git repository
-git -C var/axoloctl/workspace add -A
-git -C var/axoloctl/workspace commit -m "Add tabular view and filters for <workflow>"
-git -C var/axoloctl/workspace push origin main
-COMMIT_HASH=$(git -C var/axoloctl/workspace rev-parse HEAD)
+# 2. Commit the verified revision to the Git repository
+git add -A
+git commit -m "Add tabular view and filters for <workflow>"
+COMMIT_HASH=$(git rev-parse HEAD)
+
+# 3. Deploy via Web MCP (or CLI)
+bin/mcp_axoloctl start gummi "$COMMIT_HASH" "Add tabular view and filters"
 ```
 
-The Agent then invokes `start_server(tag, commit_hash, description)` via `Web MCP`, inspects `read_logs(tag)` to confirm zero `[server]` or `[browser]` startup errors, and notifies the operator in chat that the custom web utility is live at `url` (and automatically reloaded in their **Browser Web View**).
+The Agent then inspects `read_logs(tag)` (`bin/mcp_axoloctl logs gummi`) to confirm zero `[server]` or `[browser]` startup errors, and notifies the operator in chat that the custom web utility is live at `url` (and automatically reloaded in their **Browser Web View**).
 
 ---
 
 ## Local Development Setup
 
-In a local UDMI development environment, the external **Data MCPs** are the standard UDMI MCP servers (`butler`, `barbican`, `uufi`), the **Git Repository** is a local on-disk bare repository, and process isolation is managed across **two dedicated `tmux` sessions** (one for the **Agent**, one for the **Web Server**) alongside the standard UDMI service sessions.
+In a local UDMI development environment, `axoloctl` operates directly against the existing Git repository (configured via an explicit JSON config file such as [`mcp/axoloctl/etc/gummi_config.json`](etc/gummi_config.json)), the external **Data MCPs** are the standard UDMI MCP servers (`butler`, `barbican`, `uufi`), and process isolation is managed across **two dedicated `tmux` sessions** (one for the **Agent**, one for the **Web Server**) alongside the standard UDMI service sessions.
 
 ### 1. Required Components Overview
 
-1. **UDMI Backend & Data MCPs**:
-   * Standard UDMI local services (`udmi_barbican` and `udmi_butler` `tmux` sessions started via `bin/udmi start`).
-   * UDMI Data MCP entrypoints: [`bin/mcp_butler`](../../bin/mcp_butler) (device inventory, state/config tables, managed rollouts), [`bin/mcp_barbican`](../../bin/mcp_barbican) (etcd/mosquitto/UDMIS state), and [`bin/mcp_uufi`](../../bin/mcp_uufi) (UUFI operations).
-2. **On-Disk Runtime Layout (`$UDMI_ROOT/var/axoloctl/`)**:
-   * `repo.git/`: Local bare Git repository acting as the immutable **Code Plane** remote (`file://$UDMI_ROOT/var/axoloctl/repo.git`).
-   * `workspace/`: Local Git working tree where the **Agent Server** edits code, commits, and pushes to `repo.git`.
-   * `sessions/<tag>/code/`: Read-only (`chmod -R a-w`) checkout of `<commit_hash>` provisioned by `Web MCP` on `start_server`.
+1. **Explicit Axoloctl Configuration ([`mcp/axoloctl/etc/gummi_config.json`](etc/gummi_config.json))**:
+   * Explicitly binds `repo_path` (`"."`), `app_subpath` (`"gummi"`), `entrypoint` (`"bin/gummi"`), `port_env_var` (`"GUMMI_PORT"`), ports (`9290`, `9291`, `9300`), `mcp_config` ([`mcp/axoloctl/etc/mcp_config.json`](etc/mcp_config.json)), and host UI endpoints (`/ui/cli`, `/ui/hub`, `/ui/api`).
+   * To use `axoloctl` with a different web application (for example, an application in `ui/`), create or pass a config file pointing to that `repo_path`, `app_subpath`, and `entrypoint`.
+2. **Unified MCP Server Registry ([`mcp/axoloctl/etc/mcp_config.json`](etc/mcp_config.json))**:
+   * Registers `axoloctl` ([`bin/mcp_axoloctl`](../../bin/mcp_axoloctl)) alongside the UDMI **Data MCPs**: [`bin/mcp_butler`](../../bin/mcp_butler) (device inventory, state/config tables, managed rollouts), [`bin/mcp_barbican`](../../bin/mcp_barbican) (etcd/mosquitto/UDMIS state), and [`bin/mcp_uufi`](../../bin/mcp_uufi) (UUFI operations).
+3. **On-Disk Runtime Layout (`$UDMI_ROOT/var/axoloctl/`)**:
+   * `active_config.json`: Pointer to the active validated configuration file written by `bin/tmux_axoloctl start`.
+   * `sessions/<tag>/code/`: Read-only (`chmod -R a-w`) archive of `<commit_hash>` extracted from `repo_path` by `Web MCP` on `start_server`.
+   * `sessions/<tag>/unified.log`: Combined `[server]` and `[browser]` log stream read by `read_logs(tag)`.
    * `shared/<tag>/`: Persistent per-tag **Shared Runtime Directory** (`AXOLOCTL_DATA_DIR`) shared between the **Agent Server** and the **Managed Web Server**.
-3. **Two Dedicated `axoloctl` `tmux` Sessions**:
+4. **Two Dedicated `axoloctl` `tmux` Sessions**:
    * **`udmi_axoloctl_agent` (Agent Session)**:
-     * `agent`: Runs the **Agent Server / CLI** inside `var/axoloctl/workspace/`, configured with `Web MCP` (`axoloctl`) and the UDMI **Data MCPs** (`butler`, `barbican`, `uufi`).
-     * `ui_host`: Runs the host gateway on port `9290` (`AXOLOCTL_HOST_PORT`) serving `GET /api/uis`, the pluggable Agent UIs (`/ui/cli`, `/ui/hub`, `/ui/api`), the `agentapi` side-channel, and the HTTP-to-MCP proxy (`AXOLOCTL_MCP_PROXY_URL`).
+     * `agent`: Opens the Agent workspace shell inside `<repo_path>/<app_subpath>` with `AXOLOCTL_CONFIG` and `MCP_CONFIG` exported.
+     * `ui_host`: Runs the host gateway on `host_port` (`9290`) serving `GET /api/uis`, the host Agent UIs (`/ui/cli`, `/ui/hub`, `/ui/api`), and the HTTP-to-MCP proxy (`POST /mcp/<server>/<tool>`).
    * **`udmi_axoloctl_web` (Web Server Session)**:
-     * `web_mcp`: Runs the `axoloctl` **Web MCP** lifecycle daemon and browser reload/log collector on port `9291` (`AXOLOCTL_WEBMCP_PORT`).
-     * `<tag>` (e.g., `gummi`): Dedicated `tmux` window per active session `tag` executing `./bin/serve` on its sticky port (`9300+`, `AXOLOCTL_PORT`) from `var/axoloctl/sessions/<tag>/code/`.
-4. **Additional Developer Prerequisites**:
-   * **Unified `mcp_config.json`**: Registers `axoloctl` (`Web MCP`) alongside `butler`, `barbican`, and `uufi` (**Data MCPs**) so both the **Agent Server** and `AXOLOCTL_MCP_PROXY_URL` share a single source of truth.
-   * **Seed Repository Commit (`bin/serve`)**: The local `repo.git` is initialized with a baseline commit containing an executable `bin/serve` script (e.g., launching the GUMMI Flask server on `AXOLOCTL_PORT`) so the initial session can be started immediately.
-   * **Unpacked Chrome Extension**: Loaded once in Chrome (`chrome://extensions` $\rightarrow$ *Developer mode* $\rightarrow$ *Load unpacked* pointing to `mcp/axoloctl/extension/`).
+     * `web_mcp`: Runs the `axoloctl` **Web MCP** lifecycle daemon and browser reload/log collector on `webmcp_port` (`9291`).
+     * `<tag>` (e.g., `gummi`): Dedicated `tmux` window per active session `tag` executing `./<entrypoint>` inside `var/axoloctl/sessions/<tag>/code/<app_subpath>` on its sticky port (`9300+`).
+5. **Unpacked Chrome Extension**:
+   * Loaded once in Chrome (`chrome://extensions` $\rightarrow$ *Developer mode* $\rightarrow$ *Load unpacked* pointing to `mcp/axoloctl/extension/`).
 
 ### 2. Step-by-Step Developer Bootstrap
 
@@ -428,38 +444,45 @@ bin/setup_base
 # 2. Start local UDMI infrastructure (Barbican & Butler) on unprivileged ports
 bin/udmi start sites/udmi_site_model //mqtt/localhost:18833
 
-# 3. Initialize local on-disk Git repository, workspace, and shared runtime directories
-mkdir -p var/axoloctl/shared
-git init --bare var/axoloctl/repo.git
-git clone var/axoloctl/repo.git var/axoloctl/workspace
+# 3. Start the two axoloctl tmux sessions with an explicit configuration file
+bin/tmux_axoloctl start mcp/axoloctl/etc/gummi_config.json //mqtt/localhost:18833
 
-# 4. Seed baseline executable entrypoint (bin/serve) in the local workspace and push
-mkdir -p var/axoloctl/workspace/bin
-cp -r gummi/* var/axoloctl/workspace/
-chmod +x var/axoloctl/workspace/bin/serve
-git -C var/axoloctl/workspace add -A
-git -C var/axoloctl/workspace commit -m "Initial web app baseline"
-git -C var/axoloctl/workspace push -u origin main
+# 4. Deploy the current Git revision to start the initial Managed Web Server session
+COMMIT_HASH=$(git rev-parse HEAD)
+bin/mcp_axoloctl start gummi "$COMMIT_HASH" "Initial GUMMI web session"
 
-# 5. Start the two axoloctl tmux sessions (udmi_axoloctl_web and udmi_axoloctl_agent)
-bin/tmux_axoloctl start //mqtt/localhost:18833
+# 5. Verify session status, logs, and HTTP readiness (http://127.0.0.1:9300)
+bin/mcp_axoloctl status gummi
+bin/mcp_axoloctl logs gummi
+curl -I http://127.0.0.1:9300/
 ```
 
-### 3. Inspecting & Attaching to the `tmux` Sessions
+### 3. CLI & `tmux` Inspection Reference
+
+[`bin/mcp_axoloctl`](../../bin/mcp_axoloctl) operates both as a standard stdio MCP server (`bin/mcp_axoloctl mcp`) and as a direct CLI tool:
+
+```bash
+bin/mcp_axoloctl start <tag> <commit_hash> "<description>"
+bin/mcp_axoloctl status <tag>
+bin/mcp_axoloctl list
+bin/mcp_axoloctl logs <tag> [--cursor 0] [--max-lines 200]
+bin/mcp_axoloctl stop <tag>
+```
 
 | Session Name | Windows | Purpose | Command to Inspect / Attach |
 | :--- | :--- | :--- | :--- |
-| **`udmi_axoloctl_agent`** | `agent`, `ui_host` | Runs the **Agent Server** in `var/axoloctl/workspace/`, the host UI endpoints (`/ui/*`), and `AXOLOCTL_MCP_PROXY_URL` (`:9290`). | `tmux attach -t udmi_axoloctl_agent` |
-| **`udmi_axoloctl_web`** | `web_mcp`, `<tag>` | Runs the **Web MCP** daemon (`:9291`) and each deployed **Managed Web Server** session window (`<tag>` on `:9300+`). | `tmux attach -t udmi_axoloctl_web` |
-| **`udmi_butler`** | `postgres`, `influxdb`, `butler`, `registrar` | Backing datastore and Butler service for [`bin/mcp_butler`](../../bin/mcp_butler). | `bin/tmux_butler status` |
-| **`udmi_barbican`** | `mosquitto`, `etcd`, `udmis` | Backing MQTT broker, etcd state store, and UDMIS pipeline for [`bin/mcp_barbican`](../../bin/mcp_barbican). | `bin/tmux_barbican status` |
+| **`udmi_axoloctl_agent`** | `agent`, `ui_host` | Runs the **Agent Server** workspace in `<repo_path>/<app_subpath>`, the host UI endpoints (`/ui/*`), and `AXOLOCTL_MCP_PROXY_URL` (`:9290`). | `bin/tmux_axoloctl attach` |
+| **`udmi_axoloctl_web`** | `web_mcp`, `<tag>` | Runs the **Web MCP** daemon (`:9291`) and each deployed **Managed Web Server** session window (`<tag>` on `:9300+`). | `bin/tmux_axoloctl attach web` |
+| **`udmi_butler`** | `postgres`, `influxdb`, `butler`, `registrar` | Backing datastore and Butler service for [`bin/mcp_butler`](../../bin/mcp_butler). | `bin/tmux_butler status //mqtt/localhost:18833` |
+| **`udmi_barbican`** | `mosquitto`, `etcd`, `udmis` | Backing MQTT broker, etcd state store, and UDMIS pipeline for [`bin/mcp_barbican`](../../bin/mcp_barbican). | `bin/tmux_barbican status //mqtt/localhost:18833` |
 
 ---
 
 ## Fail-Fast Guarantees
 
-* **No Implicit Branch or `HEAD` Fallbacks**: `start_server` requires an explicit 40-character Git commit hash (`commit_hash`). Symbolic refs (such as `HEAD` or branch names) and missing commits are rejected immediately with an error.
-* **Mandatory Canonical Entrypoint**: If the checked-out `commit_hash` does not contain an executable `bin/serve` at the repository root, `start_server` fails immediately without falling back to generic static file serving.
+* **Mandatory Explicit Configuration**: Starting `bin/tmux_axoloctl`, `web_mcp.py`, or `ui_host.py` without an explicit, valid configuration file (or with any required key missing) fails immediately with a hard error. No implicit project defaults are assumed.
+* **No Implicit Branch or `HEAD` Fallbacks**: `start_server` requires an explicit 40-character Git commit hash (`commit_hash`) that exists in `repo_path`. Symbolic refs (such as `HEAD` or branch names) and missing commits are rejected immediately with an error.
+* **Mandatory Configured Entrypoint**: If the checked-out `commit_hash` does not contain an executable `<app_subpath>/<entrypoint>`, `start_server` fails immediately without falling back to generic static file serving.
 * **Unknown Session Tag Rejection**: Calling `stop_server`, `get_status`, or `read_logs` with an unknown `tag` fails immediately with an explicit error.
 * **Startup Readiness Verification**: `start_server` verifies that the web server session responds to `HTTP GET <url>` (`status < 500`) within the `10s` startup timeout window; if startup fails, `start_server` terminates the process and returns `{ running: false, url: null, cursor, logs }`.
 * **Explicit Stop Semantics**: Calling `stop_server` for a `tag` that is not currently running fails immediately with an explicit error rather than silently succeeding.

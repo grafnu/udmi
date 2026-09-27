@@ -1,0 +1,30 @@
+{
+  "repo_path": ".",
+  "app_subpath": "gummi",
+  "entrypoint": "bin/gummi",
+  "port_env_var": "GUMMI_PORT",
+  "host_port": 9290,
+  "webmcp_port": 9291,
+  "session_port_base": 9300,
+  "mcp_config": "mcp/axoloctl/etc/mcp_config.json",
+  "uis": {
+    "default_ui": "cliView",
+    "items": [
+      {
+        "id": "cliView",
+        "label": "CLI Console",
+        "path": "/ui/cli"
+      },
+      {
+        "id": "hubView",
+        "label": "Web Hub",
+        "path": "/ui/hub"
+      },
+      {
+        "id": "apiView",
+        "label": "Custom Chat (Agent API)",
+        "path": "/ui/api"
+      }
+    ]
+  }
+}

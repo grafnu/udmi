@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "axoloctl": {
+      "command": "bin/mcp_axoloctl",
+      "args": ["mcp"]
+    },
+    "butler": {
+      "command": "bin/mcp_butler",
+      "args": ["mcp"]
+    },
+    "barbican": {
+      "command": "bin/mcp_barbican",
+      "args": ["mcp"]
+    },
+    "uufi": {
+      "command": "bin/mcp_uufi",
+      "args": ["mcp"]
+    }
+  }
+}

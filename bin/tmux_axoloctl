@@ -2,79 +2,133 @@
 # Tmux-encapsulated controller for Axoloctl MCP Server & UIs
 
 UDMI_ROOT=$(dirname $(realpath $0))/..
+source $UDMI_ROOT/etc/shell_common.sh
 source $UDMI_ROOT/etc/tmux_common.sh
 
 SESSION_AGENT="udmi_axoloctl_agent"
 SESSION_WEB="udmi_axoloctl_web"
-ALLOWED_SERVICES=(agent ui_host web_mcp)
 
-parse_tmux_args "$@"
-# Skip generic validate_services, since we use custom logic across 2 sessions
+ACTION="${1:-}"
+shift || true
 
-case "$TMUX_ACTION" in
+CONFIG_ARG=""
+PROJECT_SPEC=""
+TARGET_ID=""
+
+while [[ $# -gt 0 ]]; do
+    arg="$1"
+    shift
+    if [[ "$ACTION" == "attach" ]]; then
+        TARGET_ID="$arg"
+    elif [[ "$arg" =~ ^// || "$arg" =~ ^(mqtt|mqtts|ssl):// || "$arg" =~ localhost: || "$arg" =~ :[0-9]+$ ]]; then
+        PROJECT_SPEC=$(normalize_conn_spec "$arg")
+    elif [[ -z "$CONFIG_ARG" ]]; then
+        CONFIG_ARG="$arg"
+    else
+        echo "ERROR: Unexpected argument '$arg'." >&2
+        exit 1
+    fi
+done
+
+if [[ -n "$PROJECT_SPEC" ]]; then
+    if [[ $PROJECT_SPEC =~ localhost:([0-9]+) ]]; then
+        export MQTT_PORT="${BASH_REMATCH[1]}"
+        if [[ $MQTT_PORT != 8883 ]]; then
+            export ETCD_PORT=$((MQTT_PORT + 1))
+            export INFLUX_PORT=$((MQTT_PORT + 2))
+            export POSTGRES_PORT=$((MQTT_PORT + 3))
+        fi
+    fi
+fi
+
+PYTHON_BIN="python3"
+if [[ -x "$UDMI_ROOT/venv/bin/python3" ]]; then
+    PYTHON_BIN="$UDMI_ROOT/venv/bin/python3"
+fi
+
+case "$ACTION" in
     stop)
         tmux_stop_session "$SESSION_AGENT"
         tmux_stop_session "$SESSION_WEB"
         ;;
     clean)
         echo "Purging axoloctl runtime state..."
+        chmod -R u+w "$UDMI_ROOT/var/axoloctl" 2>/dev/null || true
         rm -rf "$UDMI_ROOT/var/axoloctl"
         ;;
     status)
-        tmux_session_status "$SESSION_AGENT" "agent" "ui_host"
-        tmux_session_status "$SESSION_WEB" "web_mcp"
+        tmux_session_status "$SESSION_AGENT"
+        tmux_session_status "$SESSION_WEB"
         ;;
     attach)
-        if [ "$TMUX_TARGET_ID" == "web" ]; then
+        if [[ "$TARGET_ID" == "web" ]]; then
             tmux_attach_session "$SESSION_WEB" ""
         else
-            tmux_attach_session "$SESSION_AGENT" "$TMUX_TARGET_ID"
+            tmux_attach_session "$SESSION_AGENT" "$TARGET_ID"
         fi
         ;;
-    restart)
-        tmux_stop_session "$SESSION_AGENT"
-        tmux_stop_session "$SESSION_WEB"
-        ;&
-    start)
+    restart|start)
+        CFG_INPUT="${CONFIG_ARG:-${AXOLOCTL_CONFIG:-}}"
+        if [[ -z "$CFG_INPUT" ]]; then
+            echo "ERROR: Axoloctl requires an explicit configuration file." >&2
+            echo "Usage: bin/tmux_axoloctl $ACTION <config_file> [project_spec]" >&2
+            exit 1
+        fi
+
+        # Strictly validate configuration before touching tmux sessions
+        eval "$($PYTHON_BIN -c "
+import json, os, shlex, sys
+sys.path.insert(0, os.path.join('$UDMI_ROOT', 'mcp', 'axoloctl', 'src'))
+from config import load_config
+try:
+    cfg = load_config('$CFG_INPUT', '$UDMI_ROOT')
+except Exception as e:
+    sys.stderr.write(f'ERROR: {e}\n')
+    sys.exit(1)
+print('RESOLVED_CONFIG=' + shlex.quote(cfg.config_path))
+print('APP_WORK_DIR=' + shlex.quote(cfg.app_work_dir))
+print('MCP_CONFIG_PATH=' + shlex.quote(cfg.mcp_config_path))
+print('AXOLOCTL_HOST_PORT=' + str(cfg.host_port))
+print('AXOLOCTL_WEBMCP_PORT=' + str(cfg.webmcp_port))
+")"
+
         tmux_stop_session "$SESSION_AGENT"
         tmux_stop_session "$SESSION_WEB"
 
-        echo "=== Starting Axoloctl Services ==="
+        echo "=== Starting Axoloctl Services (config: $RESOLVED_CONFIG) ==="
 
         cd "$UDMI_ROOT"
         mkdir -p "$UDMI_ROOT/var/axoloctl/shared"
         mkdir -p "$UDMI_ROOT/var/axoloctl/sessions"
 
-        # Initialize bare repo if missing
-        if [ ! -d "$UDMI_ROOT/var/axoloctl/repo.git" ]; then
-            git init --bare "$UDMI_ROOT/var/axoloctl/repo.git"
-            git clone "$UDMI_ROOT/var/axoloctl/repo.git" "$UDMI_ROOT/var/axoloctl/workspace"
-        fi
+        cat <<EOF > "$UDMI_ROOT/var/axoloctl/active_config.json"
+{
+  "config_path": "$RESOLVED_CONFIG"
+}
+EOF
 
-        export AXOLOCTL_HOST_PORT=9290
-        export AXOLOCTL_WEBMCP_PORT=9291
-        
-        # 1. udmi_axoloctl_web
-        # Starts web_mcp daemon
-        tmux_init_or_add_window "$SESSION_WEB" "web_mcp" "PYTHONPATH=\"$UDMI_ROOT:\${PYTHONPATH:-}\" python3 mcp/axoloctl/src/web_mcp.py"
+        export AXOLOCTL_CONFIG="$RESOLVED_CONFIG"
+        export AXOLOCTL_HOST_PORT
+        export AXOLOCTL_WEBMCP_PORT
 
-        # 2. udmi_axoloctl_agent
-        # Starts ui_host and agent CLI placeholder
-        tmux_init_or_add_window "$SESSION_AGENT" "ui_host" "PYTHONPATH=\"$UDMI_ROOT:\${PYTHONPATH:-}\" python3 mcp/axoloctl/src/ui_host.py"
-        
-        # Agent placeholder (could be standard jetski/agentcli, we'll open a bash shell with hints for now)
-        tmux_init_or_add_window "$SESSION_AGENT" "agent" "cd $UDMI_ROOT/var/axoloctl/workspace && exec bash --init-file <(echo 'echo \"Agent Workspace. Use axoloctl MCP.\"; export PS1=\"[axoloctl-agent] \W $ \"')"
+        # 1. udmi_axoloctl_web: Web MCP lifecycle daemon
+        tmux_init_or_add_window "$SESSION_WEB" "web_mcp" "export AXOLOCTL_CONFIG='$RESOLVED_CONFIG' AXOLOCTL_WEBMCP_PORT='$AXOLOCTL_WEBMCP_PORT'; PYTHONPATH=\"$UDMI_ROOT:\${PYTHONPATH:-}\" $PYTHON_BIN mcp/axoloctl/src/web_mcp.py --config '$RESOLVED_CONFIG'"
+
+        # 2. udmi_axoloctl_agent: Host UI gateway & Agent workspace window
+        tmux_init_or_add_window "$SESSION_AGENT" "ui_host" "export AXOLOCTL_CONFIG='$RESOLVED_CONFIG' AXOLOCTL_HOST_PORT='$AXOLOCTL_HOST_PORT' AXOLOCTL_WEBMCP_PORT='$AXOLOCTL_WEBMCP_PORT'; PYTHONPATH=\"$UDMI_ROOT:\${PYTHONPATH:-}\" $PYTHON_BIN mcp/axoloctl/src/ui_host.py --config '$RESOLVED_CONFIG'"
+
+        tmux_init_or_add_window "$SESSION_AGENT" "agent" "export AXOLOCTL_CONFIG='$RESOLVED_CONFIG' MCP_CONFIG='$MCP_CONFIG_PATH' AXOLOCTL_HOST_PORT='$AXOLOCTL_HOST_PORT' AXOLOCTL_WEBMCP_PORT='$AXOLOCTL_WEBMCP_PORT'; cd '$APP_WORK_DIR' && exec bash --init-file <(echo 'echo \"Axoloctl Agent Workspace ($APP_WORK_DIR). MCP config: $MCP_CONFIG_PATH\"; export PS1=\"[axoloctl-agent] \W $ \"')"
 
         echo "Axoloctl sessions '$SESSION_AGENT' and '$SESSION_WEB' initialized."
-        tmux_session_status "$SESSION_AGENT" "agent" "ui_host"
-        tmux_session_status "$SESSION_WEB" "web_mcp"
+        tmux_session_status "$SESSION_AGENT"
+        tmux_session_status "$SESSION_WEB"
         ;;
     help|"")
-        echo "Usage: bin/tmux_axoloctl {start|stop|restart|clean|status|attach} [args]"
+        echo "Usage: bin/tmux_axoloctl {start|stop|restart|clean|status|attach} <config_file> [project_spec]"
         exit 0
         ;;
     *)
-        echo "Unknown action: $TMUX_ACTION"
+        echo "Unknown action: $ACTION" >&2
         exit 1
         ;;
 esac

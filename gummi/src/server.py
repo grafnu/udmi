@@ -484,7 +484,7 @@ class GummiServer:
 
 def main():
     import argparse
-    raw_port = os.environ.get("GUMMI_PORT", "8080")
+    raw_port = os.environ.get("AXOLOCTL_PORT") or os.environ.get("GUMMI_PORT", "8080")
     if ":" in raw_port:
         raw_port = raw_port.split(":")[-1]
     try:
