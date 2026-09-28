@@ -1,18 +1,20 @@
 /* GUMMI UI Stylesheet */
 
 :root {
-  --primary-color: #1a73e8;
-  --primary-hover: #1557b0;
-  --bg-color: #f8f9fa;
-  --surface-color: #ffffff;
-  --border-color: #dadce0;
-  --text-main: #202124;
-  --text-secondary: #5f6368;
-  --text-muted: #80868b;
-  --success: #1e8e3e;
-  --warning: #f9ab00;
-  --danger: #d93025;
-  --card-shadow: 0 1px 3px rgba(60,64,67, 0.3), 0 4px 8px rgba(60,64,67, 0.15);
+  --primary-color: #2ebd6a;
+  --primary-hover: #25a25a;
+  --bg-color: #0b1a12;
+  --surface-color: #12261b;
+  --surface-hover: #193325;
+  --surface-header: #152c20;
+  --border-color: #1f3d2b;
+  --text-main: #e8f2ec;
+  --text-secondary: #9db5a6;
+  --text-muted: #6b8574;
+  --success: #34d399;
+  --warning: #fbbf24;
+  --danger: #f87171;
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(3, 14, 8, 0.5);
   --border-radius: 8px;
 }
 
@@ -82,22 +84,22 @@ body {
   font-weight: 500;
   padding: 0.25rem 0.6rem;
   border-radius: 12px;
-  background-color: #e8eaed;
+  background-color: rgba(255, 255, 255, 0.08);
   color: var(--text-secondary);
 }
 
 .badge-success {
-  background-color: #e6f4ea;
+  background-color: rgba(52, 211, 153, 0.15);
   color: var(--success);
 }
 
 .badge-danger {
-  background-color: #fce8e6;
+  background-color: rgba(248, 113, 113, 0.15);
   color: var(--danger);
 }
 
 .badge-neutral {
-  background-color: #f1f3f4;
+  background-color: rgba(255, 255, 255, 0.06);
   color: var(--text-secondary);
 }
 
@@ -135,7 +137,7 @@ body {
 
 .nav-tab:hover {
   color: var(--primary-color);
-  background-color: #f8f9fa;
+  background-color: var(--surface-hover);
 }
 
 .nav-tab.active {
@@ -253,7 +255,7 @@ body {
 .panel-header {
   padding: 1rem 1.25rem;
   border-bottom: 1px solid var(--border-color);
-  background-color: #fafafa;
+  background-color: var(--surface-header);
 }
 
 .panel-header h3 {
@@ -282,7 +284,7 @@ body {
 }
 
 .data-table th {
-  background-color: #f1f3f4;
+  background-color: var(--surface-header);
   color: var(--text-secondary);
   font-weight: 500;
   padding: 0.75rem 1rem;
@@ -291,11 +293,11 @@ body {
 
 .data-table td {
   padding: 0.75rem 1rem;
-  border-bottom: 1px solid #f1f3f4;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .data-table tbody tr:hover {
-  background-color: #f8f9fa;
+  background-color: rgba(46, 189, 106, 0.08);
 }
 
 .empty-state {
@@ -338,6 +340,8 @@ body {
 .filter-group input, .filter-group select, .form-group input, .form-group select {
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--border-color);
+  background-color: #0c1c13;
+  color: var(--text-main);
   border-radius: 4px;
   font-size: 0.875rem;
   outline: none;
@@ -373,13 +377,13 @@ body {
 }
 
 .btn-secondary {
-  background-color: #ffffff;
+  background-color: var(--surface-header);
   border-color: var(--border-color);
   color: var(--text-main);
 }
 
 .btn-secondary:hover {
-  background-color: #f1f3f4;
+  background-color: var(--surface-hover);
 }
 
 .btn-sm {
@@ -790,20 +794,20 @@ body.tab-explorer .main-content,
 /* Scoped Theme Variables for ETCD Explorer */
 #pane-explorer.dark-theme,
 #pane-explorer {
-  --etcd-bg-color: #1e1e1e;
-  --etcd-panel-bg: #252526;
-  --etcd-header-bg: #333333;
-  --etcd-text-main: #cccccc;
-  --etcd-text-muted: #888888;
-  --etcd-border-color: #3e3e42;
-  --etcd-accent-color: #0e639c;
-  --etcd-accent-hover: #1177bb;
-  --etcd-active-bg: #37373d;
-  --etcd-hover-bg: #2a2d2e;
-  --etcd-code-bg: #1a1a1a;
-  --etcd-code-text: #d4d4d4;
-  --etcd-badge-bg: #4d4d4d;
-  --etcd-toast-bg: #f44336;
+  --etcd-bg-color: #0b1a12;
+  --etcd-panel-bg: #12261b;
+  --etcd-header-bg: #152c20;
+  --etcd-text-main: #e8f2ec;
+  --etcd-text-muted: #9db5a6;
+  --etcd-border-color: #1f3d2b;
+  --etcd-accent-color: #2ebd6a;
+  --etcd-accent-hover: #34d399;
+  --etcd-active-bg: #1d3c2c;
+  --etcd-hover-bg: #162f22;
+  --etcd-code-bg: #0c1c13;
+  --etcd-code-text: #e8f2ec;
+  --etcd-badge-bg: #1f3d2b;
+  --etcd-toast-bg: #f87171;
 }
 
 #pane-explorer.light-theme {
@@ -1095,7 +1099,7 @@ body.tab-explorer .main-content,
   font-size: 0.85rem;
   vertical-align: top;
   width: 35%;
-  color: #4fc1ff;
+  color: #6ee7b7;
   word-break: break-word;
   overflow-wrap: anywhere;
 }
