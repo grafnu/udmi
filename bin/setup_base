@@ -60,6 +60,10 @@ fi
 
 java -version
 
+echo "Ensuring etcd and influxd binaries are installed..."
+$ROOT_DIR/udmis/bin/etcdctl version || true
+$ROOT_DIR/udmis/bin/influxctl version || true
+
 echo "Initializing base site model..."
 $ROOT_DIR/bin/clone_model
 

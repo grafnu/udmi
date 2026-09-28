@@ -3,8 +3,6 @@
 UDMI_ROOT=$(dirname $0)/..
 source $UDMI_ROOT/etc/shell_common.sh
 
-if [ -f "$UDMI_ROOT/venv/bin/activate" ]; then
-    source "$UDMI_ROOT/venv/bin/activate"
-fi
+source "$UDMI_ROOT/venv/bin/activate"
 
 exec python3 $UDMI_ROOT/gummi/bin/gummi "$@"

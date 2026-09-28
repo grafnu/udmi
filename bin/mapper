@@ -7,8 +7,6 @@ if [[ $# -lt 4 ]]; then
     usage site_model project device_id command [targets...]
 fi
 
-if [ -f "$UDMI_ROOT/venv/bin/activate" ]; then
-    source "$UDMI_ROOT/venv/bin/activate"
-fi
+source "$UDMI_ROOT/venv/bin/activate"
 
 exec python3 $UDMI_ROOT/butler/bin/butler "$@"

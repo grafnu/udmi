@@ -16,10 +16,8 @@
 ROOT_DIR=$(realpath $(dirname $0)/..)
 cd "$ROOT_DIR"
 
-# Activate virtual environment if present
-if [ -d "venv" ]; then
-    source venv/bin/activate
-fi
+# Activate virtual environment
+source venv/bin/activate
 
 # Parse version selection
 MANTIS_VERSION="${UDMI_MANTIS_VERSION:-v2}"

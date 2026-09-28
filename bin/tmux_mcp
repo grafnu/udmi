@@ -5,13 +5,14 @@ UDMI_ROOT=$(dirname $(realpath $0))/..
 source $UDMI_ROOT/etc/tmux_common.sh
 
 SESSION_NAME="udmi_mcp"
-ALLOWED_SERVICES=(server)
+ALLOWED_SERVICES=(server barbican_mcp uufi_mcp butler_mcp)
 
 parse_tmux_args "$@"
 tmux_validate_services "MCP" "${ALLOWED_SERVICES[@]}"
 
 case "$TMUX_ACTION" in
     stop)
+        pkill -f "mcp[/.](barbican|uufi|butler)[/.]server(\.py)? serve" 2>/dev/null || true
         tmux_stop_session "$SESSION_NAME"
         ;;
     clean)
@@ -28,20 +29,39 @@ case "$TMUX_ACTION" in
         tmux_attach_session "$SESSION_NAME" "$TMUX_TARGET_ID"
         ;;
     restart)
+        pkill -f "mcp[/.](barbican|uufi|butler)[/.]server(\.py)? serve" 2>/dev/null || true
         tmux_stop_session "$SESSION_NAME"
         echo "Purging MCP runtime state..."
         rm -f "$UDMI_ROOT/out/mcp.log"
         ;&
     start)
+        pkill -f "mcp[/.](barbican|uufi|butler)[/.]server(\.py)? serve" 2>/dev/null || true
         tmux_stop_session "$SESSION_NAME"
 
-        echo "=== Starting MCP Server in tmux session '$SESSION_NAME' ==="
+        echo "=== Starting MCP Servers in tmux session '$SESSION_NAME' ==="
+        echo "Site Model:   $TMUX_SITE_MODEL"
+        echo "Project Spec: $TMUX_PROJECT_SPEC"
 
         cd "$UDMI_ROOT"
 
-        # 1. MCP Server Daemon (default: enabled)
+        # 1. Test Infra MCP Server Daemon (default: enabled)
         if tmux_should_run_service "server"; then
-            tmux_init_or_add_window "$SESSION_NAME" "server" "PYTHONPATH=\"$UDMI_ROOT:\${PYTHONPATH:-}\" python3 mcp/infra/server.py mcp"
+            tmux_init_or_add_window "$SESSION_NAME" "server" "bin/test_infra_mcp"
+        fi
+
+        # 2. Barbican Data MCP HTTP Server (:8085)
+        if tmux_should_run_service "barbican_mcp"; then
+            tmux_init_or_add_window "$SESSION_NAME" "barbican_mcp" "bin/mcp_barbican serve --port ${BARBICAN_MCP_PORT:-8085} --etcd-port \${ETCD_PORT:-2379}"
+        fi
+
+        # 3. UUFI Data MCP HTTP Server (:8087)
+        if tmux_should_run_service "uufi_mcp"; then
+            tmux_init_or_add_window "$SESSION_NAME" "uufi_mcp" "bin/mcp_uufi serve --port ${UUFI_MCP_PORT:-8087} --project-spec '$TMUX_PROJECT_SPEC' --site-model '$TMUX_SITE_MODEL'"
+        fi
+
+        # 4. Butler Data MCP HTTP Server (:8088)
+        if tmux_should_run_service "butler_mcp"; then
+            tmux_init_or_add_window "$SESSION_NAME" "butler_mcp" "bin/mcp_butler serve --port ${BUTLER_MCP_PORT:-8088} --pg-port \${POSTGRES_PORT:-5432} --influx-port \${INFLUX_PORT:-8086}"
         fi
 
         echo "MCP Server session '$SESSION_NAME' initialized."

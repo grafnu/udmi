@@ -6,14 +6,16 @@ import json
 import os
 import sys
 
-# Ensure venv python is used if present
+# Ensure venv python is used; hard-fail if missing
 script_dir = os.path.dirname(os.path.realpath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(script_dir, "../.."))
 venv_dir = os.path.join(REPO_ROOT, "venv")
 venv_python = os.path.join(venv_dir, "bin", "python3")
-if os.path.exists(venv_python) and sys.prefix != venv_dir:
+if sys.prefix != venv_dir and os.path.exists(venv_python):
     os.environ["VIRTUAL_ENV"] = venv_dir
     os.execv(venv_python, [venv_python] + sys.argv)
+if sys.prefix == sys.base_prefix:
+    raise RuntimeError(f"Required virtual environment not found at {venv_dir}")
 
 sys.path.insert(0, os.path.join(REPO_ROOT, "common", "src", "main", "python"))
 sys.path.insert(0, os.path.join(REPO_ROOT, "gencode", "python"))

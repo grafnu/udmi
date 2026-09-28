@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Axoloctl UI Host Gateway & HTTP-to-MCP Proxy."""
+"""Axoloctl UI Host Gateway, Virtual-Host Session Router & HTTP-to-MCP Proxy."""
 
 import argparse
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import http.client
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import html
 import json
 import os
+import re
 import subprocess
 import sys
 from typing import Any, Dict, Optional
-from urllib.parse import urlparse
+import urllib.error
+from urllib.parse import parse_qs, urlparse
+import urllib.request
 
 # Ensure local src directory is on sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -20,46 +24,86 @@ UDMI_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..")
 )
 
+HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+}
+
 
 def _render_ui_page(
-    config: AxoloctlConfig, ui_id: str, ui_label: str
+    config: AxoloctlConfig, ui_id: str, ui_label: str, active_tag: str = ""
 ) -> bytes:
-  """Renders a self-contained HTML page for the requested host UI endpoint."""
+  """Renders a self-contained HTML page for the requested host UI endpoint, routed to active_tag's dedicated Agent."""
   escaped_label = html.escape(ui_label)
-  escaped_repo = html.escape(config.repo_path)
   escaped_subpath = html.escape(config.app_subpath)
   escaped_entry = html.escape(config.entrypoint)
   mcp_names = ", ".join(sorted(config.mcp_servers.keys()))
+  tag_clean = re.sub(r"[^a-zA-Z0-9_-]", "", active_tag or "")
+
+  if tag_clean:
+    worktree_path = os.path.normpath(
+        os.path.join(
+            UDMI_ROOT,
+            "var",
+            "axoloctl",
+            "sessions",
+            tag_clean,
+            "workspace",
+            config.app_subpath,
+        )
+    )
+    escaped_worktree = html.escape(worktree_path)
+    escaped_tag = html.escape(tag_clean)
+    agent_window_ref = f"udmi_axoloctl_agent:{escaped_tag}"
+    branch_ref = f"axoloctl-{escaped_tag}"
+    attach_cmd = f"bin/tmux_axoloctl attach {escaped_tag}"
+  else:
+    escaped_worktree = html.escape(
+        f"{UDMI_ROOT}/var/axoloctl/sessions/<tag>/workspace/{config.app_subpath}"
+    )
+    escaped_tag = "<tag>"
+    agent_window_ref = "udmi_axoloctl_agent:<tag>"
+    branch_ref = "axoloctl-<tag>"
+    attach_cmd = "bin/tmux_axoloctl attach <tag>"
 
   body_section = ""
   if ui_id == "cliView":
     body_section = f"""
       <div class="card">
-        <h2>Agent CLI Console (<code>udmi_axoloctl_agent:agent</code>)</h2>
-        <p>Working Directory: <code>{escaped_repo}/{escaped_subpath}</code></p>
+        <h2>Dedicated Agent CLI Console (<code>{agent_window_ref}</code>)</h2>
+        <p>Session Tag: <code>{escaped_tag}</code> (1:1 Paired Agent &amp; Server)</p>
+        <p>Isolated Worktree: <code>{escaped_worktree}</code> (branch <code>{branch_ref}</code>)</p>
         <p>Entrypoint: <code>{escaped_entry}</code></p>
-        <pre class="terminal" id="cli-output">$ cd {escaped_repo}/{escaped_subpath}
-$ # Attach in terminal: bin/tmux_axoloctl attach
-[axoloctl-agent] Ready. Connected MCPs: {html.escape(mcp_names)}</pre>
+        <pre class="terminal" id="cli-output">$ cd {escaped_worktree}
+$ # Attach in terminal: {attach_cmd}
+[axoloctl:{escaped_tag}] Ready. Bound AXOLOCTL_TAG={escaped_tag}. Connected MCPs: {html.escape(mcp_names)}</pre>
       </div>
     """
   elif ui_id == "hubView":
     body_section = f"""
       <div class="card">
-        <h2>Axoloctl Agent Web Hub</h2>
+        <h2>Axoloctl Agent Web Hub (<code>{agent_window_ref}</code>)</h2>
+        <p>Bound Session Tag: <code>{escaped_tag}</code> (branch <code>{branch_ref}</code>)</p>
+        <p>Isolated Worktree: <code>{escaped_worktree}</code></p>
         <p>Configured MCP Servers: <code>{html.escape(mcp_names)}</code></p>
         <p>Target Application: <code>{escaped_subpath}</code> (<code>{escaped_entry}</code>)</p>
       </div>
     """
   else:
-    body_section = """
+    body_section = f"""
       <div class="card">
-        <h2>Custom Chat (Agent API)</h2>
+        <h2>Custom Chat — Dedicated Agent (<code>{agent_window_ref}</code>)</h2>
         <div id="chat-log" class="chat-log">
-          <div class="msg agent">Axoloctl Agent ready. Describe the fleet workflow or filter view you need.</div>
+          <div class="msg agent">Axoloctl Agent [<code>{escaped_tag}</code>] ready in worktree <code>{branch_ref}</code>. Describe the fleet workflow or filter view you need.</div>
         </div>
         <form id="chat-form" class="chat-form">
-          <input type="text" id="chat-input" placeholder="Ask the agent to filter devices or update the tabular view..." required />
+          <input type="text" id="chat-input" placeholder="Ask agent [{escaped_tag}] to filter devices or update the view..." required />
           <button type="submit">Send</button>
         </form>
       </div>
@@ -149,11 +193,12 @@ $ # Attach in terminal: bin/tmux_axoloctl attach
   <h1>{escaped_label}</h1>
   {body_section}
   <div class="card">
-    <h2>Active Managed Web Sessions (Web MCP :{config.webmcp_port})</h2>
+    <h2>Active 1:1 Agent &amp; Web Server Sessions (Gateway :{config.host_port})</h2>
     <div id="sessions-list">Loading active sessions...</div>
   </div>
   <script>
-    const WEBMCP_URL = "http://127.0.0.1:{config.webmcp_port}/status";
+    const WEBMCP_URL = "/api/status";
+    const activeTagParam = new URLSearchParams(window.location.search).get("tag") || "";
     async function refreshSessions() {{
       const container = document.getElementById("sessions-list");
       try {{
@@ -164,12 +209,22 @@ $ # Attach in terminal: bin/tmux_axoloctl attach
           container.innerHTML = "<em>No active web server sessions.</em>";
           return;
         }}
-        container.innerHTML = entries.map(([tag, info]) =>
-          `<div class="session-item">
-            <span><strong>${{tag}}</strong> (<code>${{info.commit.slice(0, 8)}}</code>)</span>
-            <a href="http://127.0.0.1:${{info.port}}" target="_blank">http://127.0.0.1:${{info.port}}</a>
-          </div>`
-        ).join("");
+        const portPart = window.location.port ? `:${{window.location.port}}` : "";
+        container.innerHTML = entries.map(([tag, info]) => {{
+          const isCorrelated = activeTagParam && activeTagParam === tag;
+          const badge = isCorrelated
+            ? `<span style="background:#065f46;color:#6ee7b7;border:1px solid #059669;padding:1px 6px;border-radius:4px;font-size:11px;margin-left:6px;">ACTIVE VIEWER</span>`
+            : "";
+          const agentBadge = info.agent_running
+            ? `<span style="background:#1e3a8a;color:#93c5fd;border:1px solid #2563eb;padding:1px 6px;border-radius:4px;font-size:11px;margin-left:6px;">agent:${{tag}}</span>`
+            : "";
+          const vhostUrl = `${{window.location.protocol}}//${{tag}}.localhost${{portPart}}`;
+          const uiSwitchUrl = `${{window.location.pathname}}?tag=${{encodeURIComponent(tag)}}`;
+          return `<div class="session-item">
+            <span><a href="${{uiSwitchUrl}}"><strong>${{tag}}</strong></a> (<code>${{info.commit.slice(0, 8)}}</code>)${{agentBadge}}${{badge}}</span>
+            <a href="${{vhostUrl}}" target="_blank">${{vhostUrl}}</a>
+          </div>`;
+        }}).join("");
       }} catch (e) {{
         container.innerHTML = "<em>Unable to reach web_mcp daemon.</em>";
       }}
@@ -201,29 +256,244 @@ $ # Attach in terminal: bin/tmux_axoloctl attach
 
 
 class UIHostHandler(BaseHTTPRequestHandler):
-  """HTTP request handler for UI Discovery, Host UIs, and MCP Proxy."""
+  """HTTP request handler for Virtual-Host Session Routing, UI Discovery, Host UIs, and MCP Proxy."""
 
+  protocol_version = "HTTP/1.1"
   config: Optional[AxoloctlConfig] = None
+  sessions_dir: str = os.path.join(UDMI_ROOT, "var", "axoloctl", "sessions")
+
+  def _load_session_ports(self) -> Dict[str, int]:
+    ports_file = os.path.join(self.sessions_dir, "ports.json")
+    if os.path.exists(ports_file):
+      try:
+        with open(ports_file, "r", encoding="utf-8") as f:
+          data = json.load(f)
+          if isinstance(data, dict):
+            return {str(k): int(v) for k, v in data.items()}
+      except Exception:
+        pass
+    return {}
+
+  def _extract_vhost_tag(self) -> Optional[str]:
+    """Extracts the session tag from a virtual-host Host header (e.g. <tag>.localhost:9290)."""
+    host_hdr = (self.headers.get("Host") or "").strip()
+    if not host_hdr or host_hdr.startswith("["):
+      return None
+    hostname = host_hdr.split(":", 1)[0].strip().lower()
+    if not hostname or hostname in ("localhost", "127.0.0.1"):
+      return None
+    if hostname.endswith(".localhost"):
+      prefix = hostname[: -len(".localhost")]
+      tag = prefix.split(".", 1)[0].strip()
+      return tag if tag else None
+    if "." in hostname and not re.match(r"^\d+\.\d+\.\d+\.\d+$", hostname):
+      first_label = hostname.split(".", 1)[0].strip()
+      if first_label and first_label in self._load_session_ports():
+        return first_label
+    return None
+
+  def _proxy_to_session(
+      self, tag: str, method: str, is_head: bool = False
+  ) -> None:
+    """Reverse-proxies a virtual-host request (<tag>.localhost) to the session's internal port."""
+    ports = self._load_session_ports()
+    if tag not in ports:
+      self._send_json(
+          404, {"error": f"Unknown session tag '{tag}' for virtual host."}
+      )
+      return
+
+    session_port = ports[tag]
+    content_len = int(self.headers.get("Content-Length", 0))
+    body = self.rfile.read(content_len) if content_len > 0 else None
+
+    forward_headers = {}
+    for k, v in self.headers.items():
+      if k.lower() not in HOP_BY_HOP_HEADERS:
+        forward_headers[k] = v
+    forward_headers["Connection"] = "close"
+
+    conn = http.client.HTTPConnection("127.0.0.1", session_port, timeout=60)
+    try:
+      conn.request(method, self.path, body=body, headers=forward_headers)
+      upstream = conn.getresponse()
+
+      content_type = (upstream.getheader("Content-Type") or "").lower()
+      is_sse = "text/event-stream" in content_type
+
+      self.send_response(upstream.status, upstream.reason)
+      has_content_length = False
+      for k, v in upstream.getheaders():
+        kl = k.lower()
+        if kl in HOP_BY_HOP_HEADERS or kl in ("server", "date"):
+          continue
+        if kl == "content-length":
+          has_content_length = True
+        self.send_header(k, v)
+
+      if is_sse:
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.flush()
+        if not is_head:
+          while True:
+            chunk = upstream.read(1024)
+            if not chunk:
+              break
+            self.wfile.write(chunk)
+            self.wfile.flush()
+      else:
+        data = b"" if is_head else upstream.read()
+        if not has_content_length and not is_head:
+          self.send_header("Content-Length", str(len(data)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        if not is_head and data:
+          self.wfile.write(data)
+        self.wfile.flush()
+    except (BrokenPipeError, ConnectionResetError):
+      pass
+    except Exception as e:
+      self._send_json(
+          502,
+          {
+              "error": (
+                  f"Session '{tag}' is not currently running or unreachable on "
+                  f"internal port {session_port}: {e}"
+              )
+          },
+      )
+    finally:
+      conn.close()
 
   def do_OPTIONS(self) -> None:
+    vhost_tag = self._extract_vhost_tag()
+    if vhost_tag is not None:
+      self._proxy_to_session(vhost_tag, "OPTIONS")
+      return
     self.send_response(204)
     self.send_header("Access-Control-Allow-Origin", "*")
     self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
     self.send_header("Access-Control-Allow-Headers", "Content-Type")
+    self.send_header("Content-Length", "0")
     self.end_headers()
 
-  def do_GET(self) -> None:
+  def do_PUT(self) -> None:
+    vhost_tag = self._extract_vhost_tag()
+    if vhost_tag is not None:
+      self._proxy_to_session(vhost_tag, "PUT")
+      return
+    self._send_json(405, {"error": "Method Not Allowed on control host."})
+
+  def do_DELETE(self) -> None:
+    vhost_tag = self._extract_vhost_tag()
+    if vhost_tag is not None:
+      self._proxy_to_session(vhost_tag, "DELETE")
+      return
+    self._send_json(405, {"error": "Method Not Allowed on control host."})
+
+  def do_PATCH(self) -> None:
+    vhost_tag = self._extract_vhost_tag()
+    if vhost_tag is not None:
+      self._proxy_to_session(vhost_tag, "PATCH")
+      return
+    self._send_json(405, {"error": "Method Not Allowed on control host."})
+
+  def do_HEAD(self) -> None:
+    vhost_tag = self._extract_vhost_tag()
+    if vhost_tag is not None:
+      self._proxy_to_session(vhost_tag, "HEAD", is_head=True)
+      return
+    self.send_response(404)
+    self.send_header("Content-Length", "0")
+    self.end_headers()
+
+  def _proxy_webmcp_get(self, target_path_and_query: str) -> None:
     cfg = self.config
-    parsed_path = urlparse(self.path).path
+    target_url = f"http://127.0.0.1:{cfg.webmcp_port}{target_path_and_query}"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    req = urllib.request.Request(target_url, method="GET")
+    try:
+      with opener.open(req, timeout=5.0) as resp:
+        raw = resp.read()
+        self.send_response(resp.status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(raw)
+    except urllib.error.HTTPError as e:
+      raw = e.read()
+      self.send_response(e.code)
+      self.send_header("Content-Type", "application/json")
+      self.send_header("Content-Length", str(len(raw)))
+      self.send_header("Access-Control-Allow-Origin", "*")
+      self.end_headers()
+      self.wfile.write(raw)
+    except Exception as e:
+      self._send_json(502, {"error": f"Failed to reach web_mcp daemon: {e}"})
+
+  def _proxy_webmcp_post(self, target_path: str, body: bytes) -> None:
+    cfg = self.config
+    target_url = f"http://127.0.0.1:{cfg.webmcp_port}{target_path}"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    req = urllib.request.Request(
+        target_url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+      with opener.open(req, timeout=5.0) as resp:
+        raw = resp.read()
+        self.send_response(resp.status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(raw)
+    except urllib.error.HTTPError as e:
+      raw = e.read()
+      self.send_response(e.code)
+      self.send_header("Content-Type", "application/json")
+      self.send_header("Content-Length", str(len(raw)))
+      self.send_header("Access-Control-Allow-Origin", "*")
+      self.end_headers()
+      self.wfile.write(raw)
+    except Exception as e:
+      self._send_json(502, {"error": f"Failed to reach web_mcp daemon: {e}"})
+
+  def do_GET(self) -> None:
+    vhost_tag = self._extract_vhost_tag()
+    if vhost_tag is not None:
+      self._proxy_to_session(vhost_tag, "GET")
+      return
+
+    cfg = self.config
+    parsed = urlparse(self.path)
+    parsed_path = parsed.path
+
+    if parsed_path in ("/api/status", "/status"):
+      self._proxy_webmcp_get("/status")
+      return
+
+    if parsed_path in ("/api/resolve", "/resolve"):
+      qs = f"?{parsed.query}" if parsed.query else ""
+      self._proxy_webmcp_get(f"/resolve{qs}")
+      return
 
     if parsed_path == "/api/uis":
+      host_hdr = self.headers.get("Host") or f"localhost:{cfg.host_port}"
+      if host_hdr.startswith("127.0.0.1:"):
+        host_hdr = f"localhost:{host_hdr.split(':', 1)[1]}"
       uis_payload = {
           "default_ui": cfg.default_ui,
           "uis": [
               {
                   "id": item.id,
                   "label": item.label,
-                  "url": f"http://localhost:{cfg.host_port}{item.path}",
+                  "url": f"http://{host_hdr}{item.path}",
               }
               for item in cfg.uis
           ],
@@ -239,7 +509,9 @@ class UIHostHandler(BaseHTTPRequestHandler):
 
     for item in cfg.uis:
       if parsed_path == item.path:
-        body = _render_ui_page(cfg, item.id, item.label)
+        query_params = parse_qs(parsed.query)
+        active_tag = (query_params.get("tag") or [""])[0].strip()
+        body = _render_ui_page(cfg, item.id, item.label, active_tag=active_tag)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -249,12 +521,25 @@ class UIHostHandler(BaseHTTPRequestHandler):
         return
 
     self.send_response(404)
+    self.send_header("Content-Length", "0")
     self.send_header("Access-Control-Allow-Origin", "*")
     self.end_headers()
 
   def do_POST(self) -> None:
+    vhost_tag = self._extract_vhost_tag()
+    if vhost_tag is not None:
+      self._proxy_to_session(vhost_tag, "POST")
+      return
+
     cfg = self.config
-    parsed_path = urlparse(self.path).path
+    parsed = urlparse(self.path)
+    parsed_path = parsed.path
+
+    if parsed_path in ("/api/telemetry", "/telemetry"):
+      content_length = int(self.headers.get("Content-Length", 0))
+      post_data = self.rfile.read(content_length)
+      self._proxy_webmcp_post("/telemetry", post_data)
+      return
 
     if parsed_path.startswith("/mcp/"):
       parts = parsed_path.split("/")
@@ -315,6 +600,9 @@ class UIHostHandler(BaseHTTPRequestHandler):
         env = os.environ.copy()
         env["AXOLOCTL_CONFIG"] = cfg.config_path
         env["AXOLOCTL_WEBMCP_PORT"] = str(cfg.webmcp_port)
+        hdr_tag = (self.headers.get("X-Axoloctl-Tag") or "").strip()
+        if hdr_tag:
+          env["AXOLOCTL_TAG"] = hdr_tag
 
         try:
           proc = subprocess.run(
@@ -354,6 +642,7 @@ class UIHostHandler(BaseHTTPRequestHandler):
         )
     else:
       self.send_response(404)
+      self.send_header("Content-Length", "0")
       self.send_header("Access-Control-Allow-Origin", "*")
       self.end_headers()
 
@@ -381,12 +670,15 @@ def main() -> None:
 
   config = load_config(args.config, UDMI_ROOT)
   UIHostHandler.config = config
+  UIHostHandler.sessions_dir = os.path.join(
+      UDMI_ROOT, "var", "axoloctl", "sessions"
+  )
 
-  server = HTTPServer(("127.0.0.1", config.host_port), UIHostHandler)
+  server = ThreadingHTTPServer(("127.0.0.1", config.host_port), UIHostHandler)
   server.allow_reuse_address = True
   print(
       f"ui_host listening on http://127.0.0.1:{config.host_port} "
-      f"(mcp_config={config.mcp_config_path})"
+      f"(vhost=*.localhost:{config.host_port}, mcp_config={config.mcp_config_path})"
   )
   try:
     server.serve_forever()

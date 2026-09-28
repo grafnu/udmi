@@ -22,9 +22,7 @@ error() {
 
 # Generate schema documentation (default)
 
-if [ -d venv ]; then
-    source venv/bin/activate
-fi
+source venv/bin/activate
 
 rm -rf $OUTPUT_DIR $TMP_DIR
 mkdir -p $OUTPUT_DIR $TMP_DIR

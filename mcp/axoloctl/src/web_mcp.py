@@ -2,11 +2,12 @@
 """Axoloctl Web MCP Daemon & Session Lifecycle Server."""
 
 import argparse
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import sys
 from typing import Any, Dict, Optional
+from urllib.parse import parse_qs, urlparse
 
 # Ensure local src directory is on sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -22,62 +23,38 @@ MCP_TOOLS = [
     {
         "name": "start_server",
         "description": (
-            "Deploys the specified 40-character Git commit hash for the given "
-            "session tag and starts the configured web server entrypoint."
+            "Deploys the specified 40-character Git commit hash for this "
+            "agent's paired session and starts the configured web server entrypoint."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "tag": {
-                    "type": "string",
-                    "description": "Unique identifier for the web server session (e.g. 'gummi', 'ui-dev').",
-                },
                 "commit_hash": {
                     "type": "string",
                     "description": "40-character hexadecimal Git commit SHA to deploy.",
                 },
                 "description": {
                     "type": "string",
-                    "description": "Human-readable description of the web server session.",
+                    "description": "Human-readable description of the web server deployment.",
                 },
             },
-            "required": ["tag", "commit_hash", "description"],
+            "required": ["commit_hash", "description"],
         },
     },
     {
         "name": "stop_server",
-        "description": "Stops the running web server session identified by tag.",
+        "description": "Stops this agent's paired web server session.",
         "inputSchema": {
             "type": "object",
-            "properties": {
-                "tag": {
-                    "type": "string",
-                    "description": "Session identifier of the web server to stop.",
-                },
-            },
-            "required": ["tag"],
+            "properties": {},
         },
     },
     {
         "name": "get_status",
         "description": (
             "Returns the current lifecycle state and deployed commit_hash of "
-            "the web server session identified by tag."
+            "this agent's paired web server session."
         ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "tag": {
-                    "type": "string",
-                    "description": "Session identifier of the web server to query.",
-                },
-            },
-            "required": ["tag"],
-        },
-    },
-    {
-        "name": "list_servers",
-        "description": "Lists all currently active web server sessions.",
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -87,15 +64,11 @@ MCP_TOOLS = [
         "name": "read_logs",
         "description": (
             "Streams captured unified [server] and [browser] log lines for "
-            "the session identified by tag starting from cursor."
+            "this agent's paired web server session starting from cursor."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "tag": {
-                    "type": "string",
-                    "description": "Session identifier of the web server whose logs are being read.",
-                },
                 "cursor": {
                     "type": "integer",
                     "description": "Zero-based line offset cursor (default: 0).",
@@ -107,49 +80,57 @@ MCP_TOOLS = [
                     "default": 200,
                 },
             },
-            "required": ["tag"],
         },
     },
 ]
 
 
 class WebMCPServer:
-  """Core MCP JSON-RPC 2.0 dispatcher for Axoloctl."""
+  """Core MCP JSON-RPC 2.0 dispatcher for Axoloctl (1:1 Agent-to-Server bound via AXOLOCTL_TAG)."""
 
   def __init__(self, session_mgr: SessionManager):
     self.session_mgr = session_mgr
 
-  def dispatch_tool(self, tool_name: str, args: Dict[str, Any]) -> Any:
+  def dispatch_tool(
+      self, tool_name: str, args: Dict[str, Any], bound_tag: str = ""
+  ) -> Any:
+    tag = (bound_tag or os.environ.get("AXOLOCTL_TAG") or "").strip()
+    if not tag:
+      raise ValueError(
+          "Missing required session binding: set AXOLOCTL_TAG or pass X-Axoloctl-Tag header."
+      )
+    if "tag" in args:
+      raise ValueError(
+          "Unexpected 'tag' argument: each agent is strictly bound 1:1 to its "
+          "paired server via AXOLOCTL_TAG."
+      )
+
     if tool_name == "start_server":
-      for req_key in ("tag", "commit_hash", "description"):
+      for req_key in ("commit_hash", "description"):
         if req_key not in args or args[req_key] is None:
-          raise ValueError(f"Missing required argument '{req_key}' for start_server.")
+          raise ValueError(
+              f"Missing required argument '{req_key}' for start_server."
+          )
       return self.session_mgr.start_server(
-          str(args["tag"]),
+          tag,
           str(args["commit_hash"]),
           str(args["description"]),
       )
     if tool_name == "stop_server":
-      if "tag" not in args or not args["tag"]:
-        raise ValueError("Missing required argument 'tag' for stop_server.")
-      return self.session_mgr.stop_server(str(args["tag"]))
+      return self.session_mgr.stop_server(tag)
     if tool_name == "get_status":
-      if "tag" not in args or not args["tag"]:
-        raise ValueError("Missing required argument 'tag' for get_status.")
-      return self.session_mgr.get_status(str(args["tag"]))
-    if tool_name == "list_servers":
-      return {"servers": self.session_mgr.list_servers()}
+      return self.session_mgr.get_status(tag)
     if tool_name == "read_logs":
-      if "tag" not in args or not args["tag"]:
-        raise ValueError("Missing required argument 'tag' for read_logs.")
       return self.session_mgr.read_logs(
-          str(args["tag"]),
+          tag,
           int(args.get("cursor", 0)),
           int(args.get("max_lines", 200)),
       )
     raise KeyError(f"Tool '{tool_name}' not found")
 
-  def handle_jsonrpc(self, req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+  def handle_jsonrpc(
+      self, req: Dict[str, Any], bound_tag: str = ""
+  ) -> Optional[Dict[str, Any]]:
     req_id = req.get("id")
     method = req.get("method")
     params = req.get("params") or {}
@@ -192,7 +173,7 @@ class WebMCPServer:
       tool_name = params.get("name")
       args = params.get("arguments") or {}
       try:
-        result = self.dispatch_tool(tool_name, args)
+        result = self.dispatch_tool(tool_name, args, bound_tag=bound_tag)
         return {
             "jsonrpc": "2.0",
             "id": req_id,
@@ -230,12 +211,15 @@ class WebMCPHandler(BaseHTTPRequestHandler):
     self.send_response(204)
     self.send_header("Access-Control-Allow-Origin", "*")
     self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-    self.send_header("Access-Control-Allow-Headers", "Content-Type")
+    self.send_header(
+        "Access-Control-Allow-Headers", "Content-Type, X-Axoloctl-Tag"
+    )
     self.end_headers()
 
   def do_GET(self) -> None:
     session_mgr = self.mcp_server.session_mgr
-    if self.path == "/status":
+    parsed = urlparse(self.path)
+    if parsed.path == "/status":
       ports = session_mgr._load_ports()
       sessions = {}
       for tag, port in ports.items():
@@ -245,12 +229,37 @@ class WebMCPHandler(BaseHTTPRequestHandler):
           if os.path.exists(commit_path):
             with open(commit_path, "r", encoding="utf-8") as f:
               commit_hash = f.read().strip()
+          desc_path = os.path.join(session_mgr.sessions_dir, tag, "description.txt")
+          desc = ""
+          if os.path.exists(desc_path):
+            with open(desc_path, "r", encoding="utf-8") as f:
+              desc = f.read().strip()
           sessions[tag] = {
               "port": port,
               "commit": commit_hash,
-              "url": f"http://127.0.0.1:{port}",
+              "description": desc,
+              "url": session_mgr.session_url(tag),
+              "agent_running": session_mgr.is_agent_running(tag),
+              "workspace": session_mgr.agent_workspace_dir(tag),
+              "nonces": session_mgr.get_beacons(tag),
           }
       self._send_response({"sessions": sessions})
+    elif parsed.path == "/resolve":
+      query = parse_qs(parsed.query)
+      nonce = (query.get("nonce") or [""])[0].strip()
+      if not nonce:
+        self._send_response(
+            {"error": "Missing required 'nonce' query parameter."},
+            status_code=400,
+        )
+        return
+      resolved = session_mgr.resolve_nonce(nonce)
+      if resolved is None:
+        self._send_response(
+            {"resolved": False, "nonce": nonce}, status_code=404
+        )
+        return
+      self._send_response({"resolved": True, **resolved})
     else:
       self.send_response(404)
       self.end_headers()
@@ -268,25 +277,35 @@ class WebMCPHandler(BaseHTTPRequestHandler):
       )
       return
 
-    if self.path == "/telemetry":
+    parsed = urlparse(self.path)
+    if parsed.path == "/telemetry":
+      nonce = str(req.get("nonce") or "").strip()
+      tag_arg = str(req.get("tag") or "").strip()
       port = req.get("port")
       msg = req.get("message", "")
       target_tag = None
-      ports = session_mgr._load_ports()
-      for tag, p in ports.items():
-        if p == port and session_mgr.is_running(tag):
-          target_tag = tag
-          break
 
-      if target_tag:
+      if nonce:
+        resolved = session_mgr.resolve_nonce(nonce)
+        if resolved:
+          target_tag = resolved["tag"]
+      if not target_tag and tag_arg and session_mgr.is_running(tag_arg):
+        target_tag = tag_arg
+      if not target_tag and port is not None:
+        ports = session_mgr._load_ports()
+        for tag, p in ports.items():
+          if p == port and session_mgr.is_running(tag):
+            target_tag = tag
+            break
+
+      if target_tag and msg:
         session_mgr.append_browser_log(target_tag, msg)
 
-      self.send_response(200)
-      self.send_header("Access-Control-Allow-Origin", "*")
-      self.end_headers()
+      self._send_response({"ok": bool(target_tag), "tag": target_tag})
       return
 
-    resp = self.mcp_server.handle_jsonrpc(req)
+    bound_tag = (self.headers.get("X-Axoloctl-Tag") or "").strip()
+    resp = self.mcp_server.handle_jsonrpc(req, bound_tag=bound_tag)
     if resp is None:
       self.send_response(204)
       self.send_header("Access-Control-Allow-Origin", "*")
@@ -294,9 +313,11 @@ class WebMCPHandler(BaseHTTPRequestHandler):
       return
     self._send_response(resp)
 
-  def _send_response(self, resp_dict: Dict[str, Any]) -> None:
+  def _send_response(
+      self, resp_dict: Dict[str, Any], status_code: int = 200
+  ) -> None:
     payload = json.dumps(resp_dict).encode("utf-8")
-    self.send_response(200)
+    self.send_response(status_code)
     self.send_header("Content-Type", "application/json")
     self.send_header("Content-Length", str(len(payload)))
     self.send_header("Access-Control-Allow-Origin", "*")
@@ -320,7 +341,7 @@ def main() -> None:
   session_mgr = SessionManager(UDMI_ROOT, config)
   WebMCPHandler.mcp_server = WebMCPServer(session_mgr)
 
-  server = HTTPServer(("127.0.0.1", config.webmcp_port), WebMCPHandler)
+  server = ThreadingHTTPServer(("127.0.0.1", config.webmcp_port), WebMCPHandler)
   server.allow_reuse_address = True
   print(
       f"web_mcp daemon listening on http://127.0.0.1:{config.webmcp_port} "

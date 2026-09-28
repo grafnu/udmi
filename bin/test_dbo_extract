@@ -1,12 +1,10 @@
-#!/bin/bash
+#!/bin/bash -e
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 ROOT_DIR="$( cd "$DIR/.." &> /dev/null && pwd )"
 
 # Activate the venv created by bin/setup_base
-if [ -f "$ROOT_DIR/venv/bin/activate" ]; then
-    source "$ROOT_DIR/venv/bin/activate"
-fi
+source "$ROOT_DIR/venv/bin/activate"
 
 function run_test {
     TEST_DIR=$1

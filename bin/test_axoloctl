@@ -42,47 +42,71 @@ bin/tmux_axoloctl start "$CONFIG_FILE"
 
 # Wait for daemons to bind
 for i in $(seq 1 15); do
-    if curl -s -f http://127.0.0.1:9290/api/uis >/dev/null 2>&1 && \
-       curl -s -f http://127.0.0.1:9291/status >/dev/null 2>&1; then
+    if curl -s -f --noproxy '*' http://127.0.0.1:9290/api/uis >/dev/null 2>&1 && \
+       curl -s -f --noproxy '*' http://127.0.0.1:9291/status >/dev/null 2>&1; then
         break
     fi
     sleep 0.5
 done
 
 echo "Checking UI Discovery & Host UI endpoints (:9290)..."
-curl -s -f http://127.0.0.1:9290/api/uis | jq -e '.default_ui == "cliView" and (.uis | length == 3)' >/dev/null
-curl -s -f http://127.0.0.1:9290/ui/cli | grep -q "CLI Console"
-curl -s -f http://127.0.0.1:9290/ui/hub | grep -q "Web Hub"
-curl -s -f http://127.0.0.1:9290/ui/api | grep -q "Custom Chat"
+curl -s -f --noproxy '*' http://127.0.0.1:9290/api/uis | jq -e '.default_ui == "cliView" and (.uis | length == 3)' >/dev/null
+curl -s -f --noproxy '*' http://127.0.0.1:9290/ui/cli | grep -q "CLI Console"
+curl -s -f --noproxy '*' http://127.0.0.1:9290/ui/hub | grep -q "Web Hub"
+curl -s -f --noproxy '*' http://127.0.0.1:9290/ui/api | grep -q "Custom Chat"
 
 echo "Checking Web MCP stdio handshake (initialize & tools/list)..."
-INIT_OUT=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | bin/mcp_axoloctl --config "$CONFIG_FILE" mcp)
+INIT_OUT=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | bin/mcp_axoloctl --config "$CONFIG_FILE" --tag gummi mcp)
 echo "$INIT_OUT" | jq -e '.result.serverInfo.name == "udmi-axoloctl"' >/dev/null
 
-TOOLS_OUT=$(echo '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | bin/mcp_axoloctl --config "$CONFIG_FILE" mcp)
-echo "$TOOLS_OUT" | jq -e '.result.tools | length == 5' >/dev/null
+TOOLS_OUT=$(echo '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | bin/mcp_axoloctl --config "$CONFIG_FILE" --tag gummi mcp)
+echo "$TOOLS_OUT" | jq -e '.result.tools | length == 4' >/dev/null
 
-echo "Deploying HEAD commit via bin/mcp_axoloctl start..."
+echo "Deploying HEAD commit via bin/mcp_axoloctl --tag gummi start..."
 HEAD_SHA=$(git rev-parse HEAD)
-START_OUT=$(bin/mcp_axoloctl --config "$CONFIG_FILE" start gummi "$HEAD_SHA" "CI E2E test session")
+START_OUT=$(bin/mcp_axoloctl --config "$CONFIG_FILE" --tag gummi start "$HEAD_SHA" "CI E2E test session")
 echo "$START_OUT"
-echo "$START_OUT" | jq -e '.running == true and .url == "http://127.0.0.1:9300"' >/dev/null
+echo "$START_OUT" | jq -e '.running == true and .agent_running == true and .url == "http://gummi.localhost:9290"' >/dev/null
 
-echo "Probing deployed web server on http://127.0.0.1:9300/..."
-curl -s -f http://127.0.0.1:9300/ >/dev/null
+echo "Verifying isolated Git worktree and 1:1 paired agent window (udmi_axoloctl_agent:gummi)..."
+test -d "$UDMI_ROOT/var/axoloctl/sessions/gummi/workspace/gummi"
+WORKTREE_BRANCH=$(git -C "$UDMI_ROOT/var/axoloctl/sessions/gummi/workspace" rev-parse --abbrev-ref HEAD)
+if [[ "$WORKTREE_BRANCH" != "axoloctl-gummi" ]]; then
+    echo "FAIL: Expected worktree branch 'axoloctl-gummi', got '$WORKTREE_BRANCH'" >&2
+    exit 1
+fi
+tmux list-windows -t udmi_axoloctl_agent -F "#{window_name}" | grep -qx "gummi"
+curl -s -f --noproxy '*' "http://127.0.0.1:9290/ui/cli?tag=gummi" | grep -q "udmi_axoloctl_agent:gummi"
 
-echo "Verifying status, list, and logs CLI subcommands..."
-STATUS_OUT=$(bin/mcp_axoloctl --config "$CONFIG_FILE" status gummi)
-echo "$STATUS_OUT" | jq -e --arg sha "$HEAD_SHA" '.running == true and .commit_hash == $sha' >/dev/null
+echo "Probing deployed web server via virtual host http://gummi.localhost:9290/..."
+curl -s -f --noproxy '*' --resolve gummi.localhost:9290:127.0.0.1 http://gummi.localhost:9290/ >/dev/null
+
+echo "Verifying two-path nonce correlation over single port (:9290): gummi.localhost:9290/.axoloctl/beacon -> localhost:9290/api/resolve..."
+TEST_NONCE="ci-nonce-$$"
+BEACON_OUT=$(curl -s -f --noproxy '*' --resolve gummi.localhost:9290:127.0.0.1 -X POST http://gummi.localhost:9290/.axoloctl/beacon -H "Content-Type: application/json" -d "{\"nonce\":\"$TEST_NONCE\",\"url\":\"http://gummi.localhost:9290/\"}")
+echo "$BEACON_OUT" | jq -e --arg sha "$HEAD_SHA" --arg n "$TEST_NONCE" '.axoloctl == true and .tag == "gummi" and .commit_hash == $sha and .nonce == $n' >/dev/null
+
+RESOLVE_OUT=$(curl -s -f --noproxy '*' "http://127.0.0.1:9290/api/resolve?nonce=$TEST_NONCE")
+echo "$RESOLVE_OUT" | jq -e --arg sha "$HEAD_SHA" --arg n "$TEST_NONCE" '.resolved == true and .tag == "gummi" and .agent_running == true and .commit == $sha and .url == "http://gummi.localhost:9290" and .nonce == $n' >/dev/null
+
+HOST_STATUS_OUT=$(curl -s -f --noproxy '*' "http://127.0.0.1:9290/api/status")
+echo "$HOST_STATUS_OUT" | jq -e --arg n "$TEST_NONCE" '.sessions.gummi.url == "http://gummi.localhost:9290" and .sessions.gummi.agent_running == true and .sessions.gummi.nonces[$n] != null' >/dev/null
+
+echo "Verifying viewer-origin browser telemetry via virtual host (http://gummi.localhost:9290/.axoloctl/telemetry)..."
+curl -s -f --noproxy '*' --resolve gummi.localhost:9290:127.0.0.1 -X POST http://gummi.localhost:9290/.axoloctl/telemetry -H "Content-Type: application/json" -d "{\"nonce\":\"$TEST_NONCE\",\"message\":\"E2E browser error check\"}" | jq -e '.ok == true' >/dev/null
+
+echo "Verifying status, list, and logs CLI subcommands (bound via AXOLOCTL_TAG=gummi)..."
+STATUS_OUT=$(AXOLOCTL_TAG=gummi bin/mcp_axoloctl --config "$CONFIG_FILE" status)
+echo "$STATUS_OUT" | jq -e --arg sha "$HEAD_SHA" '.running == true and .agent_running == true and .commit_hash == $sha' >/dev/null
 
 LIST_OUT=$(bin/mcp_axoloctl --config "$CONFIG_FILE" list)
-echo "$LIST_OUT" | jq -e '.servers | length == 1 and .[0].tag == "gummi"' >/dev/null
+echo "$LIST_OUT" | jq -e '.servers | length == 1 and .[0].tag == "gummi" and .[0].agent_running == true' >/dev/null
 
-LOGS_OUT=$(bin/mcp_axoloctl --config "$CONFIG_FILE" logs gummi)
-echo "$LOGS_OUT" | jq -e '.running == true and (.lines | length > 0)' >/dev/null
+LOGS_OUT=$(AXOLOCTL_TAG=gummi bin/mcp_axoloctl --config "$CONFIG_FILE" logs)
+echo "$LOGS_OUT" | jq -e '.running == true and (.lines | any(contains("[browser] E2E browser error check")))' >/dev/null
 
 echo "Stopping deployed web server session..."
-STOP_OUT=$(bin/mcp_axoloctl --config "$CONFIG_FILE" stop gummi)
+STOP_OUT=$(AXOLOCTL_TAG=gummi bin/mcp_axoloctl --config "$CONFIG_FILE" stop)
 echo "$STOP_OUT" | jq -e '.running == false' >/dev/null
 
 bin/tmux_axoloctl stop

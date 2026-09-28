@@ -9,12 +9,13 @@ if [ -n "$COMMON_GIT" ]; then
   MAIN_ROOT=$(realpath "$COMMON_GIT/..")
 fi
 
-if [ -d "venv" ]; then
+if [ -x "venv/bin/python3" ]; then
   PYTHON_BIN="venv/bin/python3"
-elif [ -n "$MAIN_ROOT" ] && [ -d "$MAIN_ROOT/venv" ]; then
+elif [ -n "$MAIN_ROOT" ] && [ -x "$MAIN_ROOT/venv/bin/python3" ]; then
   PYTHON_BIN="$MAIN_ROOT/venv/bin/python3"
 else
-  PYTHON_BIN="python3"
+  echo "Error: Virtual environment not found at $ROOT_DIR/venv" >&2
+  exit 1
 fi
 
 TEST_TARGET="all"

@@ -136,7 +136,7 @@ for arg in "$@"; do
     esac
 done
 
-ALLOWED_SERVICES=(mosquitto udmis etcd postgres influxdb butler validator registrar pubsub)
+ALLOWED_SERVICES=(mosquitto udmis etcd postgres influxdb butler validator registrar pubsub server barbican_mcp uufi_mcp butler_mcp)
 
 # Parse and strictly validate arguments via parse_tmux_args
 parse_tmux_args "${POSITIONAL_ARGS[@]}" "${FILTER_ARGS[@]}"
@@ -201,9 +201,11 @@ registry_id=$(jq -r .registry_id $site_config)${UDMI_REGISTRY_SUFFIX:-}
 
 BARBICAN_SERVICES=(mosquitto udmis etcd pubsub)
 BUTLER_SERVICES=(butler validator registrar postgres influxdb)
+MCP_SERVICES=(server barbican_mcp uufi_mcp butler_mcp)
 
 BARBICAN_FILTERS=()
 BUTLER_FILTERS=()
+MCP_FILTERS=()
 
 for f in "${FILTER_ARGS[@]}"; do
     svc="${f#\+\+}"
@@ -218,6 +220,12 @@ for f in "${FILTER_ARGS[@]}"; do
     for u in "${BUTLER_SERVICES[@]}"; do
         if [[ "$svc" == "$u" ]]; then
             BUTLER_FILTERS+=("$f")
+            break
+        fi
+    done
+    for m in "${MCP_SERVICES[@]}"; do
+        if [[ "$svc" == "$m" ]]; then
+            MCP_FILTERS+=("$f")
             break
         fi
     done
@@ -239,6 +247,24 @@ for s in "${BUTLER_SERVICES[@]}"; do
     fi
 done
 
+should_run_mcp=false
+for s in "${MCP_SERVICES[@]}"; do
+    if tmux_should_run_service "$s" "false"; then
+        should_run_mcp=true
+        break
+    fi
+done
+
+if [[ -f /.dockerenv || -n ${UDMI_CONTAINER:-} ]]; then
+    POD_READY=${UDMI_POD_READY:-/tmp/pod_ready.txt}
+else
+    POD_READY=${UDMI_POD_READY:-var/pod_ready.txt}
+fi
+
+if tmux_should_run_service "udmis"; then
+    rm -f "$POD_READY"
+fi
+
 # 1. Barbican session (etcd, mosquitto, udmis, pubsub)
 if [[ "$should_run_barbican" == true ]]; then
     echo "Starting Barbican in tmux session ($LOCAL_ACTION)..." | tee -a $UDMIS_LOG
@@ -247,21 +273,8 @@ else
     echo "Skipping Barbican tmux session (filtered)" | tee -a $UDMIS_LOG
 fi
 
-# 2. Butler session (postgres, influxdb, butler, validator, registrar)
-if [[ "$should_run_butler" == true ]]; then
-    echo "Starting Butler in tmux session ($LOCAL_ACTION)..." | tee -a $UDMIS_LOG
-    $UDMI_ROOT/bin/tmux_butler "$LOCAL_ACTION" "$site_model" "${project_spec:-//mqtt/localhost:${MQTT_PORT:-8883}}" "${BUTLER_FILTERS[@]}"
-else
-    echo "Skipping Butler tmux session (filtered)" | tee -a $UDMIS_LOG
-fi
-
-# 3. If UDMIS was started, wait for its readiness sentinel
+# 2. If UDMIS was started, wait for its readiness sentinel before starting Butler/Registrar
 if tmux_should_run_service "udmis"; then
-    if [[ -f /.dockerenv || -n ${UDMI_CONTAINER:-} ]]; then
-        POD_READY=${UDMI_POD_READY:-/tmp/pod_ready.txt}
-    else
-        POD_READY=${UDMI_POD_READY:-var/pod_ready.txt}
-    fi
     echo "Waiting for UDMIS readiness sentinel ($POD_READY)..."
     WAITING=90
     for i in $(seq 1 $WAITING); do
@@ -274,6 +287,22 @@ if tmux_should_run_service "udmis"; then
         echo "=== UDMIS failed to become ready within ${WAITING}s ==="
         fail "pod_ready.txt not found."
     fi
+fi
+
+# 3. Butler session (postgres, influxdb, butler, validator, registrar)
+if [[ "$should_run_butler" == true ]]; then
+    echo "Starting Butler in tmux session ($LOCAL_ACTION)..." | tee -a $UDMIS_LOG
+    $UDMI_ROOT/bin/tmux_butler "$LOCAL_ACTION" "$site_model" "${project_spec:-//mqtt/localhost:${MQTT_PORT:-8883}}" "${BUTLER_FILTERS[@]}"
+else
+    echo "Skipping Butler tmux session (filtered)" | tee -a $UDMIS_LOG
+fi
+
+# 4. MCP session (server, barbican_mcp, uufi_mcp, butler_mcp)
+if [[ "$should_run_mcp" == true ]]; then
+    echo "Starting MCP in tmux session ($LOCAL_ACTION)..." | tee -a $UDMIS_LOG
+    $UDMI_ROOT/bin/tmux_mcp "$LOCAL_ACTION" "$site_model" "${project_spec:-//mqtt/localhost:${MQTT_PORT:-8883}}" "${MCP_FILTERS[@]}"
+else
+    echo "Skipping MCP tmux session (filtered)" | tee -a $UDMIS_LOG
 fi
 
 echo Done with local server setup.

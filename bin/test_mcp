@@ -5,9 +5,7 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$DIR/.."
 source etc/shell_common.sh
 
-if [ -f "venv/bin/activate" ]; then
-    source "venv/bin/activate"
-fi
+source "venv/bin/activate"
 export PYTHONPATH=".:${PYTHONPATH:-}"
 
 TEST_ID="ci_mcp_test_$$"

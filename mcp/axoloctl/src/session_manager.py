@@ -3,12 +3,13 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from config import AxoloctlConfig
 
@@ -26,6 +27,7 @@ class SessionManager:
     self.shared_dir = os.path.join(self.axoloctl_root, "shared")
     self.ports_file = os.path.join(self.sessions_dir, "ports.json")
     self.session_web = "udmi_axoloctl_web"
+    self.session_agent = "udmi_axoloctl_agent"
 
     os.makedirs(self.sessions_dir, exist_ok=True)
     os.makedirs(self.shared_dir, exist_ok=True)
@@ -71,10 +73,132 @@ class SessionManager:
       raise ValueError(f"Unknown session tag: '{tag}'")
     return session_root
 
+  def agent_workspace_dir(self, tag: str) -> str:
+    workspace_root = os.path.join(self.sessions_dir, tag, "workspace")
+    return os.path.normpath(os.path.join(workspace_root, self.config.app_subpath))
+
+  def _ensure_agent_worktree(self, tag: str, commit_hash: str) -> str:
+    session_root = os.path.join(self.sessions_dir, tag)
+    workspace_root = os.path.join(session_root, "workspace")
+    branch_name = f"axoloctl-{tag}"
+    git_marker = os.path.join(workspace_root, ".git")
+
+    if not os.path.exists(git_marker):
+      if os.path.exists(workspace_root):
+        shutil.rmtree(workspace_root, ignore_errors=True)
+      subprocess.run(
+          [
+              "git",
+              "-c",
+              "safe.bareRepository=all",
+              "-C",
+              self.config.repo_path,
+              "worktree",
+              "prune",
+          ],
+          stdout=subprocess.DEVNULL,
+          stderr=subprocess.DEVNULL,
+          check=False,
+      )
+      res = subprocess.run(
+          [
+              "git",
+              "-c",
+              "safe.bareRepository=all",
+              "-C",
+              self.config.repo_path,
+              "worktree",
+              "add",
+              "-f",
+              "-B",
+              branch_name,
+              workspace_root,
+              commit_hash,
+          ],
+          stdout=subprocess.PIPE,
+          stderr=subprocess.PIPE,
+          text=True,
+          check=False,
+      )
+      if res.returncode != 0:
+        raise ValueError(
+            f"Failed to provision git worktree for session '{tag}' at "
+            f"{commit_hash}: {res.stderr.strip()}"
+        )
+
+    return self.agent_workspace_dir(tag)
+
+  def _ensure_tmux_window(
+      self, session_name: str, window_name: str, script_path: str
+  ) -> None:
+    has_sess = subprocess.run(
+        ["tmux", "has-session", "-t", session_name],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if has_sess.returncode != 0:
+      subprocess.run(
+          [
+              "tmux",
+              "new-session",
+              "-d",
+              "-s",
+              session_name,
+              "-n",
+              window_name,
+              script_path,
+          ],
+          check=True,
+      )
+    else:
+      subprocess.run(
+          [
+              "tmux",
+              "new-window",
+              "-d",
+              "-t",
+              session_name,
+              "-n",
+              window_name,
+              script_path,
+          ],
+          check=True,
+      )
+
+  def _ensure_agent_window(
+      self, tag: str, app_worktree_dir: str, shared_dir: str
+  ) -> None:
+    if self.is_agent_running(tag):
+      return
+    session_root = os.path.join(self.sessions_dir, tag)
+    venv_activate = os.path.join(self.udmi_root, "venv", "bin", "activate")
+    agent_script = os.path.join(session_root, "runner_agent.sh")
+    with open(agent_script, "w", encoding="utf-8") as f:
+      f.write(
+          f"""#!/bin/bash -e
+source "{venv_activate}"
+export AXOLOCTL_CONFIG="{self.config.config_path}"
+export AXOLOCTL_TAG="{tag}"
+export AXOLOCTL_DATA_DIR="{shared_dir}"
+export AXOLOCTL_HOST_PORT="{self.config.host_port}"
+export AXOLOCTL_WEBMCP_PORT="{self.config.webmcp_port}"
+export AXOLOCTL_MCP_PROXY_URL="http://127.0.0.1:{self.config.host_port}"
+export MCP_CONFIG="{self.config.mcp_config_path}"
+cd "{app_worktree_dir}"
+echo "Axoloctl Dedicated Agent [{tag}] (worktree: {app_worktree_dir}, branch: axoloctl-{tag})"
+export PS1="[axoloctl:{tag}] \\W $ "
+exec bash --norc -i
+"""
+      )
+    os.chmod(agent_script, 0o755)
+    self._ensure_tmux_window(self.session_agent, tag, agent_script)
+
   def _probe_http(self, port: int) -> bool:
     try:
+      opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
       req = urllib.request.Request(f"http://127.0.0.1:{port}/", method="GET")
-      with urllib.request.urlopen(req, timeout=1.0) as response:
+      with opener.open(req, timeout=1.0) as response:
         return response.status < 500
     except urllib.error.HTTPError as e:
       return e.code < 500
@@ -93,7 +217,26 @@ class SessionManager:
       return False
     return tag in [line.strip() for line in res.stdout.splitlines()]
 
-  def list_servers(self) -> List[Dict[str, str]]:
+  def is_agent_running(self, tag: str) -> bool:
+    res = subprocess.run(
+        [
+            "tmux",
+            "list-windows",
+            "-t",
+            self.session_agent,
+            "-F",
+            "#{window_name}",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    if res.returncode != 0:
+      return False
+    return tag in [line.strip() for line in res.stdout.splitlines()]
+
+  def list_servers(self) -> List[Dict[str, Any]]:
     ports = self._load_ports()
     servers = []
     res = subprocess.run(
@@ -116,7 +259,13 @@ class SessionManager:
         if os.path.exists(desc_path):
           with open(desc_path, "r", encoding="utf-8") as f:
             desc = f.read().strip()
-        servers.append({"tag": tag, "description": desc})
+        servers.append({
+            "tag": tag,
+            "description": desc,
+            "url": self.session_url(tag),
+            "agent_running": self.is_agent_running(tag),
+            "workspace": self.agent_workspace_dir(tag),
+        })
     return servers
 
   def stop_server(self, tag: str) -> Dict[str, Any]:
@@ -190,6 +339,10 @@ class SessionManager:
     ) as f:
       f.write(commit_hash)
 
+    # Provision isolated Git worktree and paired Agent window for this tag
+    app_worktree_dir = self._ensure_agent_worktree(tag, commit_hash)
+    self._ensure_agent_window(tag, app_worktree_dir, shared_dir)
+
     # Clear existing read-only code dir
     if os.path.exists(code_dir):
       subprocess.run(["chmod", "-R", "+w", code_dir], check=False)
@@ -240,50 +393,43 @@ class SessionManager:
       os.chmod(code_dir, 0o555)
 
     port = self._allocate_port(tag)
-    url = f"http://127.0.0.1:{port}"
+    url = self.session_url(tag)
     venv_activate = os.path.join(self.udmi_root, "venv", "bin", "activate")
-    extra_port_export = (
-        f"export {self.config.port_env_var}={port}\n"
-        if self.config.port_env_var
-        else ""
+    proxy_script = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "session_proxy.py"
     )
+    beacons_file = os.path.join(session_root, "beacons.json")
+    if not os.path.exists(beacons_file):
+      with open(beacons_file, "w", encoding="utf-8") as f:
+        json.dump({}, f)
 
     wrapper_script = os.path.join(session_root, "runner.sh")
     with open(wrapper_script, "w", encoding="utf-8") as f:
       f.write(
-          f"""#!/bin/bash
-if [ -f "{venv_activate}" ]; then
-  source "{venv_activate}"
-fi
-export AXOLOCTL_PORT={port}
-{extra_port_export}export AXOLOCTL_DATA_DIR="{shared_dir}"
+          f"""#!/bin/bash -e
+source "{venv_activate}"
+export AXOLOCTL_DATA_DIR="{shared_dir}"
 export AXOLOCTL_TAG="{tag}"
 export AXOLOCTL_COMMIT="{commit_hash}"
 export AXOLOCTL_MCP_PROXY_URL="http://127.0.0.1:{self.config.host_port}"
 export PYTHONUNBUFFERED=1
-cd "{app_code_dir}"
-exec "./{self.config.entrypoint}" 2>&1 | while IFS= read -r line; do
-  echo "[server] $line" | tee -a "{log_file}"
-done
+exec python3 "{proxy_script}" \\
+  --port {port} \\
+  --tag "{tag}" \\
+  --commit "{commit_hash}" \\
+  --description {shlex.quote(description or "")} \\
+  --app-dir "{app_code_dir}" \\
+  --entrypoint "{self.config.entrypoint}" \\
+  --port-env-var "{self.config.port_env_var or ''}" \\
+  --log-file "{log_file}" \\
+  --beacons-file "{beacons_file}"
 """
       )
     os.chmod(wrapper_script, 0o755)
 
     open(log_file, "w", encoding="utf-8").close()
 
-    subprocess.run(
-        [
-            "tmux",
-            "new-window",
-            "-d",
-            "-t",
-            self.session_web,
-            "-n",
-            tag,
-            wrapper_script,
-        ],
-        check=True,
-    )
+    self._ensure_tmux_window(self.session_web, tag, wrapper_script)
 
     timeout = 10
     start_time = time.time()
@@ -302,6 +448,8 @@ done
         self.stop_server(tag)
       return {
           "running": False,
+          "agent_running": self.is_agent_running(tag),
+          "workspace": app_worktree_dir,
           "url": None,
           "cursor": len(logs),
           "logs": logs,
@@ -309,10 +457,77 @@ done
 
     return {
         "running": True,
+        "agent_running": self.is_agent_running(tag),
+        "workspace": app_worktree_dir,
         "url": url,
         "cursor": len(logs),
         "logs": logs,
     }
+
+  def get_beacons(self, tag: str) -> Dict[str, Any]:
+    beacons_file = os.path.join(self.sessions_dir, tag, "beacons.json")
+    if os.path.exists(beacons_file):
+      try:
+        with open(beacons_file, "r", encoding="utf-8") as f:
+          data = json.load(f)
+          if isinstance(data, dict):
+            return data
+      except Exception:
+        pass
+    return {}
+
+  def record_beacon(
+      self, tag: str, nonce: str, url: str = "", title: str = ""
+  ) -> Dict[str, Any]:
+    session_root = self._ensure_known_tag(tag)
+    beacons_file = os.path.join(session_root, "beacons.json")
+    data = self.get_beacons(tag)
+    entry = {
+        "timestamp": time.time(),
+        "url": url,
+        "title": title,
+    }
+    data[nonce] = entry
+    tmp_path = f"{beacons_file}.{os.getpid()}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+      json.dump(data, f, indent=2)
+    os.replace(tmp_path, beacons_file)
+    return entry
+
+  def session_url(self, tag: str) -> str:
+    return f"http://{tag}.localhost:{self.config.host_port}"
+
+  def resolve_nonce(self, nonce: str) -> Optional[Dict[str, Any]]:
+    if not nonce:
+      return None
+    ports = self._load_ports()
+    for tag, port in ports.items():
+      beacons = self.get_beacons(tag)
+      if nonce in beacons:
+        if not self.is_running(tag):
+          continue
+        commit_path = os.path.join(self.sessions_dir, tag, "commit.txt")
+        commit_hash = ""
+        if os.path.exists(commit_path):
+          with open(commit_path, "r", encoding="utf-8") as f:
+            commit_hash = f.read().strip()
+        desc_path = os.path.join(self.sessions_dir, tag, "description.txt")
+        desc = ""
+        if os.path.exists(desc_path):
+          with open(desc_path, "r", encoding="utf-8") as f:
+            desc = f.read().strip()
+        return {
+            "tag": tag,
+            "port": port,
+            "commit": commit_hash,
+            "description": desc,
+            "url": self.session_url(tag),
+            "agent_running": self.is_agent_running(tag),
+            "workspace": self.agent_workspace_dir(tag),
+            "nonce": nonce,
+            "beacon": beacons[nonce],
+        }
+    return None
 
   def get_status(self, tag: str) -> Dict[str, Any]:
     session_root = self._ensure_known_tag(tag)
@@ -323,7 +538,10 @@ done
     running = self.is_running(tag)
     return {
         "running": running,
+        "agent_running": self.is_agent_running(tag),
         "commit_hash": commit_hash,
+        "workspace": self.agent_workspace_dir(tag),
+        "url": self.session_url(tag),
         "exit_code": None if running else 0,
     }
 

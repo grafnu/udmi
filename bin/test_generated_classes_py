@@ -5,11 +5,9 @@ set -e
 ROOT_DIR=$(realpath $(dirname $0)/..)
 GENCODE_DIR="$ROOT_DIR/gencode/python"
 
-if [[ -f "$ROOT_DIR/venv/bin/activate" ]]; then
-    source "$ROOT_DIR/venv/bin/activate"
-fi
+source "$ROOT_DIR/venv/bin/activate"
 
-PYTEST_CMD=$(command -v pytest || echo "$ROOT_DIR/venv/bin/pytest")
+PYTEST_CMD="$ROOT_DIR/venv/bin/pytest"
 
 echo "--- Running generated python class tests ---"
 PYTHONPATH="$GENCODE_DIR:${PYTHONPATH:-}" $PYTEST_CMD -v -rA "$ROOT_DIR"/bin/test_generated_classes.py

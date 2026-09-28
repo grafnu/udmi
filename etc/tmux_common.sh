@@ -485,6 +485,39 @@ tmux_probe_service() {
                 echo "STOPPED"
             fi
             ;;
+        barbican_mcp)
+            local port="${BARBICAN_MCP_PORT:-8085}"
+            local pids=$(pgrep -f "mcp[/.]barbican[/.]server(\.py)? serve" 2>/dev/null || true)
+            if [[ -n "$pids" ]] && timeout 1 bash -c "</dev/tcp/127.0.0.1/$port" 2>/dev/null; then
+                echo "RUNNING (port $port, PID $(echo $pids | tr '\n' ' '))"
+            elif [[ -n "$pids" ]]; then
+                echo "STARTING (PID $(echo $pids | tr '\n' ' '), port $port)"
+            else
+                echo "STOPPED"
+            fi
+            ;;
+        uufi_mcp)
+            local port="${UUFI_MCP_PORT:-8087}"
+            local pids=$(pgrep -f "mcp[/.]uufi[/.]server(\.py)? serve" 2>/dev/null || true)
+            if [[ -n "$pids" ]] && timeout 1 bash -c "</dev/tcp/127.0.0.1/$port" 2>/dev/null; then
+                echo "RUNNING (port $port, PID $(echo $pids | tr '\n' ' '))"
+            elif [[ -n "$pids" ]]; then
+                echo "STARTING (PID $(echo $pids | tr '\n' ' '), port $port)"
+            else
+                echo "STOPPED"
+            fi
+            ;;
+        butler_mcp)
+            local port="${BUTLER_MCP_PORT:-8088}"
+            local pids=$(pgrep -f "mcp[/.]butler[/.]server(\.py)? serve" 2>/dev/null || true)
+            if [[ -n "$pids" ]] && timeout 1 bash -c "</dev/tcp/127.0.0.1/$port" 2>/dev/null; then
+                echo "RUNNING (port $port, PID $(echo $pids | tr '\n' ' '))"
+            elif [[ -n "$pids" ]]; then
+                echo "STARTING (PID $(echo $pids | tr '\n' ' '), port $port)"
+            else
+                echo "STOPPED"
+            fi
+            ;;
         *)
             echo "UNKNOWN"
             ;;

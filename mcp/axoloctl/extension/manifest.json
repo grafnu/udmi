@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Axoloctl Control Panel",
-  "version": "1.0",
-  "description": "Side panel for interacting with the Agent and managing Axoloctl web sessions.",
+  "version": "1.1",
+  "description": "Side panel for interacting with the Agent and correlating Axoloctl web sessions across port-forwarded environments.",
   "permissions": [
     "sidePanel",
     "storage",
@@ -10,8 +10,8 @@
     "webNavigation"
   ],
   "host_permissions": [
-    "http://127.0.0.1:*/*",
-    "http://localhost:*/*"
+    "http://*/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -24,7 +24,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["http://127.0.0.1:*/*", "http://localhost:*/*"],
+      "matches": ["http://*/*", "https://*/*"],
       "js": ["content.js"],
       "run_at": "document_start"
     }

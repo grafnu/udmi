@@ -57,13 +57,16 @@ def resolve_webmcp_url(config_arg="", port_arg=None):
   return f"http://127.0.0.1:{port}/mcp"
 
 
-def send_jsonrpc(webmcp_url, req):
+def send_jsonrpc(webmcp_url, req, bound_tag=""):
   """Forwards a single JSON-RPC 2.0 request to the web_mcp daemon."""
   data = json.dumps(req).encode("utf-8")
   try:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     headers = {"Content-Type": "application/json"}
+    if bound_tag:
+      headers["X-Axoloctl-Tag"] = bound_tag
     req_obj = urllib.request.Request(webmcp_url, data=data, headers=headers)
-    with urllib.request.urlopen(req_obj, timeout=20) as response:
+    with opener.open(req_obj, timeout=20) as response:
       if response.status == 204:
         return None
       body = response.read().decode("utf-8").strip()
@@ -88,14 +91,14 @@ def send_jsonrpc(webmcp_url, req):
     }
 
 
-def run_stdio(webmcp_url):
+def run_stdio(webmcp_url, bound_tag=""):
   """Main stdio loop reading JSON-RPC lines from stdin and writing to stdout."""
   for line in sys.stdin:
     if not line.strip():
       continue
     try:
       req = json.loads(line)
-      res = send_jsonrpc(webmcp_url, req)
+      res = send_jsonrpc(webmcp_url, req, bound_tag=bound_tag)
       if res is not None:
         print(json.dumps(res), flush=True)
     except json.JSONDecodeError:
@@ -107,8 +110,13 @@ def run_stdio(webmcp_url):
       print(json.dumps(err), flush=True)
 
 
-def invoke_cli_tool(webmcp_url, tool_name, arguments):
+def invoke_cli_tool(webmcp_url, tool_name, arguments, bound_tag):
   """Invokes an MCP tool via JSON-RPC and prints/returns the parsed result."""
+  if not bound_tag:
+    sys.stderr.write(
+      "ERROR: Session tag is required. Pass --tag <tag> or set AXOLOCTL_TAG.\n"
+    )
+    sys.exit(1)
   req = {
     "jsonrpc": "2.0",
     "id": 1,
@@ -118,7 +126,7 @@ def invoke_cli_tool(webmcp_url, tool_name, arguments):
       "arguments": arguments
     }
   }
-  res = send_jsonrpc(webmcp_url, req)
+  res = send_jsonrpc(webmcp_url, req, bound_tag=bound_tag)
   if not res:
     sys.stderr.write("Error: Empty response from web_mcp daemon.\n")
     sys.exit(1)
@@ -137,6 +145,30 @@ def invoke_cli_tool(webmcp_url, tool_name, arguments):
   print(json.dumps(result_obj, indent=2))
 
 
+def invoke_cli_list(webmcp_url):
+  """Queries GET /status on web_mcp for operator inspection of active sessions."""
+  status_url = webmcp_url.rsplit("/", 1)[0] + "/status"
+  opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+  try:
+    with opener.open(status_url, timeout=10) as resp:
+      data = json.loads(resp.read().decode("utf-8"))
+      sessions = data.get("sessions", {})
+      servers = [
+        {
+          "tag": tag,
+          "description": info.get("description", ""),
+          "url": info.get("url", ""),
+          "agent_running": info.get("agent_running", False),
+          "workspace": info.get("workspace", ""),
+        }
+        for tag, info in sessions.items()
+      ]
+      print(json.dumps({"servers": servers}, indent=2))
+  except Exception as e: # pylint: disable=broad-exception-caught
+    sys.stderr.write(f"Error querying {status_url}: {e}\n")
+    sys.exit(1)
+
+
 def build_parser():
   """Builds the argument parser for CLI and MCP execution modes."""
   parser = argparse.ArgumentParser(
@@ -153,14 +185,18 @@ def build_parser():
     default=None,
     help="Explicit web_mcp TCP port override"
   )
+  parser.add_argument(
+    "--tag",
+    default="",
+    help="Bound session tag identifier (defaults to AXOLOCTL_TAG environment variable)"
+  )
   subparsers = parser.add_subparsers(dest="command")
 
   subparsers.add_parser("mcp", help="Run in stdio MCP server mode")
 
   start_p = subparsers.add_parser(
-    "start", help="Deploy commit_hash and start a web server session"
+    "start", help="Deploy commit_hash and start the bound session's paired agent & web server"
   )
-  start_p.add_argument("tag", help="Session tag identifier (e.g. gummi)")
   start_p.add_argument("commit_hash", help="40-character Git commit SHA")
   start_p.add_argument(
     "description",
@@ -169,20 +205,17 @@ def build_parser():
     help="Human-readable session description"
   )
 
-  stop_p = subparsers.add_parser("stop", help="Stop a running session by tag")
-  stop_p.add_argument("tag", help="Session tag identifier")
+  subparsers.add_parser("stop", help="Stop the bound session's web server")
 
-  status_p = subparsers.add_parser(
-    "status", help="Get lifecycle status and commit_hash for a session tag"
+  subparsers.add_parser(
+    "status", help="Get lifecycle status and commit_hash for the bound session"
   )
-  status_p.add_argument("tag", help="Session tag identifier")
 
   subparsers.add_parser("list", help="List all active web server sessions")
 
   logs_p = subparsers.add_parser(
-    "logs", help="Read unified [server] and [browser] logs for a session tag"
+    "logs", help="Read unified [server] and [browser] logs for the bound session"
   )
-  logs_p.add_argument("tag", help="Session tag identifier")
   logs_p.add_argument(
     "--cursor", type=int, default=0, help="Zero-based line cursor offset"
   )
@@ -203,33 +236,35 @@ def main():
     sys.stderr.write(f"ERROR: {e}\n")
     sys.exit(1)
 
+  bound_tag = (args.tag or os.environ.get("AXOLOCTL_TAG") or "").strip()
+
   if args.command in (None, "mcp"):
-    run_stdio(webmcp_url)
+    run_stdio(webmcp_url, bound_tag=bound_tag)
   elif args.command == "start":
     invoke_cli_tool(
       webmcp_url,
       "start_server",
       {
-        "tag": args.tag,
         "commit_hash": args.commit_hash,
         "description": args.description
-      }
+      },
+      bound_tag=bound_tag,
     )
   elif args.command == "stop":
-    invoke_cli_tool(webmcp_url, "stop_server", {"tag": args.tag})
+    invoke_cli_tool(webmcp_url, "stop_server", {}, bound_tag=bound_tag)
   elif args.command == "status":
-    invoke_cli_tool(webmcp_url, "get_status", {"tag": args.tag})
+    invoke_cli_tool(webmcp_url, "get_status", {}, bound_tag=bound_tag)
   elif args.command == "list":
-    invoke_cli_tool(webmcp_url, "list_servers", {})
+    invoke_cli_list(webmcp_url)
   elif args.command == "logs":
     invoke_cli_tool(
       webmcp_url,
       "read_logs",
       {
-        "tag": args.tag,
         "cursor": args.cursor,
         "max_lines": args.max_lines
-      }
+      },
+      bound_tag=bound_tag,
     )
 
 

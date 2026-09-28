@@ -41,10 +41,8 @@ if [[ -n "$PROJECT_SPEC" ]]; then
     fi
 fi
 
-PYTHON_BIN="python3"
-if [[ -x "$UDMI_ROOT/venv/bin/python3" ]]; then
-    PYTHON_BIN="$UDMI_ROOT/venv/bin/python3"
-fi
+source "$UDMI_ROOT/venv/bin/activate"
+PYTHON_BIN="$UDMI_ROOT/venv/bin/python3"
 
 case "$ACTION" in
     stop)
@@ -55,6 +53,7 @@ case "$ACTION" in
         echo "Purging axoloctl runtime state..."
         chmod -R u+w "$UDMI_ROOT/var/axoloctl" 2>/dev/null || true
         rm -rf "$UDMI_ROOT/var/axoloctl"
+        git -c safe.bareRepository=all -C "$UDMI_ROOT" worktree prune 2>/dev/null || true
         ;;
     status)
         tmux_session_status "$SESSION_AGENT"
@@ -114,10 +113,8 @@ EOF
         # 1. udmi_axoloctl_web: Web MCP lifecycle daemon
         tmux_init_or_add_window "$SESSION_WEB" "web_mcp" "export AXOLOCTL_CONFIG='$RESOLVED_CONFIG' AXOLOCTL_WEBMCP_PORT='$AXOLOCTL_WEBMCP_PORT'; PYTHONPATH=\"$UDMI_ROOT:\${PYTHONPATH:-}\" $PYTHON_BIN mcp/axoloctl/src/web_mcp.py --config '$RESOLVED_CONFIG'"
 
-        # 2. udmi_axoloctl_agent: Host UI gateway & Agent workspace window
+        # 2. udmi_axoloctl_agent: Host UI gateway (dedicated <tag> agent windows are spawned 1:1 per session)
         tmux_init_or_add_window "$SESSION_AGENT" "ui_host" "export AXOLOCTL_CONFIG='$RESOLVED_CONFIG' AXOLOCTL_HOST_PORT='$AXOLOCTL_HOST_PORT' AXOLOCTL_WEBMCP_PORT='$AXOLOCTL_WEBMCP_PORT'; PYTHONPATH=\"$UDMI_ROOT:\${PYTHONPATH:-}\" $PYTHON_BIN mcp/axoloctl/src/ui_host.py --config '$RESOLVED_CONFIG'"
-
-        tmux_init_or_add_window "$SESSION_AGENT" "agent" "export AXOLOCTL_CONFIG='$RESOLVED_CONFIG' MCP_CONFIG='$MCP_CONFIG_PATH' AXOLOCTL_HOST_PORT='$AXOLOCTL_HOST_PORT' AXOLOCTL_WEBMCP_PORT='$AXOLOCTL_WEBMCP_PORT'; cd '$APP_WORK_DIR' && exec bash --init-file <(echo 'echo \"Axoloctl Agent Workspace ($APP_WORK_DIR). MCP config: $MCP_CONFIG_PATH\"; export PS1=\"[axoloctl-agent] \W $ \"')"
 
         echo "Axoloctl sessions '$SESSION_AGENT' and '$SESSION_WEB' initialized."
         tmux_session_status "$SESSION_AGENT"
