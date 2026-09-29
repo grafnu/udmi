@@ -344,9 +344,29 @@ body {
   font-weight: 700;
 }
 
+.data-table th .sort-priority {
+  font-size: 0.65rem;
+  line-height: 1;
+  font-weight: 700;
+  color: var(--primary-color);
+  background: rgba(46, 189, 106, 0.15);
+  border: 1px solid rgba(46, 189, 106, 0.35);
+  border-radius: 4px;
+  padding: 1px 3px;
+  display: none;
+  min-width: 12px;
+  text-align: center;
+}
+
+.data-table th[data-sort-state="up"] .th-label,
+.data-table th[data-sort-state="down"] .th-label,
 .data-table th[data-sorted="asc"] .th-label,
 .data-table th[data-sorted="desc"] .th-label {
   color: var(--text-main);
+}
+
+.data-table th[data-sort-state="unsorted"] .th-label {
+  color: var(--text-secondary);
 }
 
 .data-table td {

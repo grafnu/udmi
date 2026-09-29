@@ -148,7 +148,7 @@ def test_gummi_device_filtering_and_pagination(gummi_server_url: str, browser_co
 
 
 def test_gummi_device_column_sorting(gummi_server_url: str, browser_context: Browser):
-    """Tests device table sort up/down buttons on column headings and server-side sorting."""
+    """Tests 3-state toggle {up, down, unsorted}, multi-key sort priority, and URL # parameter capture."""
     page: Page = browser_context.new_page()
     page_errors: List[str] = []
     page.on("pageerror", lambda err: page_errors.append(str(err)))
@@ -157,65 +157,67 @@ def test_gummi_device_column_sorting(gummi_server_url: str, browser_context: Bro
     page.locator('.nav-tab[data-tab="devices"]').click()
     page.wait_for_selector("#devices-table-body tr")
 
-    # 1. Verify sort up/down buttons exist for headings
     reg_th = page.locator('th[data-column="registry_id"]')
     soft_th = page.locator('th[data-column="software_version"]')
+    dev_th = page.locator('th[data-column="device_id"]')
+
+    # 1. Verify sort buttons exist
     expect(reg_th.locator(".btn-sort-up")).to_be_visible()
     expect(reg_th.locator(".btn-sort-down")).to_be_visible()
-    expect(soft_th.locator(".btn-sort-up")).to_be_visible()
-    expect(soft_th.locator(".btn-sort-down")).to_be_visible()
+    expect(reg_th).to_have_attribute("data-sort-state", "unsorted")
 
-    # 2. Sort by Registry ascending
-    reg_th.locator(".btn-sort-up").click()
-    page.wait_for_timeout(300)
-    expect(reg_th).to_have_attribute("data-sorted", "asc")
-    expect(reg_th.locator(".btn-sort-up")).to_have_class(re.compile(r"\bactive\b"))
-    regs_asc = [el.inner_text().strip().lower() for el in page.locator("#devices-table-body tr td:nth-child(2)").all()]
-    assert len(regs_asc) > 0
-    assert regs_asc == sorted(regs_asc)
-
-    # 3. Sort by Registry descending
-    reg_th.locator(".btn-sort-down").click()
-    page.wait_for_timeout(300)
-    expect(reg_th).to_have_attribute("data-sorted", "desc")
-    expect(reg_th.locator(".btn-sort-down")).to_have_class(re.compile(r"\bactive\b"))
-    regs_desc = [el.inner_text().strip().lower() for el in page.locator("#devices-table-body tr td:nth-child(2)").all()]
-    assert len(regs_desc) > 0
-    assert regs_desc == sorted(regs_desc, reverse=True)
-
-    # 4. Sort by Software ascending
-    soft_th.locator(".btn-sort-up").click()
-    page.wait_for_timeout(300)
-    expect(soft_th).to_have_attribute("data-sorted", "asc")
-    expect(soft_th.locator(".btn-sort-up")).to_have_class(re.compile(r"\bactive\b"))
-    soft_asc = [el.inner_text().strip().lower() for el in page.locator("#devices-table-body tr td:nth-child(4)").all()]
-    assert len(soft_asc) > 0
-    assert soft_asc == sorted(soft_asc)
-
-    # 5. Sort by Software descending
-    soft_th.locator(".btn-sort-down").click()
-    page.wait_for_timeout(300)
-    expect(soft_th).to_have_attribute("data-sorted", "desc")
-    expect(soft_th.locator(".btn-sort-down")).to_have_class(re.compile(r"\bactive\b"))
-    soft_desc = [el.inner_text().strip().lower() for el in page.locator("#devices-table-body tr td:nth-child(4)").all()]
-    assert len(soft_desc) > 0
-    assert soft_desc == sorted(soft_desc, reverse=True)
-
-    # 6. Click Device ID column header label to toggle sorting
-    dev_th = page.locator('th[data-column="device_id"]')
+    # 2. Test 3-state toggle cycle on Device ID: unsorted -> up -> down -> unsorted
     dev_th.locator(".th-label").click()
-    page.wait_for_timeout(300)
+    page.wait_for_timeout(200)
+    expect(dev_th).to_have_attribute("data-sort-state", "up")
     expect(dev_th).to_have_attribute("data-sorted", "asc")
-    devs_asc = [el.inner_text().strip().lower() for el in page.locator("#devices-table-body tr td:nth-child(1)").all()]
-    assert len(devs_asc) > 0
-    assert devs_asc == sorted(devs_asc)
+    assert "device_id:asc" in page.url or "device_id=asc" in page.url
 
     dev_th.locator(".th-label").click()
-    page.wait_for_timeout(300)
+    page.wait_for_timeout(200)
+    expect(dev_th).to_have_attribute("data-sort-state", "down")
     expect(dev_th).to_have_attribute("data-sorted", "desc")
-    devs_desc = [el.inner_text().strip().lower() for el in page.locator("#devices-table-body tr td:nth-child(1)").all()]
-    assert len(devs_desc) > 0
-    assert devs_desc == sorted(devs_desc, reverse=True)
+    assert "device_id:desc" in page.url or "device_id=desc" in page.url
+
+    dev_th.locator(".th-label").click()
+    page.wait_for_timeout(200)
+    expect(dev_th).to_have_attribute("data-sort-state", "unsorted")
+    assert "device_id" not in page.url.split("#")[-1]
+
+    # 3. Primary sort: Registry ascending
+    reg_th.locator(".btn-sort-up").click()
+    page.wait_for_timeout(200)
+    expect(reg_th).to_have_attribute("data-sort-state", "up")
+    expect(reg_th).to_have_attribute("data-sorted", "asc")
+    assert "registry_id:asc" in page.url or "registry_id=asc" in page.url
+
+    # 4. Secondary sort: Software descending (Software becomes primary key, Registry becomes secondary key)
+    soft_th.locator(".btn-sort-down").click()
+    page.wait_for_timeout(200)
+    expect(soft_th).to_have_attribute("data-sort-state", "down")
+    expect(soft_th).to_have_attribute("data-sort-rank", "1")
+    expect(reg_th).to_have_attribute("data-sort-rank", "2")
+
+    # Hash captures both states with newly sorted field primary
+    current_hash = page.evaluate("() => window.location.hash")
+    assert "sort=software_version%3Adesc%2Cregistry_id%3Aasc" in current_hash or "software_version:desc,registry_id:asc" in current_hash or ("software_version=desc" in current_hash and "registry_id=asc" in current_hash)
+
+    # 5. Toggle Software to unsorted -> removed from list, Registry returns to primary
+    soft_th.locator(".btn-sort-down").click()
+    page.wait_for_timeout(200)
+    expect(soft_th).to_have_attribute("data-sort-state", "unsorted")
+    expect(reg_th).to_have_attribute("data-sort-state", "up")
+    assert reg_th.get_attribute("data-sort-rank") in (None, "1")
+
+    current_hash_after = page.evaluate("() => window.location.hash")
+    assert "software_version" not in current_hash_after
+    assert "registry_id" in current_hash_after
+
+    # 6. Test deep-linking / URL # routing restores sort state
+    page.goto(f"{gummi_server_url}#devices?sort=registry_id:desc")
+    page.wait_for_timeout(400)
+    expect(reg_th).to_have_attribute("data-sort-state", "down")
+    expect(reg_th).to_have_attribute("data-sorted", "desc")
 
     assert len(page_errors) == 0, f"JavaScript errors during sorting: {page_errors}"
     page.close()

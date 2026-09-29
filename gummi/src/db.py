@@ -267,31 +267,68 @@ class GummiDB:
     # Devices Explorer Queries
     # --------------------------------------------------------------------------
 
-    @staticmethod
-    def _sort_device_list(devices: List[Dict[str, Any]], sort_by: str, sort_dir: str = "asc") -> List[Dict[str, Any]]:
+    @classmethod
+    def parse_sort_specs(cls, sort_by: Optional[Union[str, List[Any]]], sort_dir: str = "asc") -> List[Tuple[str, str]]:
         if not sort_by:
-            return devices
-        sort_key = sort_by.lower()
-        is_desc = (sort_dir.lower() == "desc")
+            return []
+        if isinstance(sort_by, list):
+            specs = []
+            for item in sort_by:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    specs.append((str(item[0]), str(item[1])))
+                elif isinstance(item, str):
+                    specs.extend(cls.parse_sort_specs(item, sort_dir))
+            return specs
 
-        def extract_sort_key(d: Dict[str, Any]):
-            if sort_key in ("device_id", "deviceid", "device"):
+        specs = []
+        parts = [p.strip() for p in sort_by.split(",") if p.strip()]
+        for part in parts:
+            if ":" in part:
+                col, direction = part.split(":", 1)
+                specs.append((col.strip(), "desc" if direction.lower().startswith("desc") or direction.lower() == "down" else "asc"))
+            elif part.startswith("-"):
+                specs.append((part[1:].strip(), "desc"))
+            elif part.startswith("+"):
+                specs.append((part[1:].strip(), "asc"))
+            else:
+                d = sort_dir.lower() if len(parts) == 1 else "asc"
+                specs.append((part.strip(), "desc" if d.startswith("desc") or d == "down" else "asc"))
+        return specs
+
+    @classmethod
+    def _sort_device_list(cls, devices: List[Dict[str, Any]], sort_by: Union[str, List[Any]], sort_dir: str = "asc") -> List[Dict[str, Any]]:
+        specs = cls.parse_sort_specs(sort_by, sort_dir)
+        if not specs:
+            return devices
+
+        def extract_sort_key(d: Dict[str, Any], sort_key: str):
+            k = sort_key.lower().strip()
+            if k in ("device_id", "deviceid", "device"):
                 val = d.get("device_id") or ""
-            elif sort_key in ("registry_id", "registryid", "registry"):
+            elif k in ("registry_id", "registryid", "registry"):
                 val = d.get("registry_id") or ""
-            elif sort_key in ("make", "model", "make_model", "makemodel"):
+            elif k in ("make", "model", "make_model", "makemodel"):
                 val = f"{d.get('make') or ''} {d.get('model') or ''}".strip()
-            elif sort_key in ("software_version", "softwareversion", "software"):
+            elif k in ("software_version", "softwareversion", "software"):
                 val = d.get("software_version") or ""
-            elif sort_key in ("liveness_status", "status"):
+            elif k in ("liveness_status", "status"):
                 val = d.get("liveness_status") or ""
-            elif sort_key in ("last_seen", "lastseen"):
+            elif k in ("last_seen", "lastseen"):
                 val = d.get("last_seen") or ""
             else:
-                val = d.get(sort_by) or ""
+                val = d.get(sort_key) or ""
             return str(val).lower()
 
-        return sorted(devices, key=lambda d: (extract_sort_key(d), (d.get("device_id") or "").lower()), reverse=is_desc)
+        result = list(devices)
+        # Base tie-breaker: device_id
+        result.sort(key=lambda d: (d.get("device_id") or "").lower())
+
+        # Multi-key stable sort in reverse order of precedence
+        for col, direction in reversed(specs):
+            is_desc = (direction.lower() == "desc")
+            result.sort(key=lambda d: extract_sort_key(d, col), reverse=is_desc)
+
+        return result
 
     def get_devices(
         self,

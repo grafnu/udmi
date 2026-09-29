@@ -12,6 +12,7 @@ const state = {
     total: 0,
     limit: 25,
     offset: 0,
+    sortList: [],
     sortBy: null,
     sortDir: "asc",
     filters: {
@@ -85,6 +86,8 @@ function switchTab(tabId, updateHash = true) {
   if (updateHash) {
     if (tabId === "explorer") {
       setExplorerHash(state.explorer.activeRegistry, state.explorer.activeDevice, state.explorer.activeProperty);
+    } else if (tabId === "devices") {
+      updateDevicesHash();
     } else {
       const h = `#${tabId}`;
       state.explorer.lastSetHash = h;
@@ -210,8 +213,26 @@ async function loadPortfolio() {
   }
 }
 
+function updateDevicesHash() {
+  if (state.activeTab !== "devices") return;
+  const sortTokens = state.devices.sortList.map((s) => `${s.field}:${s.dir}`);
+  let hash = "#devices";
+  if (sortTokens.length > 0) {
+    const params = new URLSearchParams();
+    params.set("sort", sortTokens.join(","));
+    state.devices.sortList.forEach((s) => {
+      params.set(s.field, s.dir);
+    });
+    hash = `#devices?${params.toString()}`;
+  }
+  state.explorer.lastSetHash = hash;
+  if (window.location.hash !== hash) {
+    window.location.hash = hash;
+  }
+}
+
 async function loadDevices() {
-  const { limit, offset, filters, sortBy, sortDir } = state.devices;
+  const { limit, offset, filters, sortList } = state.devices;
   const params = new URLSearchParams({
     limit: limit.toString(),
     offset: offset.toString(),
@@ -220,9 +241,11 @@ async function loadDevices() {
   if (filters.registry) params.append("registry_id", filters.registry);
   if (filters.prefix) params.append("device_prefix", filters.prefix);
   if (filters.make) params.append("make", filters.make);
-  if (sortBy) {
-    params.append("sort_by", sortBy);
-    params.append("sort_dir", sortDir || "asc");
+  if (sortList && sortList.length > 0) {
+    const sortParam = sortList.map((s) => `${s.field}:${s.dir}`).join(",");
+    params.append("sort", sortParam);
+    params.append("sort_by", sortParam);
+    params.append("sort_dir", sortList[0].dir);
   }
 
   try {
@@ -239,27 +262,77 @@ async function loadDevices() {
 }
 
 function updateSortIndicators() {
-  const { sortBy, sortDir } = state.devices;
+  const sortMap = new Map();
+  state.devices.sortList.forEach((s, idx) => {
+    sortMap.set(s.field, { dir: s.dir, rank: idx + 1 });
+  });
+
+  state.devices.sortBy = state.devices.sortList[0]?.field || null;
+  state.devices.sortDir = state.devices.sortList[0]?.dir || "asc";
+
   document.querySelectorAll("#pane-devices th.sortable-th").forEach((th) => {
     const col = th.dataset.column;
+    const info = sortMap.get(col);
     const btnUp = th.querySelector(".btn-sort-up");
     const btnDown = th.querySelector(".btn-sort-down");
-    if (col === sortBy) {
-      th.setAttribute("data-sorted", sortDir);
-      if (btnUp) btnUp.classList.toggle("active", sortDir === "asc");
-      if (btnDown) btnDown.classList.toggle("active", sortDir === "desc");
+    const rankEl = th.querySelector(".sort-priority");
+
+    if (info) {
+      th.setAttribute("data-sorted", info.dir);
+      th.setAttribute("data-sort-state", info.dir === "asc" ? "up" : "down");
+      th.setAttribute("data-sort-rank", info.rank.toString());
+      if (btnUp) btnUp.classList.toggle("active", info.dir === "asc");
+      if (btnDown) btnDown.classList.toggle("active", info.dir === "desc");
+      if (rankEl) {
+        rankEl.textContent = state.devices.sortList.length > 1 ? info.rank.toString() : "";
+        rankEl.style.display = state.devices.sortList.length > 1 ? "inline-block" : "none";
+      }
     } else {
       th.removeAttribute("data-sorted");
+      th.setAttribute("data-sort-state", "unsorted");
+      th.removeAttribute("data-sort-rank");
       if (btnUp) btnUp.classList.remove("active");
       if (btnDown) btnDown.classList.remove("active");
+      if (rankEl) {
+        rankEl.textContent = "";
+        rankEl.style.display = "none";
+      }
     }
   });
 }
 
-function setDeviceSorting(sortBy, sortDir) {
-  state.devices.sortBy = sortBy;
-  state.devices.sortDir = sortDir;
+function toggleDeviceSorting(field) {
+  const existing = state.devices.sortList.find((s) => s.field === field);
+  let nextDir = "asc"; // up
+  if (existing) {
+    if (existing.dir === "asc") {
+      nextDir = "desc"; // down
+    } else {
+      nextDir = "unsorted"; // unsorted
+    }
+  }
+  setDeviceSorting(field, nextDir);
+}
+window.toggleDeviceSorting = toggleDeviceSorting;
+
+function setDeviceSorting(field, dir) {
+  let normalizedDir = dir ? dir.toLowerCase() : "asc";
+  if (normalizedDir === "up") normalizedDir = "asc";
+  if (normalizedDir === "down") normalizedDir = "desc";
+
+  // Remove existing entry for field if already in list
+  state.devices.sortList = state.devices.sortList.filter((s) => s.field !== field);
+
+  // If new state is asc or desc, add to FRONT as primary sort key
+  if (normalizedDir === "asc" || normalizedDir === "desc") {
+    state.devices.sortList.unshift({ field, dir: normalizedDir });
+  }
+
+  state.devices.sortBy = state.devices.sortList[0]?.field || null;
+  state.devices.sortDir = state.devices.sortList[0]?.dir || "asc";
   state.devices.offset = 0;
+
+  updateDevicesHash();
   loadDevices();
 }
 window.setDeviceSorting = setDeviceSorting;
@@ -488,7 +561,7 @@ function setupEventHandlers() {
   document.getElementById("btn-refresh-devices").addEventListener("click", loadDevices);
   document.getElementById("btn-probe-admin").addEventListener("click", loadBridgeheadStatus);
 
-  // Device table column sorting
+  // Device table column sorting with 3-state toggle
   document.querySelectorAll("#pane-devices th.sortable-th").forEach((th) => {
     const col = th.dataset.column;
     const btnUp = th.querySelector(".btn-sort-up");
@@ -497,22 +570,27 @@ function setupEventHandlers() {
     if (btnUp) {
       btnUp.addEventListener("click", (e) => {
         e.stopPropagation();
-        setDeviceSorting(col, "asc");
+        const existing = state.devices.sortList.find((s) => s.field === col);
+        if (existing && existing.dir === "asc") {
+          setDeviceSorting(col, "unsorted");
+        } else {
+          setDeviceSorting(col, "asc");
+        }
       });
     }
     if (btnDown) {
       btnDown.addEventListener("click", (e) => {
         e.stopPropagation();
-        setDeviceSorting(col, "desc");
+        const existing = state.devices.sortList.find((s) => s.field === col);
+        if (existing && existing.dir === "desc") {
+          setDeviceSorting(col, "unsorted");
+        } else {
+          setDeviceSorting(col, "desc");
+        }
       });
     }
     th.addEventListener("click", () => {
-      if (state.devices.sortBy === col) {
-        const nextDir = state.devices.sortDir === "asc" ? "desc" : "asc";
-        setDeviceSorting(col, nextDir);
-      } else {
-        setDeviceSorting(col, "asc");
-      }
+      toggleDeviceSorting(col);
     });
   });
 
@@ -807,8 +885,50 @@ function parseHash() {
   const rawHash = window.location.hash.replace(/^#\/?/, "");
   if (!rawHash) return;
 
-  const parts = rawHash.split("/").map(decodeURIComponent);
-  const first = parts[0];
+  const [pathPart, queryPart] = rawHash.split("?");
+  const parts = pathPart ? pathPart.split("/").map(decodeURIComponent) : [];
+  let first = parts[0] || "";
+
+  // Query parameter extraction from hash
+  const queryStr = queryPart || (rawHash.includes("=") && !pathPart.includes("/") ? rawHash : "");
+  const searchParams = new URLSearchParams(queryStr);
+
+  const sortParam = searchParams.get("sort");
+  const parsedSortList = [];
+
+  if (sortParam) {
+    sortParam.split(",").forEach((item) => {
+      const trimmed = item.trim();
+      if (!trimmed) return;
+      if (trimmed.includes(":")) {
+        const [col, d] = trimmed.split(":");
+        const dir = (d.toLowerCase() === "desc" || d.toLowerCase() === "down") ? "desc" : "asc";
+        parsedSortList.push({ field: col.trim(), dir });
+      } else if (trimmed.startsWith("-")) {
+        parsedSortList.push({ field: trimmed.slice(1).trim(), dir: "desc" });
+      } else if (trimmed.startsWith("+")) {
+        parsedSortList.push({ field: trimmed.slice(1).trim(), dir: "asc" });
+      } else {
+        parsedSortList.push({ field: trimmed, dir: "asc" });
+      }
+    });
+  } else {
+    const knownCols = ["device_id", "registry_id", "make", "model", "software_version", "status", "last_seen"];
+    for (const [key, val] of searchParams.entries()) {
+      if (knownCols.includes(key)) {
+        const dir = (val.toLowerCase() === "desc" || val.toLowerCase() === "down") ? "desc" : "asc";
+        parsedSortList.push({ field: key, dir });
+      }
+    }
+  }
+
+  if (parsedSortList.length > 0) {
+    state.devices.sortList = parsedSortList;
+  }
+
+  if (!first && parsedSortList.length > 0) {
+    first = "devices";
+  }
 
   // Check if hash points to another GUMMI tab
   const knownTabs = ["portfolio", "devices", "device-detail", "config", "rollout", "admin"];
@@ -816,6 +936,10 @@ function parseHash() {
     switchTab(first, false);
     if (first === "device-detail" && parts[1] && parts[2]) {
       selectDevice(parts[1], parts[2]);
+    }
+    if (first === "devices") {
+      updateSortIndicators();
+      loadDevices();
     }
     return;
   }

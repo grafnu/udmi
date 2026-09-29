@@ -166,6 +166,24 @@ class TestGummiServer:
         makes_asc = [f"{d.get('make') or ''} {d.get('model') or ''}".strip().lower() for d in data_make_asc["devices"]]
         assert makes_asc == sorted(makes_asc)
 
+    def test_api_devices_multi_key_sorting(self, gummi_server):
+        # Primary: registry_id asc, Secondary: software_version desc
+        data = http_get_json(f"{gummi_server}/api/devices?limit=50&offset=0&sort=registry_id:asc,software_version:desc")
+        devices = data["devices"]
+        assert len(devices) > 0
+
+        # Check primary sort
+        regs = [d["registry_id"].lower() for d in devices]
+        assert regs == sorted(regs)
+
+        # Check secondary sort within each registry group
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for d in devices:
+            groups[d["registry_id"]].append((d.get("software_version") or "").lower())
+        for reg, softs in groups.items():
+            assert softs == sorted(softs, reverse=True), f"Secondary sort failed for registry {reg}: {softs}"
+
     def test_api_device_detail(self, gummi_server):
         data = http_get_json(f"{gummi_server}/api/devices/ZZ-TRI-FECTA/AHU-1")
         assert data.get("registry_id") == "ZZ-TRI-FECTA"
