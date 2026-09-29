@@ -792,39 +792,23 @@ body.tab-explorer .main-content,
 }
 
 /* Scoped Theme Variables for ETCD Explorer */
+#pane-explorer,
 #pane-explorer.dark-theme,
-#pane-explorer {
-  --etcd-bg-color: #0b1a12;
-  --etcd-panel-bg: #12261b;
-  --etcd-header-bg: #152c20;
-  --etcd-text-main: #e8f2ec;
-  --etcd-text-muted: #9db5a6;
-  --etcd-border-color: #1f3d2b;
-  --etcd-accent-color: #2ebd6a;
-  --etcd-accent-hover: #34d399;
-  --etcd-active-bg: #1d3c2c;
-  --etcd-hover-bg: #162f22;
-  --etcd-code-bg: #0c1c13;
-  --etcd-code-text: #e8f2ec;
-  --etcd-badge-bg: #1f3d2b;
-  --etcd-toast-bg: #f87171;
-}
-
 #pane-explorer.light-theme {
-  --etcd-bg-color: #f3f3f3;
-  --etcd-panel-bg: #ffffff;
-  --etcd-header-bg: #e0e0e0;
-  --etcd-text-main: #333333;
-  --etcd-text-muted: #666666;
-  --etcd-border-color: #cccccc;
-  --etcd-accent-color: #007acc;
-  --etcd-accent-hover: #0098ff;
-  --etcd-active-bg: #e4e6f1;
-  --etcd-hover-bg: #f0f0f0;
-  --etcd-code-bg: #f8f8f8;
-  --etcd-code-text: #222222;
-  --etcd-badge-bg: #d0d0d0;
-  --etcd-toast-bg: #d32f2f;
+  --etcd-bg-color: var(--bg-color);
+  --etcd-panel-bg: var(--surface-color);
+  --etcd-header-bg: var(--surface-header);
+  --etcd-text-main: var(--text-main);
+  --etcd-text-muted: var(--text-secondary);
+  --etcd-border-color: var(--border-color);
+  --etcd-accent-color: var(--primary-color);
+  --etcd-accent-hover: var(--primary-hover);
+  --etcd-active-bg: var(--surface-hover);
+  --etcd-hover-bg: rgba(46, 189, 106, 0.08);
+  --etcd-code-bg: #0c1c13;
+  --etcd-code-text: var(--text-main);
+  --etcd-badge-bg: rgba(255, 255, 255, 0.08);
+  --etcd-toast-bg: var(--danger);
 }
 
 #pane-explorer {
@@ -881,9 +865,9 @@ body.tab-explorer .main-content,
 }
 
 .toolbar-btn {
-  background: transparent;
-  border: 1px solid var(--etcd-border-color);
-  color: var(--etcd-text-main);
+  background: var(--surface-header);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
   padding: 5px 12px;
   border-radius: 4px;
   cursor: pointer;
@@ -892,8 +876,8 @@ body.tab-explorer .main-content,
 }
 
 .toolbar-btn:hover {
-  background-color: var(--etcd-hover-bg);
-  border-color: var(--etcd-text-muted);
+  background-color: var(--surface-hover);
+  border-color: var(--primary-color);
 }
 
 .explorer-grid-container {
@@ -927,8 +911,8 @@ body.tab-explorer .main-content,
 
 .explorer-col-header {
   padding: 12px 16px;
-  border-bottom: 1px solid var(--etcd-border-color);
-  background-color: var(--etcd-panel-bg);
+  border-bottom: 1px solid var(--border-color);
+  background-color: var(--surface-header);
   flex-shrink: 0;
 }
 
@@ -1073,14 +1057,14 @@ body.tab-explorer .main-content,
 }
 
 .property-group-title {
-  background-color: var(--etcd-bg-color);
+  background-color: var(--surface-header);
   padding: 8px 16px;
   font-size: 0.8rem;
   font-weight: 600;
   text-transform: uppercase;
-  color: var(--etcd-text-muted);
-  border-top: 1px solid var(--etcd-border-color);
-  border-bottom: 1px solid var(--etcd-border-color);
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .property-row {
@@ -1105,7 +1089,7 @@ body.tab-explorer .main-content,
 }
 
 #pane-explorer.light-theme .property-key {
-  color: var(--etcd-accent-color);
+  color: #6ee7b7;
 }
 
 .device-link {
@@ -1156,17 +1140,17 @@ body.tab-explorer .main-content,
   right: 6px;
   padding: 2px 6px;
   font-size: 0.75rem;
-  background-color: var(--etcd-active-bg);
-  color: var(--etcd-text-main);
-  border: 1px solid var(--etcd-border-color);
+  background-color: var(--surface-header);
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
   border-radius: 3px;
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
 .copy-btn:hover {
-  background-color: var(--etcd-hover-bg);
-  border-color: var(--etcd-text-muted);
+  background-color: var(--surface-hover);
+  border-color: var(--primary-color);
 }
 
 .toast {
