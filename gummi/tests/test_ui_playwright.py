@@ -171,17 +171,20 @@ def test_gummi_device_column_sorting(gummi_server_url: str, browser_context: Bro
     page.wait_for_timeout(200)
     expect(dev_th).to_have_attribute("data-sort-state", "up")
     expect(dev_th).to_have_attribute("data-sorted", "asc")
-    assert "device_id:asc" in page.url or "device_id=asc" in page.url
+    assert page.url.endswith("#devices?sort=device_id:asc")
+    assert page.url.split("#")[-1].count("device_id") == 1
 
     dev_th.locator(".th-label").click()
     page.wait_for_timeout(200)
     expect(dev_th).to_have_attribute("data-sort-state", "down")
     expect(dev_th).to_have_attribute("data-sorted", "desc")
-    assert "device_id:desc" in page.url or "device_id=desc" in page.url
+    assert page.url.endswith("#devices?sort=device_id:desc")
+    assert page.url.split("#")[-1].count("device_id") == 1
 
     dev_th.locator(".th-label").click()
     page.wait_for_timeout(200)
     expect(dev_th).to_have_attribute("data-sort-state", "unsorted")
+    assert page.url.endswith("#devices")
     assert "device_id" not in page.url.split("#")[-1]
 
     # 3. Primary sort: Registry ascending
@@ -189,7 +192,8 @@ def test_gummi_device_column_sorting(gummi_server_url: str, browser_context: Bro
     page.wait_for_timeout(200)
     expect(reg_th).to_have_attribute("data-sort-state", "up")
     expect(reg_th).to_have_attribute("data-sorted", "asc")
-    assert "registry_id:asc" in page.url or "registry_id=asc" in page.url
+    assert page.url.endswith("#devices?sort=registry_id:asc")
+    assert page.url.split("#")[-1].count("registry_id") == 1
 
     # 4. Secondary sort: Software descending (Software becomes primary key, Registry becomes secondary key)
     soft_th.locator(".btn-sort-down").click()
@@ -198,9 +202,11 @@ def test_gummi_device_column_sorting(gummi_server_url: str, browser_context: Bro
     expect(soft_th).to_have_attribute("data-sort-rank", "1")
     expect(reg_th).to_have_attribute("data-sort-rank", "2")
 
-    # Hash captures both states with newly sorted field primary
+    # Hash captures both states with newly sorted field primary and no redundant parameters
     current_hash = page.evaluate("() => window.location.hash")
-    assert "sort=software_version%3Adesc%2Cregistry_id%3Aasc" in current_hash or "software_version:desc,registry_id:asc" in current_hash or ("software_version=desc" in current_hash and "registry_id=asc" in current_hash)
+    assert current_hash == "#devices?sort=software_version:desc,registry_id:asc"
+    assert current_hash.count("software_version") == 1
+    assert current_hash.count("registry_id") == 1
 
     # 5. Toggle Software to unsorted -> removed from list, Registry returns to primary
     soft_th.locator(".btn-sort-down").click()
@@ -210,8 +216,9 @@ def test_gummi_device_column_sorting(gummi_server_url: str, browser_context: Bro
     assert reg_th.get_attribute("data-sort-rank") in (None, "1")
 
     current_hash_after = page.evaluate("() => window.location.hash")
+    assert current_hash_after == "#devices?sort=registry_id:asc"
     assert "software_version" not in current_hash_after
-    assert "registry_id" in current_hash_after
+    assert current_hash_after.count("registry_id") == 1
 
     # 6. Test deep-linking / URL # routing restores sort state
     page.goto(f"{gummi_server_url}#devices?sort=registry_id:desc")

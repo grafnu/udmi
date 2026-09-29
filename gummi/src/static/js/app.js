@@ -218,12 +218,7 @@ function updateDevicesHash() {
   const sortTokens = state.devices.sortList.map((s) => `${s.field}:${s.dir}`);
   let hash = "#devices";
   if (sortTokens.length > 0) {
-    const params = new URLSearchParams();
-    params.set("sort", sortTokens.join(","));
-    state.devices.sortList.forEach((s) => {
-      params.set(s.field, s.dir);
-    });
-    hash = `#devices?${params.toString()}`;
+    hash = `#devices?sort=${sortTokens.join(",")}`;
   }
   state.explorer.lastSetHash = hash;
   if (window.location.hash !== hash) {
@@ -924,6 +919,8 @@ function parseHash() {
 
   if (parsedSortList.length > 0) {
     state.devices.sortList = parsedSortList;
+  } else if (first === "devices") {
+    state.devices.sortList = [];
   }
 
   if (!first && parsedSortList.length > 0) {
