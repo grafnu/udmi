@@ -3,6 +3,12 @@
   "name": "Axoloctl Control Panel",
   "version": "1.1",
   "description": "Side panel for interacting with the Agent and correlating Axoloctl web sessions across port-forwarded environments.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "permissions": [
     "sidePanel",
     "storage",
@@ -20,7 +26,13 @@
     "default_path": "sidepanel.html"
   },
   "action": {
-    "default_title": "Open Axoloctl Panel"
+    "default_title": "Open Axoloctl Panel",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "content_scripts": [
     {

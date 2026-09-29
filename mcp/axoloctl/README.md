@@ -244,7 +244,7 @@ Streams captured unified log lines (`[server]` `stdout`/`stderr` from the config
 ## Runtime & Boundary Specifications
 
 ### 1. Explicit Configuration Contract (No Implicit Project Defaults)
-`axoloctl` is project-agnostic and requires an explicit JSON configuration file passed to [`bin/tmux_axoloctl`](../../bin/tmux_axoloctl) (and [`bin/mcp_axoloctl`](../../bin/mcp_axoloctl) / [`web_mcp.py`](src/web_mcp.py) / [`ui_host.py`](src/ui_host.py)). If the configuration file or any required key is omitted, `axoloctl` fails immediately.
+`axoloctl` is project-agnostic and requires an explicit JSON configuration file passed to [`bin/start_axoloctl`](../../bin/start_axoloctl) or [`bin/tmux_axoloctl`](../../bin/tmux_axoloctl) (and [`bin/mcp_axoloctl`](../../bin/mcp_axoloctl) / [`web_mcp.py`](src/web_mcp.py) / [`ui_host.py`](src/ui_host.py)). If the configuration file or any required key is omitted, `axoloctl` fails immediately.
 
 Required configuration keys (see example [`etc/gummi_config.json`](etc/gummi_config.json)):
 * `repo_path`: Path to the existing Git repository containing the target web application (e.g., `"."` for the UDMI repository root).
@@ -434,7 +434,7 @@ In a local UDMI development environment, `axoloctl` operates directly against th
 2. **Unified MCP Server Registry ([`mcp/axoloctl/etc/mcp_config.json`](etc/mcp_config.json))**:
    * Registers `axoloctl` ([`bin/mcp_axoloctl`](../../bin/mcp_axoloctl)) alongside the UDMI **Data MCPs**: [`bin/mcp_butler`](../../bin/mcp_butler) (device inventory, state/config tables, managed rollouts), [`bin/mcp_barbican`](../../bin/mcp_barbican) (etcd/mosquitto/UDMIS state), and [`bin/mcp_uufi`](../../bin/mcp_uufi) (UUFI operations).
 3. **On-Disk Runtime Layout (`$UDMI_ROOT/var/axoloctl/`)**:
-   * `active_config.json`: Pointer to the active validated configuration file written by `bin/tmux_axoloctl start`.
+   * `active_config.json`: Pointer to the active validated configuration file written by `bin/start_axoloctl` / `bin/tmux_axoloctl start`.
    * `sessions/<tag>/workspace/`: Isolated per-tag Git worktree (on branch `axoloctl-<tag>`) where the paired **Agent** (`udmi_axoloctl_agent:<tag>`) edits, tests, and commits code without conflicting with other concurrent sessions.
    * `sessions/<tag>/code/`: Read-only (`chmod -R a-w`) archive of `<commit_hash>` extracted from `repo_path` by `Web MCP` on `start_server`.
    * `sessions/<tag>/unified.log`: Combined `[server]` and `[browser]` log stream read by `read_logs`.
@@ -451,37 +451,60 @@ In a local UDMI development environment, `axoloctl` operates directly against th
 
 ### 2. Step-by-Step Developer Bootstrap
 
+[`bin/start_axoloctl`](../../bin/start_axoloctl) combines control-plane startup (`bin/tmux_axoloctl start`) and initial session deployment (`bin/mcp_axoloctl start`) into a single command. It validates `<config_file>`, starts `udmi_axoloctl_web:web_mcp` (`:9291`) and `udmi_axoloctl_agent:ui_host` (`:9290`), waits for both daemons to bind, and deploys the repository's current `HEAD` commit for `[tag]` (which defaults to `basename(app_subpath)`, e.g., `gummi`).
+
 ```bash
 # 1. Install base dependencies (unprivileged user-space default)
 bin/setup_base
 
-# 2. Start local UDMI infrastructure (Barbican & Butler) on unprivileged ports
+# 2. (Optional) Start local UDMI infrastructure (Barbican & Butler) on unprivileged ports
 bin/udmi start sites/udmi_site_model //mqtt/localhost:18833
 
-# 3. Start the two axoloctl tmux sessions with an explicit configuration file
-bin/tmux_axoloctl start mcp/axoloctl/etc/gummi_config.json //mqtt/localhost:18833
+# 3. Start the Axoloctl control plane AND deploy the 'gummi' session in one step
+bin/start_axoloctl mcp/axoloctl/etc/gummi_config.json //mqtt/localhost:18833
 
-# 4. Deploy the current Git revision to provision the 1:1 Agent + Web Server pair for tag 'gummi'
-COMMIT_HASH=$(git rev-parse HEAD)
-bin/mcp_axoloctl --tag gummi start "$COMMIT_HASH" "Initial GUMMI web session"
+#    Or without UDMI MQTT/datastore port overrides:
+#    bin/start_axoloctl mcp/axoloctl/etc/gummi_config.json
 
-# 5. Verify session status, logs, and virtual-host HTTP readiness (http://gummi.localhost:9290)
+# 4. Verify session status, logs, and virtual-host HTTP readiness (http://gummi.localhost:9290)
 bin/mcp_axoloctl --tag gummi status
 bin/mcp_axoloctl --tag gummi logs
 curl -I http://gummi.localhost:9290/
 ```
 
-### 3. CLI & `tmux` Inspection Reference
-
-[`bin/mcp_axoloctl`](../../bin/mcp_axoloctl) operates both as a standard stdio MCP server (`bin/mcp_axoloctl mcp`) and as a direct CLI tool (reading `--tag <tag>` or `AXOLOCTL_TAG`):
+If you need to run the two steps separately (or deploy additional tagged sessions against an already-running control plane):
 
 ```bash
-bin/mcp_axoloctl --tag <tag> start <commit_hash> "<description>"
-bin/mcp_axoloctl --tag <tag> status
-bin/mcp_axoloctl list
-bin/mcp_axoloctl --tag <tag> logs [--cursor 0] [--max-lines 200]
-bin/mcp_axoloctl --tag <tag> stop
+# 1. Start the two axoloctl control-plane tmux sessions with an explicit configuration file
+bin/tmux_axoloctl start mcp/axoloctl/etc/gummi_config.json //mqtt/localhost:18833
+
+# 2. Deploy the current Git revision to provision the 1:1 Agent + Web Server pair for a tag
+bin/mcp_axoloctl --tag gummi start "$(git rev-parse HEAD)" "Initial GUMMI web session"
 ```
+
+### 3. CLI & `tmux` Inspection Reference
+
+* **[`bin/start_axoloctl`](../../bin/start_axoloctl)** — Combined control-plane launcher and initial session deployer:
+  ```bash
+  bin/start_axoloctl <config_file> [tag] [project_spec]
+  ```
+* **[`bin/tmux_axoloctl`](../../bin/tmux_axoloctl)** — Control-plane `tmux` lifecycle manager (`udmi_axoloctl_agent` & `udmi_axoloctl_web`):
+  ```bash
+  bin/tmux_axoloctl start <config_file> [project_spec]
+  bin/tmux_axoloctl status [config_file]
+  bin/tmux_axoloctl attach [agent|web]
+  bin/tmux_axoloctl logs
+  bin/tmux_axoloctl stop
+  bin/tmux_axoloctl clean
+  ```
+* **[`bin/mcp_axoloctl`](../../bin/mcp_axoloctl)** — Operates both as a standard stdio MCP server (`bin/mcp_axoloctl mcp`) and as a direct per-session CLI tool (reading `--tag <tag>` or `AXOLOCTL_TAG`):
+  ```bash
+  bin/mcp_axoloctl --tag <tag> start <commit_hash> "<description>"
+  bin/mcp_axoloctl --tag <tag> status
+  bin/mcp_axoloctl list
+  bin/mcp_axoloctl --tag <tag> logs [--cursor 0] [--max-lines 200]
+  bin/mcp_axoloctl --tag <tag> stop
+  ```
 
 | Session Name | Windows | Purpose | Command to Inspect / Attach |
 | :--- | :--- | :--- | :--- |
@@ -494,7 +517,7 @@ bin/mcp_axoloctl --tag <tag> stop
 
 ## Fail-Fast Guarantees
 
-* **Mandatory Explicit Configuration**: Starting `bin/tmux_axoloctl`, `web_mcp.py`, or `ui_host.py` without an explicit, valid configuration file (or with any required key missing) fails immediately with a hard error. No implicit project defaults are assumed.
+* **Mandatory Explicit Configuration**: Starting `bin/start_axoloctl`, `bin/tmux_axoloctl`, `web_mcp.py`, or `ui_host.py` without an explicit, valid configuration file (or with any required key missing) fails immediately with a hard error. No implicit project defaults are assumed.
 * **Mandatory 1:1 `AXOLOCTL_TAG` Binding**: Calling `start_server`, `stop_server`, `get_status`, or `read_logs` without a bound `AXOLOCTL_TAG` (`X-Axoloctl-Tag` header or `--tag <tag>`) or passing an ad-hoc `tag` argument inside `inputSchema` fails immediately with an error.
 * **No Implicit Branch or `HEAD` Fallbacks**: `start_server` requires an explicit 40-character Git commit hash (`commit_hash`) that exists in `repo_path`. Symbolic refs (such as `HEAD` or branch names) and missing commits are rejected immediately with an error.
 * **Mandatory Configured Entrypoint**: If the checked-out `commit_hash` does not contain an executable `<app_subpath>/<entrypoint>`, `start_server` fails immediately without falling back to generic static file serving.

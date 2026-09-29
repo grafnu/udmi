@@ -1,0 +1,189 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <!-- Axolotl body & head warm pink gradient -->
+    <linearGradient id="bodyGrad" x1="20%" y1="10%" x2="80%" y2="95%">
+      <stop offset="0%" stop-color="#ffd2da" />
+      <stop offset="45%" stop-color="#fb8da0" />
+      <stop offset="100%" stop-color="#f43f5e" />
+    </linearGradient>
+
+    <!-- Belly / under-chin lighter highlight -->
+    <linearGradient id="bellyGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#fff1f2" />
+      <stop offset="100%" stop-color="#fecdd3" />
+    </linearGradient>
+
+    <!-- Feathery gill & tail fin vibrant magenta gradient -->
+    <linearGradient id="gillGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fb7185" />
+      <stop offset="45%" stop-color="#e11d48" />
+      <stop offset="100%" stop-color="#9f1239" />
+    </linearGradient>
+
+    <!-- Translucent tail fin crest -->
+    <linearGradient id="finGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fb7185" stop-opacity="0.85" />
+      <stop offset="100%" stop-color="#be123c" stop-opacity="0.7" />
+    </linearGradient>
+  </defs>
+
+  <g transform="translate(-4, -5) scale(1.14)">
+    <!-- Sleek salamander dorsal & ventral tail fin crest hugging the curving tail -->
+    <path d="M 65 78
+             C 78 78, 99 81, 113 91
+             C 103 107, 81 115, 58 109
+             C 48 106, 43 99, 43 91
+             Z"
+          fill="url(#finGrad)"
+          stroke="#be123c"
+          stroke-width="1.4"
+          stroke-opacity="0.85" />
+
+    <!-- Curving lizard/salamander body & sweeping tapered tail -->
+    <path d="M 41 65
+             C 38 84, 44 101, 63 106
+             C 79 110, 97 104, 108 92
+             C 97 97, 83 98, 72 92
+             C 64 87, 63 77, 66 65
+             Z"
+          fill="url(#bodyGrad)"
+          stroke="#e11d48"
+          stroke-width="1.6"
+          stroke-linejoin="round" />
+
+    <!-- Back little lizard leg & toes (right side) -->
+    <path d="M 66 90
+             C 72 95, 79 99, 82 96
+             C 84 94, 81 91, 78 90
+             C 81 89, 81 86, 77 86
+             C 74 86, 71 85, 68 84 Z"
+          fill="url(#bodyGrad)"
+          stroke="#e11d48"
+          stroke-width="1.4"
+          stroke-linejoin="round" />
+
+    <!-- Soft belly patch -->
+    <ellipse cx="53" cy="80" rx="10.5" ry="12.5" fill="url(#bellyGrad)" opacity="0.88" />
+
+    <!-- Front left lizard arm & cute 3-toed hand -->
+    <path d="M 39 70
+             C 28 74, 21 81, 23 86
+             C 24 89, 29 88, 33 85
+             C 31 89, 34 91, 37 87
+             C 38 90, 42 89, 42 84
+             C 42 79, 43 75, 45 72 Z"
+          fill="url(#bodyGrad)"
+          stroke="#e11d48"
+          stroke-width="1.5"
+          stroke-linejoin="round" />
+
+    <!-- Front right lizard arm & cute 3-toed hand -->
+    <path d="M 66 70
+             C 76 74, 83 80, 81 85
+             C 80 88, 75 87, 72 84
+             C 74 88, 70 90, 68 86
+             C 67 89, 63 88, 63 83
+             C 63 78, 62 75, 60 72 Z"
+          fill="url(#bodyGrad)"
+          stroke="#e11d48"
+          stroke-width="1.5"
+          stroke-linejoin="round" />
+
+    <!-- ================= LEFT FEATHERY GILLS (3 stalks) ================= -->
+    <!-- Top-left gill stalk -->
+    <g>
+      <path d="M 33 36
+               C 23 24, 15 17, 11 20
+               C 8 23, 12 31, 18 36
+               C 13 36, 12 40, 18 42
+               C 23 44, 28 43, 33 43 Z"
+            fill="url(#gillGrad)" />
+      <path d="M 31 39 C 23 31, 17 25, 12 21" fill="none" stroke="#ffe4e6" stroke-width="1.5" stroke-linecap="round" opacity="0.65" />
+    </g>
+    <!-- Middle-left gill stalk -->
+    <g>
+      <path d="M 29 46
+               C 16 41, 7 41, 6 46
+               C 5 50, 11 54, 17 55
+               C 13 57, 15 60, 21 59
+               C 25 58, 28 55, 31 53 Z"
+            fill="url(#gillGrad)" />
+      <path d="M 29 49 C 20 47, 13 46, 8 46" fill="none" stroke="#ffe4e6" stroke-width="1.5" stroke-linecap="round" opacity="0.65" />
+    </g>
+    <!-- Bottom-left gill stalk -->
+    <g>
+      <path d="M 32 56
+               C 20 58, 12 63, 13 68
+               C 14 72, 22 72, 28 69
+               C 32 67, 35 63, 36 60 Z"
+            fill="url(#gillGrad)" />
+      <path d="M 33 59 C 25 62, 19 65, 15 67" fill="none" stroke="#ffe4e6" stroke-width="1.5" stroke-linecap="round" opacity="0.65" />
+    </g>
+
+    <!-- ================= RIGHT FEATHERY GILLS (3 stalks) ================= -->
+    <!-- Top-right gill stalk -->
+    <g>
+      <path d="M 73 36
+               C 83 24, 91 17, 95 20
+               C 98 23, 94 31, 88 36
+               C 93 36, 94 40, 88 42
+               C 83 44, 78 43, 73 43 Z"
+            fill="url(#gillGrad)" />
+      <path d="M 75 39 C 83 31, 89 25, 94 21" fill="none" stroke="#ffe4e6" stroke-width="1.5" stroke-linecap="round" opacity="0.65" />
+    </g>
+    <!-- Middle-right gill stalk -->
+    <g>
+      <path d="M 77 46
+               C 90 41, 99 41, 100 46
+               C 101 50, 95 54, 89 55
+               C 93 57, 91 60, 85 59
+               C 81 58, 78 55, 75 53 Z"
+            fill="url(#gillGrad)" />
+      <path d="M 77 49 C 86 47, 93 46, 98 46" fill="none" stroke="#ffe4e6" stroke-width="1.5" stroke-linecap="round" opacity="0.65" />
+    </g>
+    <!-- Bottom-right gill stalk -->
+    <g>
+      <path d="M 74 56
+               C 86 58, 94 63, 93 68
+               C 92 72, 84 72, 78 69
+               C 74 67, 71 63, 70 60 Z"
+            fill="url(#gillGrad)" />
+      <path d="M 73 59 C 81 62, 87 65, 91 67" fill="none" stroke="#ffe4e6" stroke-width="1.5" stroke-linecap="round" opacity="0.65" />
+    </g>
+
+    <!-- ================= AXOLOTL HEAD ================= -->
+    <!-- Wide rounded salamander head -->
+    <path d="M 53 23
+             C 73 23, 83 34, 82 49
+             C 81 62, 70 70, 53 70
+             C 36 70, 25 62, 24 49
+             C 23 34, 33 23, 53 23 Z"
+          fill="url(#bodyGrad)"
+          stroke="#e11d48"
+          stroke-width="1.8" />
+
+    <!-- Forehead subtle shine -->
+    <ellipse cx="48" cy="31" rx="14" ry="5" fill="#ffffff" opacity="0.35" />
+
+    <!-- Rosy cheeks -->
+    <ellipse cx="35" cy="54" rx="5.5" ry="3.2" fill="#f43f5e" opacity="0.45" />
+    <ellipse cx="71" cy="54" rx="5.5" ry="3.2" fill="#f43f5e" opacity="0.45" />
+
+    <!-- Left eye -->
+    <circle cx="40" cy="46" r="5.4" fill="#0f172a" />
+    <circle cx="38.2" cy="44.1" r="2.1" fill="#ffffff" />
+    <circle cx="41.9" cy="47.9" r="1.0" fill="#38bdf8" />
+
+    <!-- Right eye -->
+    <circle cx="66" cy="46" r="5.4" fill="#0f172a" />
+    <circle cx="64.2" cy="44.1" r="2.1" fill="#ffffff" />
+    <circle cx="67.9" cy="47.9" r="1.0" fill="#38bdf8" />
+
+    <!-- Happy wide axolotl smile -->
+    <path d="M 45 55 Q 53 61.5 61 55"
+          fill="none"
+          stroke="#be123c"
+          stroke-width="2.6"
+          stroke-linecap="round" />
+  </g>
+</svg>

@@ -51,7 +51,7 @@ case "$TMUX_ACTION" in
 
         # 2. Barbican Data MCP HTTP Server (:8085)
         if tmux_should_run_service "barbican_mcp"; then
-            tmux_init_or_add_window "$SESSION_NAME" "barbican_mcp" "bin/mcp_barbican serve --port ${BARBICAN_MCP_PORT:-8085} --etcd-port \${ETCD_PORT:-2379}"
+            tmux_init_or_add_window "$SESSION_NAME" "barbican_mcp" "bin/mcp_barbican serve --port ${BARBICAN_MCP_PORT:-8085} --etcd-port ${ETCD_PORT:-2379}"
         fi
 
         # 3. UUFI Data MCP HTTP Server (:8087)
@@ -61,7 +61,7 @@ case "$TMUX_ACTION" in
 
         # 4. Butler Data MCP HTTP Server (:8088)
         if tmux_should_run_service "butler_mcp"; then
-            tmux_init_or_add_window "$SESSION_NAME" "butler_mcp" "bin/mcp_butler serve --port ${BUTLER_MCP_PORT:-8088} --pg-port \${POSTGRES_PORT:-5432} --influx-port \${INFLUX_PORT:-8086}"
+            tmux_init_or_add_window "$SESSION_NAME" "butler_mcp" "bin/mcp_butler serve --port ${BUTLER_MCP_PORT:-8088} --pg-port ${POSTGRES_PORT:-5432} --influx-port ${INFLUX_PORT:-8086}"
         fi
 
         echo "MCP Server session '$SESSION_NAME' initialized."

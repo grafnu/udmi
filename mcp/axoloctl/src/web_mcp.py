@@ -220,30 +220,30 @@ class WebMCPHandler(BaseHTTPRequestHandler):
     session_mgr = self.mcp_server.session_mgr
     parsed = urlparse(self.path)
     if parsed.path == "/status":
-      ports = session_mgr._load_ports()
+      defined = session_mgr.list_defined_sessions()
       sessions = {}
-      for tag, port in ports.items():
-        if session_mgr.is_running(tag):
-          commit_path = os.path.join(session_mgr.sessions_dir, tag, "commit.txt")
-          commit_hash = ""
-          if os.path.exists(commit_path):
-            with open(commit_path, "r", encoding="utf-8") as f:
-              commit_hash = f.read().strip()
-          desc_path = os.path.join(session_mgr.sessions_dir, tag, "description.txt")
-          desc = ""
-          if os.path.exists(desc_path):
-            with open(desc_path, "r", encoding="utf-8") as f:
-              desc = f.read().strip()
+      for tag, info in defined.items():
+        if info.get("running"):
+          port = info.get("port")
+          ready = bool(session_mgr._probe_http(port)) if port else False
           sessions[tag] = {
               "port": port,
-              "commit": commit_hash,
-              "description": desc,
-              "url": session_mgr.session_url(tag),
-              "agent_running": session_mgr.is_agent_running(tag),
-              "workspace": session_mgr.agent_workspace_dir(tag),
-              "nonces": session_mgr.get_beacons(tag),
+              "running": True,
+              "ready": ready,
+              "commit": info.get("commit", ""),
+              "description": info.get("description", ""),
+              "url": info.get("url", ""),
+              "agent_running": info.get("agent_running", False),
+              "workspace": info.get("workspace", ""),
+              "nonces": info.get("nonces", {}),
           }
-      self._send_response({"sessions": sessions})
+          info["ready"] = ready
+        else:
+          info["ready"] = False
+      self._send_response({
+          "sessions": sessions,
+          "defined_sessions": defined,
+      })
     elif parsed.path == "/resolve":
       query = parse_qs(parsed.query)
       nonce = (query.get("nonce") or [""])[0].strip()
@@ -278,6 +278,21 @@ class WebMCPHandler(BaseHTTPRequestHandler):
       return
 
     parsed = urlparse(self.path)
+    if parsed.path == "/sessions":
+      tag_arg = str(req.get("tag") or "").strip()
+      commit_arg = str(req.get("commit_hash") or req.get("commit") or "").strip()
+      desc_arg = str(req.get("description") or "").strip()
+      try:
+        res = session_mgr.create_or_start_session(
+            tag=tag_arg, commit_hash=commit_arg, description=desc_arg
+        )
+        self._send_response(res, status_code=200)
+      except ValueError as e:
+        self._send_response({"error": str(e)}, status_code=400)
+      except Exception as e:
+        self._send_response({"error": str(e)}, status_code=500)
+      return
+
     if parsed.path == "/telemetry":
       nonce = str(req.get("nonce") or "").strip()
       tag_arg = str(req.get("tag") or "").strip()

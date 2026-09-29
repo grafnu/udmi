@@ -1,5 +1,6 @@
 // Axoloctl Viewer Content Script
-// Performs Path-1 same-origin nonce registration (/.axoloctl/beacon) and
+// Performs Path-1 same-origin nonce registration (/.axoloctl/beacon),
+// verifies that the viewer page loaded without proxy/gateway errors, and
 // forwards client-side runtime errors through /.axoloctl/telemetry.
 
 (() => {
@@ -23,6 +24,62 @@
   let viewerSession = null;
   let registrationPromise = null;
   let telemetryAttached = false;
+
+  function isVhostViewerPage() {
+    const host = (window.location.hostname || '').toLowerCase();
+    return host.endsWith('.localhost');
+  }
+
+  function checkPageHealth() {
+    const readyState = document.readyState;
+    const bodyText = (
+      document.body && document.body.innerText ? document.body.innerText : ''
+    ).trim();
+
+    let isProxyError = false;
+    let errorDetail = '';
+
+    if (bodyText.startsWith('{') && bodyText.endsWith('}')) {
+      try {
+        const parsed = JSON.parse(bodyText);
+        if (parsed && typeof parsed.error === 'string') {
+          if (
+            parsed.error.includes('is not currently running or unreachable') ||
+            parsed.error === 'Bad Gateway' ||
+            parsed.error.includes('Unknown session tag') ||
+            parsed.error.includes('Failed to reach')
+          ) {
+            isProxyError = true;
+            errorDetail = parsed.message || parsed.error;
+          }
+        }
+      } catch (_e) {
+        // Not a JSON error payload
+      }
+    }
+
+    const hasContent = Boolean(
+      document.body &&
+        (document.body.children.length > 1 ||
+          (document.body.children.length === 1 &&
+            document.body.children[0].tagName !== 'PRE') ||
+          (bodyText.length > 0 && !isProxyError))
+    );
+
+    const pageLoadedOk = Boolean(
+      !isProxyError &&
+        hasContent &&
+        viewerSession &&
+        viewerSession.axoloctl === true
+    );
+
+    return {
+      readyState,
+      pageLoadedOk,
+      isProxyError,
+      errorDetail,
+    };
+  }
 
   function sendTelemetry(message) {
     if (!viewerSession || !viewerSession.axoloctl) {
@@ -64,8 +121,9 @@
   }
 
   async function registerViewerBeacon(notifyBackground = false, force = false) {
-    if (!force && viewerSession && viewerSession.axoloctl) {
-      return viewerSession;
+    const healthBefore = checkPageHealth();
+    if (!force && viewerSession && viewerSession.axoloctl && !healthBefore.isProxyError) {
+      return { ...viewerSession, ...healthBefore };
     }
     if (registrationPromise) {
       return registrationPromise;
@@ -83,11 +141,32 @@
           }),
         });
         if (!resp.ok) {
-          return viewerSession || { axoloctl: false };
+          const health = checkPageHealth();
+          const errState = {
+            axoloctl: false,
+            href: window.location.href,
+            ...health,
+            pageLoadedOk: false,
+          };
+          if (
+            notifyBackground &&
+            isVhostViewerPage() &&
+            typeof chrome !== 'undefined' &&
+            chrome.runtime &&
+            chrome.runtime.sendMessage
+          ) {
+            chrome.runtime
+              .sendMessage({
+                type: 'AXOLOCTL_VIEWER_LOAD_ERROR',
+                ...errState,
+              })
+              .catch(() => {});
+          }
+          return errState;
         }
         const data = await resp.json();
         if (!data || data.axoloctl !== true || !data.tag) {
-          return { axoloctl: false };
+          return { axoloctl: false, pageLoadedOk: false };
         }
 
         viewerSession = {
@@ -101,6 +180,8 @@
         };
 
         attachTelemetryListeners();
+        const health = checkPageHealth();
+        const fullState = { ...viewerSession, ...health };
 
         if (
           notifyBackground &&
@@ -110,15 +191,38 @@
         ) {
           chrome.runtime
             .sendMessage({
-              type: 'AXOLOCTL_VIEWER_BEACON',
-              ...viewerSession,
+              type: health.pageLoadedOk
+                ? 'AXOLOCTL_VIEWER_BEACON'
+                : 'AXOLOCTL_VIEWER_LOAD_ERROR',
+              ...fullState,
             })
             .catch(() => {});
         }
 
-        return viewerSession;
+        return fullState;
       } catch (_err) {
-        return viewerSession || { axoloctl: false };
+        const health = checkPageHealth();
+        const errState = {
+          ...(viewerSession || { axoloctl: false }),
+          href: window.location.href,
+          ...health,
+          pageLoadedOk: false,
+        };
+        if (
+          notifyBackground &&
+          isVhostViewerPage() &&
+          typeof chrome !== 'undefined' &&
+          chrome.runtime &&
+          chrome.runtime.sendMessage
+        ) {
+          chrome.runtime
+            .sendMessage({
+              type: 'AXOLOCTL_VIEWER_LOAD_ERROR',
+              ...errState,
+            })
+            .catch(() => {});
+        }
+        return errState;
       } finally {
         registrationPromise = null;
       }
@@ -131,8 +235,13 @@
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'AXOLOCTL_QUERY_VIEWER') {
         const force = Boolean(msg.force);
-        if (!force && viewerSession && viewerSession.axoloctl) {
-          sendResponse({ ...viewerSession, href: window.location.href });
+        const health = checkPageHealth();
+        if (!force && viewerSession && viewerSession.axoloctl && !health.isProxyError) {
+          sendResponse({
+            ...viewerSession,
+            href: window.location.href,
+            ...health,
+          });
           return false;
         }
         registerViewerBeacon(false, force).then((res) => sendResponse(res));

@@ -2,13 +2,16 @@
 // Correlates Web Viewer tabs (Path 1: /.axoloctl/beacon) with the Axoloctl
 // Control Plane (Path 2: /api/status & /api/resolve on HOST_URL) using
 // per-tab nonces or virtual-host (<tag>.localhost) matching, enabling
-// port-forwarding-agnostic session identification and automatic tab reloads
-// when a session's deployed commit changes.
+// port-forwarding-agnostic session identification, automatic tab reloads
+// when a session's deployed commit changes, and post-reload page health
+// verification with automatic retry if the page loads with an error.
 
 const DEFAULT_HOST_URL = 'http://localhost:9290';
 const POLL_INTERVAL = 2000;
+const RELOAD_RETRY_INTERVAL_MS = 2000;
+const MAX_RELOAD_ATTEMPTS = 8;
 
-// tabId -> { nonce, tag, commit, description, href, backendUrl, verified }
+// tabId -> { nonce, tag, commit, description, href, backendUrl, verified, pageLoadedOk, verifyingReload, lastReloadAt, reloadAttempts }
 const tabBeacons = new Map();
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error);
@@ -73,86 +76,6 @@ function findSessionByNonce(sessionsMap, nonce) {
   return null;
 }
 
-let isSyncing = false;
-
-async function syncControlPlane() {
-  if (isSyncing) {
-    return null;
-  }
-  isSyncing = true;
-  try {
-    let candidateViewerUrl = '';
-    for (const entry of tabBeacons.values()) {
-      if (entry.href) {
-        candidateViewerUrl = entry.href;
-        break;
-      }
-    }
-    const hostUrl = await getHostUrl(candidateViewerUrl);
-    const resp = await fetch(`${hostUrl}/api/status`);
-    if (!resp.ok) {
-      return null;
-    }
-    const data = await resp.json();
-    const sessions = data.sessions || {};
-
-    let correlationChanged = false;
-    for (const [tabId, entry] of tabBeacons.entries()) {
-      const matched =
-        findSessionByNonce(sessions, entry.nonce) ||
-        (entry.tag && sessions[entry.tag]
-          ? { tag: entry.tag, info: sessions[entry.tag] }
-          : null);
-      if (matched) {
-        const { tag, info } = matched;
-        const prevCommit = entry.commit;
-        const wasVerified = entry.verified;
-
-        entry.verified = true;
-        entry.tag = tag;
-        entry.description = info.description || '';
-        entry.backendUrl = info.url || entry.backendUrl || '';
-
-        if (prevCommit && info.commit && prevCommit !== info.commit) {
-          console.log(
-            `[Axoloctl] Commit changed for correlated session '${tag}' (${prevCommit.slice(0, 8)} -> ${info.commit.slice(0, 8)}). Reloading tab ${tabId}.`
-          );
-          entry.commit = info.commit;
-          chrome.tabs.reload(tabId);
-          correlationChanged = true;
-        } else {
-          entry.commit = info.commit || prevCommit;
-          if (!wasVerified) {
-            correlationChanged = true;
-          }
-        }
-      } else if (entry.verified && entry.tag && !sessions[entry.tag]) {
-        entry.verified = false;
-        correlationChanged = true;
-      }
-    }
-
-    if (Object.keys(sessions).length > 0 && tabBeacons.size === 0) {
-      const activeTab = await getActiveTab();
-      if (activeTab && activeTab.id != null) {
-        const vtag = extractVhostTag(activeTab.url || '');
-        if (vtag && sessions[vtag]) {
-          correlationChanged = true;
-        }
-      }
-    }
-
-    if (correlationChanged) {
-      chrome.runtime.sendMessage({ type: 'AXOLOCTL_CORRELATION_UPDATED' }).catch(() => {});
-    }
-    return sessions;
-  } catch (_err) {
-    return null;
-  } finally {
-    isSyncing = false;
-  }
-}
-
 async function getActiveTab(windowId = null) {
   if (windowId != null) {
     const winTabs = await chrome.tabs.query({ active: true, windowId });
@@ -186,6 +109,140 @@ async function queryTabViewer(tabId, force = false) {
   }
 }
 
+let isSyncing = false;
+
+async function syncControlPlane() {
+  if (isSyncing) {
+    return null;
+  }
+  isSyncing = true;
+  try {
+    let candidateViewerUrl = '';
+    for (const entry of tabBeacons.values()) {
+      if (entry.href) {
+        candidateViewerUrl = entry.href;
+        break;
+      }
+    }
+    const hostUrl = await getHostUrl(candidateViewerUrl);
+    const resp = await fetch(`${hostUrl}/api/status`);
+    if (!resp.ok) {
+      return null;
+    }
+    const data = await resp.json();
+    const sessions = data.sessions || {};
+
+    // Ensure active <tag>.localhost tab is tracked even if its initial load failed with 502
+    const activeTab = await getActiveTab();
+    if (activeTab && activeTab.id != null) {
+      const vtag = extractVhostTag(activeTab.url || '');
+      if (vtag && sessions[vtag] && !tabBeacons.has(activeTab.id)) {
+        tabBeacons.set(activeTab.id, {
+          nonce: `vhost:${vtag}`,
+          tag: vtag,
+          commit: '',
+          description: sessions[vtag].description || '',
+          href: activeTab.url || '',
+          backendUrl: sessions[vtag].url || '',
+          verified: true,
+          pageLoadedOk: false,
+          verifyingReload: true,
+          lastReloadAt: 0,
+          reloadAttempts: 0,
+        });
+      }
+    }
+
+    let correlationChanged = false;
+    for (const [tabId, entry] of tabBeacons.entries()) {
+      const matched =
+        findSessionByNonce(sessions, entry.nonce) ||
+        (entry.tag && sessions[entry.tag]
+          ? { tag: entry.tag, info: sessions[entry.tag] }
+          : null);
+      if (matched) {
+        const { tag, info } = matched;
+        const prevCommit = entry.commit;
+        const wasVerified = entry.verified;
+        const isServerReady = info.ready !== false;
+
+        entry.verified = true;
+        entry.tag = tag;
+        entry.description = info.description || '';
+        entry.backendUrl = info.url || entry.backendUrl || '';
+
+        if (prevCommit && info.commit && prevCommit !== info.commit) {
+          if (isServerReady) {
+            console.log(
+              `[Axoloctl] Commit changed for correlated session '${tag}' (${prevCommit.slice(0, 8)} -> ${info.commit.slice(0, 8)}). Reloading tab ${tabId}.`
+            );
+            entry.commit = info.commit;
+            entry.pageLoadedOk = false;
+            entry.verifyingReload = true;
+            entry.lastReloadAt = Date.now();
+            entry.reloadAttempts = 1;
+            chrome.tabs.reload(tabId);
+            correlationChanged = true;
+          }
+        } else if (entry.verifyingReload || entry.pageLoadedOk === false) {
+          const viewerResp = await queryTabViewer(tabId, true);
+          const commitMatches =
+            !info.commit ||
+            !viewerResp ||
+            !viewerResp.commit_hash ||
+            viewerResp.commit_hash === info.commit;
+          if (
+            viewerResp &&
+            viewerResp.axoloctl === true &&
+            viewerResp.pageLoadedOk === true &&
+            commitMatches
+          ) {
+            entry.pageLoadedOk = true;
+            entry.verifyingReload = false;
+            entry.reloadAttempts = 0;
+            entry.nonce = viewerResp.nonce || entry.nonce;
+            entry.commit = viewerResp.commit_hash || info.commit || prevCommit;
+            correlationChanged = true;
+          } else if (isServerReady) {
+            const now = Date.now();
+            const elapsed = now - (entry.lastReloadAt || 0);
+            const attempts = entry.reloadAttempts || 0;
+            if (elapsed >= RELOAD_RETRY_INTERVAL_MS && attempts < MAX_RELOAD_ATTEMPTS) {
+              console.log(
+                `[Axoloctl] Page health check failed for session '${tag}' on tab ${tabId} (attempt ${attempts + 1}/${MAX_RELOAD_ATTEMPTS}). Reloading tab...`
+              );
+              entry.verifyingReload = true;
+              entry.pageLoadedOk = false;
+              entry.lastReloadAt = now;
+              entry.reloadAttempts = attempts + 1;
+              entry.commit = info.commit || prevCommit;
+              chrome.tabs.reload(tabId);
+              correlationChanged = true;
+            }
+          }
+        } else {
+          entry.commit = info.commit || prevCommit;
+          if (!wasVerified) {
+            correlationChanged = true;
+          }
+        }
+      } else if (entry.verified && entry.tag && !sessions[entry.tag]) {
+        entry.verified = false;
+        correlationChanged = true;
+      }
+    }
+
+    if (correlationChanged) {
+      chrome.runtime.sendMessage({ type: 'AXOLOCTL_CORRELATION_UPDATED' }).catch(() => {});
+    }
+    return data;
+  } catch (_err) {
+    return null;
+  } finally {
+    isSyncing = false;
+  }
+}
+
 async function resolveActiveTabCorrelation(windowId = null) {
   const activeTab = await getActiveTab(windowId);
   if (!activeTab || activeTab.id == null) {
@@ -203,6 +260,7 @@ async function resolveActiveTabCorrelation(windowId = null) {
   if (viewerResp && viewerResp.axoloctl && viewerResp.nonce) {
     const existing = tabBeacons.get(tabId) || {};
     const sameNonce = existing.nonce === viewerResp.nonce;
+    const loadedOk = viewerResp.pageLoadedOk !== false;
     tabBeacons.set(tabId, {
       nonce: viewerResp.nonce,
       tag: viewerResp.tag || existing.tag || '',
@@ -211,9 +269,12 @@ async function resolveActiveTabCorrelation(windowId = null) {
       href: viewerResp.href || tabUrl,
       backendUrl: existing.backendUrl || '',
       verified: sameNonce ? Boolean(existing.verified) : false,
+      pageLoadedOk: loadedOk,
+      verifyingReload: loadedOk ? false : Boolean(existing.verifyingReload),
+      lastReloadAt: existing.lastReloadAt || 0,
+      reloadAttempts: loadedOk ? 0 : existing.reloadAttempts || 0,
     });
   } else if (!urlVhostTag) {
-    // Active tab has neither a live Axoloctl content script nor a <tag>.localhost URL
     tabBeacons.delete(tabId);
     return {
       correlated: false,
@@ -250,6 +311,8 @@ async function resolveActiveTabCorrelation(windowId = null) {
               viewerUrl: tabUrl || entry.href,
               backendUrl: resolved.url,
               hostUrl,
+              pageLoadedOk: entry.pageLoadedOk !== false,
+              verifyingReload: Boolean(entry.verifyingReload),
             };
           }
         }
@@ -262,6 +325,7 @@ async function resolveActiveTabCorrelation(windowId = null) {
           entry.nonce = refreshed.nonce;
           entry.tag = refreshed.tag || entry.tag;
           entry.commit = refreshed.commit_hash || entry.commit;
+          entry.pageLoadedOk = refreshed.pageLoadedOk !== false;
         } else {
           break;
         }
@@ -280,7 +344,12 @@ async function resolveActiveTabCorrelation(windowId = null) {
         const sInfo = sessions[vhostTag];
         if (sInfo) {
           const nonceVal = (entry && entry.nonce) || `vhost:${vhostTag}`;
-          tabBeacons.set(tabId, {
+          const loadedOk = Boolean(
+            viewerResp &&
+              viewerResp.axoloctl === true &&
+              viewerResp.pageLoadedOk !== false
+          );
+          const nextEntry = {
             nonce: nonceVal,
             tag: vhostTag,
             commit: sInfo.commit || '',
@@ -288,7 +357,15 @@ async function resolveActiveTabCorrelation(windowId = null) {
             href: tabUrl,
             backendUrl: sInfo.url || '',
             verified: true,
-          });
+            pageLoadedOk: loadedOk,
+            verifyingReload: !loadedOk,
+            lastReloadAt: (entry && entry.lastReloadAt) || 0,
+            reloadAttempts: loadedOk ? 0 : (entry && entry.reloadAttempts) || 0,
+          };
+          tabBeacons.set(tabId, nextEntry);
+          if (!loadedOk) {
+            syncControlPlane();
+          }
           return {
             correlated: true,
             tabId,
@@ -299,6 +376,8 @@ async function resolveActiveTabCorrelation(windowId = null) {
             viewerUrl: tabUrl,
             backendUrl: sInfo.url || '',
             hostUrl,
+            pageLoadedOk: loadedOk,
+            verifyingReload: !loadedOk,
           };
         }
       }
@@ -315,6 +394,63 @@ async function resolveActiveTabCorrelation(windowId = null) {
   };
 }
 
+async function switchOrCreateSession(tag, windowId = null) {
+  const hostUrl = await getHostUrl();
+  const resp = await fetch(`${hostUrl}/api/sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tag }),
+  });
+  const data = await resp.json();
+  if (!resp.ok || data.error || data.running === false) {
+    throw new Error(data.error || `Failed to start session '${tag}'`);
+  }
+
+  const targetUrl = `${(data.url || `http://${tag}.localhost:9290`).replace(/\/+$/, '')}/`;
+  const activeTab = await getActiveTab(windowId);
+  let targetTabId = null;
+
+  if (activeTab && activeTab.id != null) {
+    targetTabId = activeTab.id;
+    await chrome.tabs.update(targetTabId, { url: targetUrl });
+  } else {
+    const created = await chrome.tabs.create({ url: targetUrl });
+    targetTabId = created && created.id;
+  }
+
+  if (targetTabId != null) {
+    tabBeacons.set(targetTabId, {
+      nonce: `vhost:${tag}`,
+      tag,
+      commit: data.commit || '',
+      description: data.description || '',
+      href: targetUrl,
+      backendUrl: data.url || targetUrl,
+      verified: true,
+      pageLoadedOk: false,
+      verifyingReload: true,
+      lastReloadAt: Date.now(),
+      reloadAttempts: 0,
+    });
+  }
+
+  chrome.runtime.sendMessage({ type: 'AXOLOCTL_CORRELATION_UPDATED' }).catch(() => {});
+  return {
+    ok: true,
+    correlated: true,
+    tabId: targetTabId,
+    tag,
+    commit: data.commit || '',
+    description: data.description || '',
+    nonce: `vhost:${tag}`,
+    viewerUrl: targetUrl,
+    backendUrl: data.url || targetUrl,
+    hostUrl,
+    pageLoadedOk: true,
+    verifyingReload: false,
+  };
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !msg.type) {
     return false;
@@ -324,6 +460,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const tabId = sender.tab.id;
     const prev = tabBeacons.get(tabId);
     const sameNonce = Boolean(prev && prev.nonce === msg.nonce);
+    const loadedOk = msg.pageLoadedOk !== false;
     tabBeacons.set(tabId, {
       nonce: msg.nonce,
       tag: msg.tag,
@@ -332,6 +469,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       href: msg.href || sender.tab.url || '',
       backendUrl: (prev && prev.backendUrl) || '',
       verified: sameNonce ? Boolean(prev.verified) : false,
+      pageLoadedOk: loadedOk,
+      verifyingReload: !loadedOk,
+      lastReloadAt: (prev && prev.lastReloadAt) || 0,
+      reloadAttempts: loadedOk ? 0 : (prev && prev.reloadAttempts) || 0,
     });
     syncControlPlane().then(() => {
       sendResponse({ ok: true });
@@ -339,8 +480,43 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === 'AXOLOCTL_VIEWER_LOAD_ERROR' && sender.tab && sender.tab.id != null) {
+    const tabId = sender.tab.id;
+    const prev = tabBeacons.get(tabId) || {};
+    const tabUrl = msg.href || sender.tab.url || prev.href || '';
+    const vtag = msg.tag || prev.tag || extractVhostTag(tabUrl) || '';
+    if (vtag) {
+      tabBeacons.set(tabId, {
+        nonce: prev.nonce || `vhost:${vtag}`,
+        tag: vtag,
+        commit: prev.commit || '',
+        description: prev.description || '',
+        href: tabUrl,
+        backendUrl: prev.backendUrl || '',
+        verified: true,
+        pageLoadedOk: false,
+        verifyingReload: true,
+        lastReloadAt: prev.lastReloadAt || 0,
+        reloadAttempts: prev.reloadAttempts || 0,
+      });
+      syncControlPlane().then(() => {
+        sendResponse({ ok: true });
+      });
+      return true;
+    }
+    sendResponse({ ok: false });
+    return false;
+  }
+
   if (msg.type === 'AXOLOCTL_GET_ACTIVE_CORRELATION') {
     resolveActiveTabCorrelation(msg.windowId ?? null).then((res) => sendResponse(res));
+    return true;
+  }
+
+  if (msg.type === 'AXOLOCTL_SWITCH_SESSION') {
+    switchOrCreateSession(msg.tag, msg.windowId ?? null)
+      .then((res) => sendResponse(res))
+      .catch((err) => sendResponse({ ok: false, error: err.message || String(err) }));
     return true;
   }
 
@@ -356,6 +532,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     tabBeacons.delete(tabId);
   }
   if (changeInfo.status === 'complete' || changeInfo.url) {
+    if (changeInfo.status === 'complete' && tabBeacons.has(tabId)) {
+      syncControlPlane();
+    }
     chrome.runtime.sendMessage({ type: 'AXOLOCTL_CORRELATION_UPDATED' }).catch(() => {});
   }
 });

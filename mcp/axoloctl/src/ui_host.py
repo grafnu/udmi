@@ -2,14 +2,18 @@
 """Axoloctl UI Host Gateway, Virtual-Host Session Router & HTTP-to-MCP Proxy."""
 
 import argparse
+import base64
 from datetime import datetime
 import glob
 import html
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import io
 import json
+import mimetypes
 import os
 import re
+import select
 import socket
 import subprocess
 import sys
@@ -20,6 +24,7 @@ import urllib.error
 from urllib.parse import parse_qs, urlparse
 import urllib.request
 import uuid
+import zipfile
 
 # Ensure local src directory is on sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -55,6 +60,9 @@ ALLOWED_TMUX_KEYS = {
 class JetskiAgentBridge:
   """Manages per-tag communication with the session's dedicated Jetski Agent."""
 
+  _web_bundle_lock = threading.Lock()
+  _web_bundle_cache: Optional[Dict[str, bytes]] = None
+
   def __init__(self, udmi_root: str, config: AxoloctlConfig, sessions_dir: str):
     self.udmi_root = udmi_root
     self.config = config
@@ -63,9 +71,15 @@ class JetskiAgentBridge:
     self.brain_root = os.path.expanduser("~/.gemini/jetski/brain")
     self.hub_port = int(os.environ.get("AXOLOCTL_HUB_PORT", "5387"))
     self.last_hub_error: str = ""
+    self.active_hub_tag: str = ""
+    self._hub_server: Optional[ThreadingHTTPServer] = None
+    self._hub_server_port: Optional[int] = None
+    self._hub_thread: Optional[threading.Thread] = None
     self._lock = threading.Lock()
     self._ls_cache: Dict[str, Tuple[str, str, float]] = {}
     self._pending_turns: Dict[str, Dict[str, Any]] = {}
+    self._piped_tags: set = set()
+    self._running_cache: Dict[str, Tuple[bool, float]] = {}
 
   def _sanitize_tag(self, tag: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "", (tag or "").strip())
@@ -86,16 +100,80 @@ class JetskiAgentBridge:
   def conv_file_path(self, tag: str) -> str:
     return os.path.join(self.sessions_dir, tag, "conversation_id.txt")
 
+  def term_log_path(self, tag: str) -> str:
+    return os.path.join(self.sessions_dir, tag, "agent_term.log")
+
+  def _get_pane_pids(self, tag: str) -> List[str]:
+    if not tag or not self.is_agent_window_running(tag):
+      return []
+    window_target = f"{self.session_agent}:{tag}"
+    res = subprocess.run(
+        ["tmux", "list-panes", "-t", window_target, "-F", "#{pane_pid}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    if res.returncode != 0 or not res.stdout.strip():
+      return []
+    root_pids = [p.strip() for p in res.stdout.splitlines() if p.strip().isdigit()]
+    all_pids = set(root_pids)
+    frontier = list(root_pids)
+    while frontier:
+      curr = frontier.pop(0)
+      ch = subprocess.run(
+          ["pgrep", "-P", curr],
+          stdout=subprocess.PIPE,
+          stderr=subprocess.DEVNULL,
+          text=True,
+          check=False,
+      )
+      if ch.returncode == 0:
+        for cpid in ch.stdout.splitlines():
+          cpid = cpid.strip()
+          if cpid.isdigit() and cpid not in all_pids:
+            all_pids.add(cpid)
+            frontier.append(cpid)
+    return list(all_pids)
+
+  def _discover_pane_conversation_id(self, tag: str) -> Optional[str]:
+    for pid in self._get_pane_pids(tag):
+      fd_dir = f"/proc/{pid}/fd"
+      try:
+        for entry in os.listdir(fd_dir):
+          try:
+            target = os.readlink(os.path.join(fd_dir, entry))
+          except OSError:
+            continue
+          m = re.search(
+              r"/presence/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.lock$",
+              target,
+          )
+          if m:
+            candidate = m.group(1)
+            if os.path.exists(os.path.join(self.brain_root, candidate)):
+              return candidate
+      except OSError:
+        continue
+    return None
+
   def get_conversation_id(self, tag: str) -> str:
     cfile = self.conv_file_path(tag)
+    cid = ""
     if os.path.exists(cfile):
       try:
         with open(cfile, "r", encoding="utf-8") as f:
           cid = f.read().strip()
-        if cid:
-          return cid
       except Exception:
         pass
+    if cid and os.path.exists(os.path.join(self.brain_root, cid)):
+      return cid
+    pane_cid = self._discover_pane_conversation_id(tag)
+    if pane_cid:
+      self.set_conversation_id(tag, pane_cid)
+      return pane_cid
+    if cid:
+      return cid
     cid = str(uuid.uuid4())
     os.makedirs(os.path.dirname(cfile), exist_ok=True)
     with open(cfile, "w", encoding="utf-8") as f:
@@ -108,9 +186,14 @@ class JetskiAgentBridge:
     with open(cfile, "w", encoding="utf-8") as f:
       f.write(cid.strip())
 
-  def is_agent_window_running(self, tag: str) -> bool:
+  def is_agent_window_running(self, tag: str, use_cache: bool = False) -> bool:
     if not tag:
       return False
+    now = time.time()
+    if use_cache:
+      cached = self._running_cache.get(tag)
+      if cached and (now - cached[1]) < 1.5:
+        return cached[0]
     res = subprocess.run(
         [
             "tmux",
@@ -125,15 +208,38 @@ class JetskiAgentBridge:
         text=True,
         check=False,
     )
-    if res.returncode != 0:
-      return False
-    return tag in [line.strip() for line in res.stdout.splitlines()]
+    running = (
+        res.returncode == 0
+        and tag in [line.strip() for line in res.stdout.splitlines()]
+    )
+    self._running_cache[tag] = (running, now)
+    return running
+
+  def _ensure_pipe_pane(self, tag: str) -> str:
+    log_file = self.term_log_path(tag)
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    if tag not in self._piped_tags or not os.path.exists(log_file):
+      open(log_file, "a", encoding="utf-8").close()
+      subprocess.run(
+          [
+              "tmux",
+              "pipe-pane",
+              "-t",
+              f"{self.session_agent}:{tag}",
+              f"cat >> '{log_file}'",
+          ],
+          check=False,
+      )
+      self._piped_tags.add(tag)
+    return log_file
 
   # ---------------------------------------------------------------------------
-  # Technique 1: Direct Terminal / Tmux Pane Control (cliView)
+  # Technique 1: Direct Terminal / Tmux Pane Control (cliView / xterm.js)
   # ---------------------------------------------------------------------------
 
-  def capture_cli(self, tag: str) -> Dict[str, Any]:
+  def capture_cli(
+      self, tag: str, offset: Optional[int] = None
+  ) -> Dict[str, Any]:
     resolved_tag = self.resolve_default_tag(tag)
     if not resolved_tag:
       return {
@@ -141,8 +247,12 @@ class JetskiAgentBridge:
           "running": False,
           "window": "",
           "output": "No active Axoloctl session. Start a session to attach its dedicated agent.",
+          "data": "",
+          "offset": 0,
+          "cleared": False,
       }
-    running = self.is_agent_window_running(resolved_tag)
+    use_cache = offset is not None and offset > 0
+    running = self.is_agent_window_running(resolved_tag, use_cache=use_cache)
     window_target = f"{self.session_agent}:{resolved_tag}"
     if not running:
       return {
@@ -150,22 +260,122 @@ class JetskiAgentBridge:
           "running": False,
           "window": window_target,
           "output": f"Agent window {window_target} is not currently running.",
+          "data": "",
+          "offset": offset or 0,
+          "cleared": False,
       }
-    res = subprocess.run(
-        ["tmux", "capture-pane", "-p", "-J", "-S", "-200", "-t", window_target],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
-    output = res.stdout if res.returncode == 0 else res.stderr
+
+    log_file = self._ensure_pipe_pane(resolved_tag)
+    file_len = os.path.getsize(log_file) if os.path.exists(log_file) else 0
+    cleared = False
+    data_bytes = b""
+    new_offset = file_len
+
+    if offset is None or offset == 0:
+      cap_res = subprocess.run(
+          ["tmux", "capture-pane", "-e", "-p", "-t", window_target],
+          stdout=subprocess.PIPE,
+          stderr=subprocess.DEVNULL,
+          check=False,
+      )
+      if cap_res.returncode == 0 and cap_res.stdout:
+        raw_screen = cap_res.stdout
+        if raw_screen.endswith(b"\n"):
+          raw_screen = raw_screen[:-1]
+        data_bytes = raw_screen.replace(b"\n", b"\r\n")
+        cur_res = subprocess.run(
+            [
+                "tmux",
+                "display-message",
+                "-p",
+                "-t",
+                window_target,
+                "#{cursor_x},#{cursor_y}",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        if cur_res.returncode == 0 and "," in (cur_res.stdout or ""):
+          try:
+            cx, cy = [int(x) for x in cur_res.stdout.strip().split(",", 1)]
+            data_bytes += f"\033[{cy + 1};{cx + 1}H".encode("ascii")
+          except ValueError:
+            pass
+      new_offset = file_len
+    else:
+      req_offset = max(0, int(offset))
+      if file_len < req_offset:
+        cleared = True
+        req_offset = 0
+      if file_len > req_offset:
+        try:
+          with open(log_file, "rb") as f:
+            f.seek(req_offset)
+            data_bytes = f.read(file_len - req_offset)
+        except OSError:
+          data_bytes = b""
+      new_offset = file_len
+
+    plain_output = ""
+    if offset is None:
+      res = subprocess.run(
+          ["tmux", "capture-pane", "-p", "-J", "-S", "-200", "-t", window_target],
+          stdout=subprocess.PIPE,
+          stderr=subprocess.PIPE,
+          text=True,
+          check=False,
+      )
+      raw_text = res.stdout if res.returncode == 0 else res.stderr
+      plain_output = raw_text.rstrip() + "\n"
+
     return {
         "tag": resolved_tag,
         "running": True,
         "window": window_target,
         "workspace": self.worktree_path(resolved_tag),
-        "output": output.rstrip() + "\n",
+        "output": plain_output,
+        "data": base64.b64encode(data_bytes).decode("ascii"),
+        "offset": new_offset,
+        "cleared": cleared,
     }
+
+  def _build_tmux_key_commands(
+      self, window_target: str, hex_keys: List[str]
+  ) -> List[List[str]]:
+    cmds: List[List[str]] = []
+    current_hex: List[str] = []
+
+    def flush_hex() -> None:
+      nonlocal current_hex
+      if current_hex:
+        cmds.append(["tmux", "send-keys", "-t", window_target, "-H"] + current_hex)
+        current_hex = []
+
+    i = 0
+    n = len(hex_keys)
+    while i < n:
+      k = str(hex_keys[i]).lower()
+      if k in ("7f", "08"):
+        flush_hex()
+        cmds.append(["tmux", "send-keys", "-t", window_target, "BSpace"])
+        i += 1
+      elif (
+          i + 3 < n
+          and [str(x).lower() for x in hex_keys[i : i + 4]]
+          == ["1b", "5b", "33", "7e"]
+      ):
+        flush_hex()
+        cmds.append(["tmux", "send-keys", "-t", window_target, "DC"])
+        i += 4
+      elif re.match(r"^[0-9a-f]{2}$", k):
+        current_hex.append(k)
+        i += 1
+      else:
+        i += 1
+    flush_hex()
+    return cmds
 
   def send_cli_input(
       self,
@@ -173,6 +383,10 @@ class JetskiAgentBridge:
       text: str = "",
       key: str = "",
       submit: bool = True,
+      hex_keys: Optional[List[str]] = None,
+      cols: Optional[int] = None,
+      rows: Optional[int] = None,
+      action: str = "",
   ) -> Dict[str, Any]:
     resolved_tag = self.resolve_default_tag(tag)
     if not resolved_tag:
@@ -182,6 +396,68 @@ class JetskiAgentBridge:
           f"Agent window '{self.session_agent}:{resolved_tag}' is not running."
       )
     window_target = f"{self.session_agent}:{resolved_tag}"
+
+    if action == "restart":
+      log_file = self.term_log_path(resolved_tag)
+      if os.path.exists(log_file):
+        open(log_file, "w", encoding="utf-8").close()
+      runner_script = os.path.join(
+          self.sessions_dir, resolved_tag, "runner_agent.sh"
+      )
+      if os.path.exists(runner_script):
+        subprocess.run(
+            ["tmux", "respawn-pane", "-k", "-t", window_target, runner_script],
+            check=False,
+        )
+      else:
+        subprocess.run(["tmux", "send-keys", "-t", window_target, "C-c"], check=False)
+      self._piped_tags.discard(resolved_tag)
+      self._ls_cache.pop(resolved_tag, None)
+      self._ensure_pipe_pane(resolved_tag)
+      return {
+          "ok": True,
+          "tag": resolved_tag,
+          "running": True,
+          "window": window_target,
+          "restarted": True,
+      }
+
+    if cols is not None and rows is not None:
+      c_val = max(20, min(500, int(cols)))
+      r_val = max(5, min(200, int(rows)))
+      subprocess.run(
+          [
+              "tmux",
+              "resize-window",
+              "-t",
+              window_target,
+              "-x",
+              str(c_val),
+              "-y",
+              str(r_val),
+          ],
+          check=False,
+      )
+      if not text and not key and not hex_keys:
+        return {
+            "ok": True,
+            "tag": resolved_tag,
+            "running": True,
+            "window": window_target,
+            "cols": c_val,
+            "rows": r_val,
+        }
+
+    if hex_keys:
+      for cmd in self._build_tmux_key_commands(window_target, hex_keys):
+        subprocess.run(cmd, check=False)
+      return {
+          "ok": True,
+          "tag": resolved_tag,
+          "running": True,
+          "window": window_target,
+      }
+
     if text:
       subprocess.run(
           ["tmux", "send-keys", "-t", window_target, "-l", "--", text],
@@ -217,14 +493,241 @@ class JetskiAgentBridge:
     except OSError:
       return False
 
+  def _load_web_bundle_files(self) -> Dict[str, bytes]:
+    with JetskiAgentBridge._web_bundle_lock:
+      if JetskiAgentBridge._web_bundle_cache is not None:
+        return JetskiAgentBridge._web_bundle_cache
+
+      candidates: List[str] = []
+      try:
+        agentapi_bin = self._get_agentapi_bin()
+        if agentapi_bin:
+          candidates.append(agentapi_bin)
+      except Exception:
+        pass
+      candidates.extend(
+          sorted(
+              glob.glob(
+                  "/tmp/sar.cli_internal.*/cli_internal_impl.runfiles/google3/third_party/jetski/cmd/cli/cli"
+              ),
+              reverse=True,
+          )
+      )
+      candidates.extend(
+          sorted(
+              glob.glob(
+                  "/tmp/sar.server.*/server_bin.runfiles/google3/third_party/jetski/cmd/hub/server/jetski-hub-server"
+              ),
+              reverse=True,
+          )
+      )
+
+      seen: set = set()
+      marker = b"antigravityActionRequired.mp3"
+      for bin_path in candidates:
+        if not bin_path or bin_path in seen or not os.path.isfile(bin_path):
+          continue
+        seen.add(bin_path)
+        try:
+          if os.path.getsize(bin_path) < 1024 * 1024:
+            continue
+          with open(bin_path, "rb") as f:
+            data = f.read()
+          idx = data.find(marker)
+          if idx <= 30:
+            continue
+          start = data.rfind(b"PK\x03\x04", max(0, idx - 64), idx)
+          if start < 0:
+            continue
+          search_pos = start
+          limit = min(len(data), start + 30 * 1024 * 1024)
+          while search_pos < limit:
+            eocd = data.find(b"PK\x05\x06", search_pos, limit)
+            if eocd < 0:
+              break
+            try:
+              with zipfile.ZipFile(io.BytesIO(data[start : eocd + 22])) as zf:
+                files = {
+                    info.filename: zf.read(info.filename)
+                    for info in zf.infolist()
+                    if not info.is_dir()
+                }
+                if "index.html" in files:
+                  JetskiAgentBridge._web_bundle_cache = files
+                  return files
+            except Exception:
+              pass
+            search_pos = eocd + 4
+        except Exception:
+          continue
+
+      return {
+          "index.html": (
+              b'<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+              b"<title>Jetski Web Hub</title></head>"
+              b'<body><div id="root">Jetski Web Hub</div></body></html>'
+          )
+      }
+
+  def _resolve_hub_tag(self, requested_tag: str = "") -> str:
+    clean = self._sanitize_tag(requested_tag)
+    if clean:
+      self.active_hub_tag = clean
+      return clean
+    if self.active_hub_tag:
+      return self.active_hub_tag
+    ports_file = os.path.join(self.sessions_dir, "ports.json")
+    if os.path.exists(ports_file):
+      try:
+        with open(ports_file, "r", encoding="utf-8") as f:
+          ports_map = json.load(f)
+        if isinstance(ports_map, dict) and ports_map:
+          tags = [self._sanitize_tag(str(k)) for k in ports_map.keys()]
+          tags = [t for t in tags if t]
+          for t in tags:
+            if self.is_agent_window_running(t, use_cache=True):
+              self.active_hub_tag = t
+              return t
+          if tags:
+            self.active_hub_tag = tags[0]
+            return tags[0]
+      except Exception:
+        pass
+    return ""
+
+  def _render_hub_index(self, tag: str) -> bytes:
+    resolved_tag = self._resolve_hub_tag(tag)
+    files = self._load_web_bundle_files()
+    raw_html = files.get(
+        "index.html",
+        b'<!DOCTYPE html><html lang="en"><head></head><body></body></html>',
+    ).decode("utf-8", errors="replace")
+
+    csrf_token = ""
+    if resolved_tag:
+      _, csrf_token = self._resolve_ls_credentials(resolved_tag)
+    if not csrf_token:
+      csrf_token = f"axoloctl-{resolved_tag}" if resolved_tag else "axoloctl-hub"
+
+    app_config = {
+        "productName": "jetski",
+        "appVersion": "2026.09.24.04",
+        "csrfToken": csrf_token,
+        "devMode": False,
+        "startupWarning": "",
+    }
+    inject_head = (
+        "<head>\n"
+        f"<script>window.__APP_CONFIG__ = {json.dumps(app_config)};</script>\n"
+        "<script>\n"
+        "(function() {\n"
+        "  'use strict';\n"
+        "  try {\n"
+        f"    var hubTag = {json.dumps(resolved_tag)};\n"
+        "    if (hubTag) {\n"
+        "      document.cookie = 'axoloctl_hub_tag=' + encodeURIComponent(hubTag) + '; path=/; SameSite=Lax';\n"
+        "    }\n"
+        "  } catch (e) {}\n"
+        "  if (window.nativeStorage) return;\n"
+        "  window.nativeStorage = {\n"
+        "    getItems: async function() {\n"
+        "      const items = {};\n"
+        "      for (let i = 0; i < localStorage.length; i++) {\n"
+        "        const key = localStorage.key(i);\n"
+        "        if (key && key.startsWith('ag:')) {\n"
+        "          items[key.slice(3)] = localStorage.getItem(key);\n"
+        "        }\n"
+        "      }\n"
+        "      return items;\n"
+        "    },\n"
+        "    updateItems: async function(changes) {\n"
+        "      for (const [key, value] of Object.entries(changes)) {\n"
+        "        const storageKey = 'ag:' + key;\n"
+        "        if (value == null) {\n"
+        "          localStorage.removeItem(storageKey);\n"
+        "        } else {\n"
+        "          localStorage.setItem(storageKey, value);\n"
+        "        }\n"
+        "      }\n"
+        "    },\n"
+        "  };\n"
+        "})();\n"
+        "</script>"
+    )
+    if "<head>" in raw_html:
+      raw_html = raw_html.replace("<head>", inject_head, 1)
+    return raw_html.encode("utf-8")
+
+  def _ensure_hub_server(self) -> bool:
+    with self._lock:
+      if (
+          self._hub_server is not None
+          and self._hub_server_port == self.hub_port
+      ):
+        return True
+      if self._hub_server is not None:
+        try:
+          self._hub_server.shutdown()
+          self._hub_server.server_close()
+        except Exception:
+          pass
+        self._hub_server = None
+        self._hub_server_port = None
+
+      if self._is_port_listening(self.hub_port):
+        self.last_hub_error = ""
+        return True
+
+      bridge_ref = self
+
+      class BoundHubHandler(HubRequestHandler):
+        bridge = bridge_ref
+
+      try:
+        ThreadingHTTPServer.allow_reuse_address = True
+        srv = ThreadingHTTPServer(("127.0.0.1", self.hub_port), BoundHubHandler)
+        thr = threading.Thread(target=srv.serve_forever, daemon=True)
+        thr.start()
+        self._hub_server = srv
+        self._hub_server_port = self.hub_port
+        self._hub_thread = thr
+        self.last_hub_error = ""
+        return True
+      except OSError as e:
+        if self._is_port_listening(self.hub_port):
+          self.last_hub_error = ""
+          return True
+        self.last_hub_error = str(e)
+        return False
+
+  def stop_hub(self) -> None:
+    with self._lock:
+      srv = self._hub_server
+      self._hub_server = None
+      self._hub_server_port = None
+      self._hub_thread = None
+    if srv is not None:
+      try:
+        srv.shutdown()
+        srv.server_close()
+      except Exception:
+        pass
+
   def get_hub_status(self, tag: str) -> Dict[str, Any]:
     resolved_tag = self.resolve_default_tag(tag)
+    if resolved_tag:
+      self.active_hub_tag = resolved_tag
     wt_path = self.worktree_path(resolved_tag) if resolved_tag else self.udmi_root
-    running = self._is_port_listening(self.hub_port)
+    running = self._ensure_hub_server()
+    hub_url = (
+        f"http://localhost:{self.hub_port}/?tag={resolved_tag}&hostTheme=dark"
+        if resolved_tag
+        else f"http://localhost:{self.hub_port}/"
+    )
     return {
         "tag": resolved_tag,
         "hub_port": self.hub_port,
-        "hub_url": f"http://localhost:{self.hub_port}/",
+        "hub_url": hub_url,
         "running": running,
         "workspace": wt_path,
         "last_error": "" if running else self.last_hub_error,
@@ -232,31 +735,29 @@ class JetskiAgentBridge:
 
   def start_hub(self, tag: str) -> Dict[str, Any]:
     resolved_tag = self.resolve_default_tag(tag)
-    wt_path = self.worktree_path(resolved_tag) if resolved_tag else self.udmi_root
-    if not os.path.isdir(wt_path):
-      wt_path = self.udmi_root
-
-    jetski_bin = self._get_jetski_bin()
-    try:
-      proc = subprocess.Popen(
-          [jetski_bin, "hub", "launch", wt_path, "--port", str(self.hub_port)],
-          cwd=wt_path,
-          stdout=subprocess.PIPE,
-          stderr=subprocess.STDOUT,
-          text=True,
-      )
-      for _ in range(10):
-        if self._is_port_listening(self.hub_port):
-          self.last_hub_error = ""
-          break
-        if proc.poll() is not None:
-          out = (proc.stdout.read() if proc.stdout else "").strip()
-          self.last_hub_error = out or f"jetski hub exited with code {proc.returncode}"
-          break
-        time.sleep(0.25)
-    except Exception as e:
-      self.last_hub_error = str(e)
-
+    if resolved_tag:
+      self.active_hub_tag = resolved_tag
+      self._ls_cache.pop(resolved_tag, None)
+      if not self.is_agent_window_running(resolved_tag):
+        runner_script = os.path.join(
+            self.sessions_dir, resolved_tag, "runner_agent.sh"
+        )
+        if os.path.exists(runner_script):
+          subprocess.run(
+              [
+                  "tmux",
+                  "new-window",
+                  "-d",
+                  "-t",
+                  self.session_agent,
+                  "-n",
+                  resolved_tag,
+                  runner_script,
+              ],
+              check=False,
+          )
+          self._running_cache.pop(resolved_tag, None)
+    self._ensure_hub_server()
     return self.get_hub_status(resolved_tag)
 
   # ---------------------------------------------------------------------------
@@ -281,6 +782,51 @@ class JetskiAgentBridge:
         return b
     return "jetski"
 
+  def _get_agentapi_bin(self) -> str:
+    """Resolves the unwrapped internal Jetski CLI binary so argv[1] == 'agentapi'.
+
+    The outer /google/bin/releases/jetski-devs/tools/cli wrapper prepends
+    '--app_data_dir=jetski' before '$@', which prevents the subcommand router
+    from recognizing 'agentapi' at argv[1]. Invoking the extracted SAR binary
+    directly passes 'agentapi' as argv[1].
+    """
+    env_exe = os.environ.get("ANTIGRAVITY_AGENTAPI_EXE", "")
+    if env_exe and os.path.exists(env_exe) and os.access(env_exe, os.X_OK):
+      return env_exe
+
+    sar_pattern = "/tmp/sar.cli_internal.*/cli_internal_impl.runfiles/google3/third_party/jetski/cmd/cli/cli"
+    sar_bins = sorted(
+        glob.glob(sar_pattern),
+        key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0,
+        reverse=True,
+    )
+    for b in sar_bins:
+      if os.access(b, os.X_OK):
+        return b
+
+    # Trigger SAR extraction via --help if not yet extracted in /tmp
+    wrapper = self._get_jetski_bin()
+    try:
+      subprocess.run(
+          [wrapper, "--help"],
+          stdout=subprocess.DEVNULL,
+          stderr=subprocess.DEVNULL,
+          timeout=10,
+          check=False,
+      )
+    except Exception:
+      pass
+
+    sar_bins = sorted(
+        glob.glob(sar_pattern),
+        key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0,
+        reverse=True,
+    )
+    for b in sar_bins:
+      if os.access(b, os.X_OK):
+        return b
+    return wrapper
+
   def _read_tmux_global_env(self) -> Dict[str, str]:
     env_map: Dict[str, str] = {}
     res = subprocess.run(
@@ -298,36 +844,7 @@ class JetskiAgentBridge:
     return env_map
 
   def _discover_pane_ports(self, tag: str) -> List[str]:
-    if not tag or not self.is_agent_window_running(tag):
-      return []
-    window_target = f"{self.session_agent}:{tag}"
-    res = subprocess.run(
-        ["tmux", "list-panes", "-t", window_target, "-F", "#{pane_pid}"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        check=False,
-    )
-    if res.returncode != 0 or not res.stdout.strip():
-      return []
-    root_pids = [p.strip() for p in res.stdout.splitlines() if p.strip().isdigit()]
-    all_pids = set(root_pids)
-    frontier = list(root_pids)
-    while frontier:
-      curr = frontier.pop(0)
-      ch = subprocess.run(
-          ["pgrep", "-P", curr],
-          stdout=subprocess.PIPE,
-          stderr=subprocess.DEVNULL,
-          text=True,
-          check=False,
-      )
-      if ch.returncode == 0:
-        for cpid in ch.stdout.splitlines():
-          cpid = cpid.strip()
-          if cpid.isdigit() and cpid not in all_pids:
-            all_pids.add(cpid)
-            frontier.append(cpid)
+    all_pids = self._get_pane_pids(tag)
     if not all_pids:
       return []
     lsof_res = subprocess.run(
@@ -365,7 +882,7 @@ class JetskiAgentBridge:
     if cached and (now - cached[2]) < 10.0:
       return cached[0], cached[1]
 
-    jetski_bin = self._get_jetski_bin()
+    agentapi_bin = self._get_agentapi_bin()
     tmux_env = self._read_tmux_global_env()
     host_ls = os.environ.get("ANTIGRAVITY_LS_ADDRESS") or tmux_env.get(
         "ANTIGRAVITY_LS_ADDRESS", ""
@@ -375,19 +892,19 @@ class JetskiAgentBridge:
     )
 
     candidates: List[Tuple[str, str]] = []
-    if host_ls:
-      candidates.append((host_ls, host_csrf))
     for port in reversed(self._discover_pane_ports(tag)):
       candidates.append((f"localhost:{port}", f"axoloctl-{tag}"))
       if host_csrf:
         candidates.append((f"localhost:{port}", host_csrf))
+    if host_ls:
+      candidates.append((host_ls, host_csrf))
 
     probe_cid = self.get_conversation_id(tag)
     for addr, csrf in candidates:
       env = self._build_agentapi_env(addr, csrf)
       try:
         res = subprocess.run(
-            [jetski_bin, "agentapi", "get-conversation-metadata", probe_cid],
+            [agentapi_bin, "agentapi", "get-conversation-metadata", probe_cid],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -427,7 +944,7 @@ class JetskiAgentBridge:
     return env
 
   def _conversation_exists_on_ls(
-      self, jetski_bin: str, cid: str, env: Dict[str, str], cwd: str
+      self, agentapi_bin: str, cid: str, env: Dict[str, str], cwd: str
   ) -> bool:
     if not cid:
       return False
@@ -436,7 +953,7 @@ class JetskiAgentBridge:
     )
     try:
       res = subprocess.run(
-          [jetski_bin, "agentapi", "get-conversation-metadata", cid],
+          [agentapi_bin, "agentapi", "get-conversation-metadata", cid],
           cwd=cwd,
           stdout=subprocess.PIPE,
           stderr=subprocess.PIPE,
@@ -504,7 +1021,7 @@ class JetskiAgentBridge:
 
     wt_path = self.worktree_path(resolved_tag)
     cwd = wt_path if os.path.isdir(wt_path) else self.udmi_root
-    jetski_bin = self._get_jetski_bin()
+    agentapi_bin = self._get_agentapi_bin()
     ls_address, csrf_token = self._resolve_ls_credentials(resolved_tag)
     if not ls_address:
       raise RuntimeError(
@@ -515,10 +1032,10 @@ class JetskiAgentBridge:
     cid = self.get_conversation_id(resolved_tag)
 
     with self._lock:
-      if self._conversation_exists_on_ls(jetski_bin, cid, env, cwd):
+      if self._conversation_exists_on_ls(agentapi_bin, cid, env, cwd):
         baseline_step = self._get_last_transcript_step(cid)
         res = subprocess.run(
-            [jetski_bin, "agentapi", "send-message", cid, clean_prompt],
+            [agentapi_bin, "agentapi", "send-message", cid, clean_prompt],
             cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -548,7 +1065,7 @@ class JetskiAgentBridge:
       )
       res_new = subprocess.run(
           [
-              jetski_bin,
+              agentapi_bin,
               "agentapi",
               "new-conversation",
               f"--title=Axoloctl [{resolved_tag}]",
@@ -866,8 +1383,275 @@ class JetskiAgentBridge:
     }
 
 
+class HubRequestHandler(BaseHTTPRequestHandler):
+  """HTTP handler for the embedded Jetski Web Hub SPA and Language Server proxy."""
+
+  protocol_version = "HTTP/1.1"
+  bridge: Optional[JetskiAgentBridge] = None
+
+  _MIME_OVERRIDES = {
+      ".js": "application/javascript; charset=utf-8",
+      ".mjs": "application/javascript; charset=utf-8",
+      ".css": "text/css; charset=utf-8",
+      ".html": "text/html; charset=utf-8",
+      ".json": "application/json; charset=utf-8",
+      ".svg": "image/svg+xml",
+      ".wasm": "application/wasm",
+      ".mp3": "audio/mpeg",
+      ".ttf": "font/ttf",
+      ".woff2": "font/woff2",
+      ".ico": "image/x-icon",
+      ".png": "image/png",
+  }
+
+  def _extract_request_tag(self) -> str:
+    if self.bridge is None:
+      return ""
+    parsed = urlparse(self.path)
+    q_tag = (parse_qs(parsed.query).get("tag") or [""])[0].strip()
+    if q_tag:
+      return self.bridge._resolve_hub_tag(q_tag)
+
+    csrf_hdr = (self.headers.get("x-codeium-csrf-token") or "").strip()
+    if csrf_hdr.startswith("axoloctl-"):
+      suffix = csrf_hdr[len("axoloctl-") :].strip()
+      if suffix and suffix != "hub":
+        return self.bridge._resolve_hub_tag(suffix)
+
+    referer = (self.headers.get("Referer") or "").strip()
+    if referer:
+      ref_tag = (parse_qs(urlparse(referer).query).get("tag") or [""])[0].strip()
+      if ref_tag:
+        return self.bridge._resolve_hub_tag(ref_tag)
+
+    cookie_hdr = self.headers.get("Cookie") or ""
+    m = re.search(r"(?:^|;\s*)axoloctl_hub_tag=([^;\s]+)", cookie_hdr)
+    if m:
+      return self.bridge._resolve_hub_tag(m.group(1))
+
+    return self.bridge._resolve_hub_tag("")
+
+  def _is_rpc_or_api_path(self, path: str) -> bool:
+    return path.startswith((
+        "/exa.",
+        "/learning.",
+        "/proxy/",
+        "/clearcut_proxy",
+        "/healthz",
+        "/metrics",
+        "/debug/",
+        "/static/artifacts/",
+        "/connect-websocket",
+    ))
+
+  def _guess_mime_type(self, rel_path: str) -> str:
+    _, ext = os.path.splitext(rel_path.lower())
+    if ext in self._MIME_OVERRIDES:
+      return self._MIME_OVERRIDES[ext]
+    guessed, _ = mimetypes.guess_type(rel_path)
+    return guessed or "application/octet-stream"
+
+  def _send_json(self, status_code: int, payload: Dict[str, Any]) -> None:
+    raw = json.dumps(payload).encode("utf-8")
+    origin = self.headers.get("Origin") or "*"
+    self.send_response(status_code)
+    self.send_header("Content-Type", "application/json; charset=utf-8")
+    self.send_header("Content-Length", str(len(raw)))
+    self.send_header("Access-Control-Allow-Origin", origin)
+    self.send_header("Access-Control-Allow-Credentials", "true")
+    self.end_headers()
+    self.wfile.write(raw)
+
+  def _proxy_to_ls(self, method: str) -> None:
+    if self.bridge is None:
+      self._send_json(503, {"code": "unavailable", "message": "Hub bridge not initialized."})
+      return
+
+    tag = self._extract_request_tag()
+    ls_addr, csrf_token = self.bridge._resolve_ls_credentials(tag) if tag else ("", "")
+    if not ls_addr:
+      self._send_json(
+          503,
+          {
+              "code": "unavailable",
+              "message": f"No active Jetski Language Server found for session '{tag}'.",
+          },
+      )
+      return
+
+    content_len = int(self.headers.get("Content-Length", 0))
+    body = self.rfile.read(content_len) if content_len > 0 else b""
+
+    upstream_sock: Optional[socket.socket] = None
+    ls_host = "127.0.0.1"
+    ls_port = 0
+    for attempt in range(2):
+      if not ls_addr or ":" not in ls_addr:
+        break
+      host_part, port_part = ls_addr.rsplit(":", 1)
+      ls_host = (
+          "127.0.0.1"
+          if host_part in ("localhost", "127.0.0.1", "")
+          else host_part
+      )
+      try:
+        ls_port = int(port_part)
+        upstream_sock = socket.create_connection((ls_host, ls_port), timeout=5.0)
+        break
+      except (OSError, ValueError):
+        upstream_sock = None
+        if attempt == 0 and tag:
+          self.bridge._ls_cache.pop(tag, None)
+          ls_addr, csrf_token = self.bridge._resolve_ls_credentials(tag)
+
+    if upstream_sock is None:
+      self._send_json(
+          502,
+          {
+              "code": "unavailable",
+              "message": f"Failed to connect to Language Server ({ls_addr}) for session '{tag}'.",
+          },
+      )
+      return
+
+    is_upgrade = (
+        "upgrade" in (self.headers.get("Connection") or "").lower()
+        and bool(self.headers.get("Upgrade"))
+    )
+    hdr_lines = [f"{method} {self.path} HTTP/1.1"]
+    for k, v in self.headers.items():
+      kl = k.lower()
+      if kl in ("host", "connection", "x-codeium-csrf-token"):
+        continue
+      hdr_lines.append(f"{k}: {v}")
+    hdr_lines.append(f"Host: {ls_host}:{ls_port}")
+    if csrf_token:
+      hdr_lines.append(f"x-codeium-csrf-token: {csrf_token}")
+    hdr_lines.append("Connection: Upgrade" if is_upgrade else "Connection: close")
+    raw_req = ("\r\n".join(hdr_lines) + "\r\n\r\n").encode("utf-8") + body
+
+    try:
+      upstream_sock.sendall(raw_req)
+      self.close_connection = True
+      if is_upgrade:
+        sockets = [self.connection, upstream_sock]
+        while True:
+          rlist, _, _ = select.select(sockets, [], [], 300.0)
+          if not rlist:
+            break
+          closed = False
+          for s in rlist:
+            chunk = s.recv(65536)
+            if not chunk:
+              closed = True
+              break
+            target = upstream_sock if s is self.connection else self.connection
+            target.sendall(chunk)
+          if closed:
+            break
+      else:
+        while True:
+          rlist, _, _ = select.select([upstream_sock], [], [], 300.0)
+          if not rlist:
+            break
+          chunk = upstream_sock.recv(65536)
+          if not chunk:
+            break
+          self.wfile.write(chunk)
+          self.wfile.flush()
+    except (BrokenPipeError, ConnectionResetError, OSError):
+      pass
+    finally:
+      try:
+        upstream_sock.close()
+      except OSError:
+        pass
+
+  def do_OPTIONS(self) -> None:
+    origin = self.headers.get("Origin") or "*"
+    req_headers = (
+        self.headers.get("Access-Control-Request-Headers")
+        or "Content-Type, x-codeium-csrf-token, Connect-Protocol-Version, Connect-Timeout-Ms"
+    )
+    self.send_response(204)
+    self.send_header("Access-Control-Allow-Origin", origin)
+    self.send_header("Access-Control-Allow-Credentials", "true")
+    self.send_header(
+        "Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, HEAD"
+    )
+    self.send_header("Access-Control-Allow-Headers", req_headers)
+    self.send_header("Content-Length", "0")
+    self.end_headers()
+
+  def _handle_get_or_head(self, is_head: bool) -> None:
+    parsed = urlparse(self.path)
+    parsed_path = parsed.path
+    tag = self._extract_request_tag()
+
+    if parsed_path.startswith("/proxy/unleash"):
+      self._send_json(200, {"toggles": []})
+      return
+
+    if (
+        self._is_rpc_or_api_path(parsed_path)
+        or "upgrade" in (self.headers.get("Connection") or "").lower()
+    ):
+      self._proxy_to_ls("HEAD" if is_head else "GET")
+      return
+
+    bundle_files = self.bridge._load_web_bundle_files() if self.bridge else {}
+    rel_path = parsed_path.lstrip("/")
+
+    if rel_path in ("", "index.html"):
+      body = self.bridge._render_hub_index(tag) if self.bridge else b""
+      ctype = "text/html; charset=utf-8"
+    elif rel_path in bundle_files:
+      body = bundle_files[rel_path]
+      ctype = self._guess_mime_type(rel_path)
+    elif "." not in os.path.basename(rel_path):
+      body = self.bridge._render_hub_index(tag) if self.bridge else b""
+      ctype = "text/html; charset=utf-8"
+    else:
+      self.send_response(404)
+      self.send_header("Content-Length", "0")
+      self.send_header("Access-Control-Allow-Origin", "*")
+      self.end_headers()
+      return
+
+    self.send_response(200)
+    self.send_header("Content-Type", ctype)
+    self.send_header("Content-Length", str(len(body)))
+    self.send_header("Access-Control-Allow-Origin", "*")
+    self.end_headers()
+    if not is_head and body:
+      self.wfile.write(body)
+
+  def do_GET(self) -> None:
+    self._handle_get_or_head(is_head=False)
+
+  def do_HEAD(self) -> None:
+    self._handle_get_or_head(is_head=True)
+
+  def do_POST(self) -> None:
+    parsed_path = urlparse(self.path).path
+    if parsed_path.startswith("/proxy/unleash") or parsed_path == "/clearcut_proxy":
+      content_len = int(self.headers.get("Content-Length", 0))
+      if content_len > 0:
+        self.rfile.read(content_len)
+      self._send_json(200, {})
+      return
+    self._proxy_to_ls("POST")
+
+  def log_message(self, fmt: str, *args: Any) -> None:
+    pass
+
+
 def _render_ui_page(
-    config: AxoloctlConfig, ui_id: str, ui_label: str, active_tag: str = ""
+    config: AxoloctlConfig,
+    ui_id: str,
+    ui_label: str,
+    active_tag: str = "",
+    hub_port: int = 5387,
 ) -> bytes:
   """Renders the interactive HTML page for cliView, hubView, or apiView."""
   escaped_label = html.escape(ui_label)
@@ -896,17 +1680,21 @@ def _render_ui_page(
 
     if ui_id == "cliView":
       body_section = f"""
-        <div class="card">
-          <div class="card-header">
-            <h2>Dedicated Agent CLI Console (<code>{agent_window_ref}</code>)</h2>
-            <span id="cli-status-pill" class="pill">Connecting...</span>
+        <div class="view-shell">
+          <div class="toolbar">
+            <div class="toolbar-title" title="Worktree: {escaped_worktree} ({branch_ref}) | Attach: {attach_cmd}">
+              <code>{agent_window_ref}</code>
+              <span class="sr-meta">Session: <code id="bound-tag-label">{escaped_tag}</code> | <code id="bound-worktree-label">{escaped_worktree}</code></span>
+            </div>
+            <div class="toolbar-actions">
+              <span id="cli-status-pill" class="pill">Connecting...</span>
+              <button type="button" id="cli-restart-btn" class="key-btn" title="Restart Agent CLI in {agent_window_ref}">Restart</button>
+            </div>
           </div>
-          <p class="meta">Session: <code id="bound-tag-label">{escaped_tag}</code> | Worktree: <code id="bound-worktree-label">{escaped_worktree}</code> (<code>{branch_ref}</code>)</p>
-          <p class="meta">Terminal attach: <code>{attach_cmd}</code> | Entrypoint: <code>{escaped_entry}</code></p>
-          <pre class="terminal" id="cli-output">$ cd {escaped_worktree}
-[axoloctl:{escaped_tag}] Connecting to tmux pane {agent_window_ref}...</pre>
-          <form id="cli-form" class="chat-form" style="margin-top:8px;">
-            <input type="text" id="cli-input" placeholder="Send command or prompt to {agent_window_ref}..." autocomplete="off" />
+          <div id="cli-xterm-container" class="xterm-wrapper"></div>
+          <pre class="terminal" id="cli-output" style="display:none;">[axoloctl:{escaped_tag}] Attached to {agent_window_ref}</pre>
+          <form id="cli-form" class="chat-form" style="display:none;">
+            <input type="text" id="cli-input" placeholder="Send prompt or command to {agent_window_ref}..." autocomplete="off" />
             <button type="submit">Send</button>
           </form>
           <div class="key-bar">
@@ -920,36 +1708,41 @@ def _render_ui_page(
         </div>
       """
     elif ui_id == "hubView":
+      hub_default_url = f"http://localhost:{hub_port}/?tag={escaped_tag}&hostTheme=dark"
       body_section = f"""
-        <div class="card">
-          <div class="card-header">
-            <h2>Axoloctl Agent Web Hub (<code>{agent_window_ref}</code>)</h2>
-            <span id="hub-status-pill" class="pill">Checking Hub...</span>
-          </div>
-          <p class="meta">Session: <code id="bound-tag-label">{escaped_tag}</code> (branch <code>{branch_ref}</code>) | Worktree: <code id="bound-worktree-label">{escaped_worktree}</code></p>
-          <p class="meta">MCP Servers: <code>{html.escape(mcp_names)}</code> | App: <code>{escaped_subpath}</code> (<code>{escaped_entry}</code>)</p>
-          <div class="key-bar" style="margin-bottom:8px;">
-            <button type="button" id="hub-start-btn" class="action-btn">Launch / Rebind Jetski Hub</button>
-            <a id="hub-open-link" href="http://localhost:5387/" target="_blank" class="key-btn" style="display:inline-block;line-height:18px;">Open Hub in New Tab ↗</a>
+        <div class="view-shell">
+          <div class="toolbar">
+            <div class="toolbar-title" title="Worktree: {escaped_worktree} ({branch_ref}) | MCP: {html.escape(mcp_names)}">
+              <code>{agent_window_ref}</code>
+              <span class="sr-meta"><code id="bound-tag-label">{escaped_tag}</code> <code id="bound-worktree-label">{escaped_worktree}</code></span>
+            </div>
+            <div class="toolbar-actions">
+              <span id="hub-status-pill" class="pill ok">● Hub Listening (:{hub_port})</span>
+              <button type="button" id="hub-start-btn" class="action-btn">Reload Hub</button>
+              <a id="hub-open-link" href="{hub_default_url}" target="_blank" class="key-btn" title="Open Hub in New Tab">↗</a>
+            </div>
           </div>
           <div id="hub-error-box" class="error-banner" style="display:none;"></div>
-          <iframe id="hub-iframe" class="hub-frame" src="about:blank" style="display:none;"></iframe>
+          <iframe id="hub-iframe" class="hub-frame" src="{hub_default_url}" style="display:block;"></iframe>
         </div>
       """
     else:
       body_section = f"""
-        <div class="card">
-          <div class="card-header">
-            <h2>Agent Chat — Dedicated Agent (<code>{agent_window_ref}</code>)</h2>
-            <div style="display:flex;gap:6px;align-items:center;">
+        <div class="view-shell">
+          <div class="toolbar">
+            <div class="toolbar-title" title="Branch: {branch_ref} | Worktree: {escaped_worktree}">
+              <code>{agent_window_ref}</code>
+              <code id="chat-conv-id" style="color:#94a3b8;">...</code>
+              <span class="sr-meta"><code id="bound-tag-label">{escaped_tag}</code></span>
+            </div>
+            <div class="toolbar-actions">
               <span id="chat-status-pill" class="pill">● Ready</span>
               <button type="button" id="chat-reset-btn" class="key-btn" title="Start a fresh conversation">New Chat</button>
             </div>
           </div>
-          <p class="meta">Session: <code id="bound-tag-label">{escaped_tag}</code> | Branch: <code>{branch_ref}</code> | Conv: <code id="chat-conv-id">...</code></p>
           <div id="chat-error-box" class="error-banner" style="display:none;"></div>
           <div id="chat-log" class="chat-log">
-            <div class="msg agent">Axoloctl Agent [<code>{escaped_tag}</code>] bound to isolated worktree <code>{branch_ref}</code>. Send a prompt below to communicate via <code>jetski agentapi</code>.</div>
+            <div class="msg agent">Agent [<code>{escaped_tag}</code>] bound to worktree <code>{branch_ref}</code>.</div>
           </div>
           <form id="chat-form" class="chat-form">
             <input type="text" id="chat-input" placeholder="Ask agent [{escaped_tag}] to inspect or modify {escaped_subpath}..." autocomplete="off" required />
@@ -960,16 +1753,15 @@ def _render_ui_page(
   else:
     if ui_id == "cliView":
       body_section = """
-        <div class="card">
-          <div class="card-header">
-            <h2>Dedicated Agent CLI Console — No Correlated Viewer</h2>
+        <div class="view-shell">
+          <div class="toolbar">
+            <div class="toolbar-title">CLI Console — <code id="bound-tag-label">None</code></div>
             <span id="cli-status-pill" class="pill">○ Uncorrelated</span>
           </div>
-          <p class="meta">Session: <code id="bound-tag-label">None</code> | No correlated viewer in active tab</p>
-          <pre class="terminal" id="cli-output" style="color:#94a3b8;">No correlated Axoloctl viewer in the active browser tab.
+          <pre class="terminal" id="cli-output" style="color:#94a3b8;">No correlated viewer in active tab.
 
 Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to attach its dedicated agent CLI console.</pre>
-          <form id="cli-form" class="chat-form" style="margin-top:8px;">
+          <form id="cli-form" class="chat-form" style="display:none;">
             <input type="text" id="cli-input" placeholder="No correlated viewer in active tab" disabled />
             <button type="submit" disabled>Send</button>
           </form>
@@ -977,28 +1769,28 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
       """
     elif ui_id == "hubView":
       body_section = """
-        <div class="card">
-          <div class="card-header">
-            <h2>Axoloctl Agent Web Hub — No Correlated Viewer</h2>
+        <div class="view-shell">
+          <div class="toolbar">
+            <div class="toolbar-title">Web Hub — <code id="bound-tag-label">None</code></div>
             <span id="hub-status-pill" class="pill">○ Uncorrelated</span>
           </div>
-          <p class="meta">Session: <code id="bound-tag-label">None</code> | No correlated viewer in active tab</p>
-          <div class="msg agent" style="border-style:dashed;color:#94a3b8;margin-top:8px;"><strong>No correlated viewer in active tab.</strong><br>There is no Axoloctl session associated with the current browser tab. Switch to an active session tab (e.g. <code>http://&lt;tag&gt;.localhost:9290</code>) to view its Web Hub.</div>
+          <div style="padding:8px;flex:1;">
+            <div class="msg agent" style="border-style:dashed;color:#94a3b8;"><strong>No correlated viewer in active tab.</strong><br>Switch to an active session tab (e.g. <code>http://&lt;tag&gt;.localhost:9290</code>) to view its Web Hub.</div>
+          </div>
         </div>
       """
     else:
       body_section = """
-        <div class="card">
-          <div class="card-header">
-            <h2>Agent Chat — No Correlated Viewer</h2>
-            <div style="display:flex;gap:6px;align-items:center;">
+        <div class="view-shell">
+          <div class="toolbar">
+            <div class="toolbar-title">Agent Chat — <code id="bound-tag-label">None</code></div>
+            <div class="toolbar-actions">
               <span id="chat-status-pill" class="pill">○ Uncorrelated</span>
               <button type="button" id="chat-reset-btn" class="key-btn" disabled>New Chat</button>
             </div>
           </div>
-          <p class="meta">Session: <code id="bound-tag-label">None</code> | No correlated viewer in active tab</p>
           <div id="chat-log" class="chat-log">
-            <div class="msg agent" style="border-style:dashed;color:#94a3b8;"><strong>No correlated viewer in active tab.</strong><br>There is no Axoloctl session associated with the current browser tab. Switch to an active session tab (e.g. <code>http://&lt;tag&gt;.localhost:9290</code>) to view and interact with its Agent Chat.</div>
+            <div class="msg agent" style="border-style:dashed;color:#94a3b8;"><strong>No correlated viewer in active tab.</strong><br>Switch to an active session tab (e.g. <code>http://&lt;tag&gt;.localhost:9290</code>) to interact with its Agent Chat.</div>
           </div>
           <form id="chat-form" class="chat-form">
             <input type="text" id="chat-input" placeholder="No correlated viewer in active tab" autocomplete="off" disabled />
@@ -1007,48 +1799,90 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
         </div>
       """
 
+  xterm_head = (
+      """
+  <link rel="stylesheet" href="/vendor/xterm/xterm.css" />
+  <script src="/vendor/xterm/xterm.js"></script>
+  <script src="/vendor/xterm/xterm-addon-fit.js"></script>
+"""
+      if ui_id == "cliView"
+      else ""
+  )
+
   page_html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <title>Axoloctl — {escaped_label}</title>
+  <link rel="icon" type="image/svg+xml" href="/ui/axoloctl.svg" />{xterm_head}
   <style>
-    body {{
+    *, *::before, *::after {{
+      box-sizing: border-box;
+    }}
+    html, body {{
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       margin: 0;
-      padding: 12px;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
       background: #0f172a;
       color: #e2e8f0;
     }}
-    h1 {{ font-size: 15px; margin: 0 0 10px 0; color: #38bdf8; }}
-    h2 {{ font-size: 13px; margin: 0; color: #f8fafc; }}
-    .card {{
-      background: #1e293b;
-      border: 1px solid #334155;
-      border-radius: 6px;
-      padding: 10px;
-      margin-bottom: 10px;
+    .sr-meta {{
+      display: none;
     }}
-    .card-header {{
+    .view-shell {{
+      flex: 1;
+      min-height: 0;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }}
+    .toolbar {{
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 6px;
+      gap: 6px;
+      padding: 4px 8px;
+      background: #0f172a;
+      border-bottom: 1px solid #1e293b;
+      flex-shrink: 0;
+      min-width: 0;
     }}
-    .meta {{
-      margin: 3px 0;
+    .toolbar-title {{
+      display: flex;
+      align-items: center;
+      gap: 4px;
       font-size: 11px;
-      color: #94a3b8;
-      word-break: break-all;
+      font-weight: 600;
+      color: #cbd5e1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .toolbar-actions {{
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+      min-width: 0;
     }}
     .pill {{
-      font-size: 11px;
-      padding: 2px 8px;
+      font-size: 10px;
+      padding: 2px 6px;
       border-radius: 999px;
-      background: #0f172a;
+      background: #020617;
       border: 1px solid #334155;
       color: #38bdf8;
       white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 165px;
     }}
     .pill.busy {{
       color: #fbbf24;
@@ -1059,41 +1893,64 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
       border-color: #16a34a;
     }}
     code {{
-      background: #0f172a;
+      background: #1e293b;
       padding: 1px 4px;
-      border-radius: 4px;
+      border-radius: 3px;
       color: #7dd3fc;
       font-size: 11px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }}
     .terminal {{
+      flex: 1;
+      min-height: 0;
+      width: 100%;
       background: #020617;
       color: #4ade80;
       padding: 8px;
-      border-radius: 4px;
       font-size: 11px;
       line-height: 1.35;
-      height: 260px;
       overflow-y: auto;
-      overflow-x: auto;
+      overflow-x: hidden;
       white-space: pre-wrap;
-      word-break: break-word;
-      margin: 6px 0 0 0;
-      border: 1px solid #1e293b;
+      overflow-wrap: anywhere;
+      margin: 0;
+    }}
+    .xterm-wrapper {{
+      flex: 1;
+      min-height: 0;
+      width: 100%;
+      background: #020617;
+      padding: 2px 4px;
+      margin: 0;
+      overflow: hidden;
+    }}
+    .xterm-wrapper .xterm-viewport {{
+      overflow: hidden !important;
+      scrollbar-width: none !important;
+    }}
+    .xterm-wrapper .xterm-viewport::-webkit-scrollbar {{
+      display: none !important;
+      width: 0 !important;
+      height: 0 !important;
     }}
     .key-bar {{
       display: flex;
-      gap: 6px;
-      margin-top: 6px;
+      gap: 4px;
+      padding: 4px 8px;
+      background: #0f172a;
+      border-top: 1px solid #1e293b;
       flex-wrap: wrap;
+      flex-shrink: 0;
     }}
     .key-btn, .action-btn {{
-      background: #0f172a;
+      background: #1e293b;
       color: #cbd5e1;
       border: 1px solid #475569;
-      padding: 4px 8px;
+      padding: 2px 7px;
       border-radius: 4px;
       font-size: 11px;
       cursor: pointer;
+      white-space: nowrap;
     }}
     .action-btn {{
       background: #0284c7;
@@ -1104,50 +1961,75 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
       filter: brightness(1.15);
     }}
     .hub-frame {{
+      flex: 1;
+      min-height: 0;
       width: 100%;
-      height: 360px;
-      border: 1px solid #334155;
-      border-radius: 4px;
+      border: none;
       background: #020617;
     }}
     .error-banner {{
       background: #450a0a;
-      border: 1px solid #dc2626;
+      border-bottom: 1px solid #dc2626;
       color: #fca5a5;
-      padding: 6px 8px;
-      border-radius: 4px;
+      padding: 5px 8px;
       font-size: 11px;
-      margin-bottom: 8px;
       white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      flex-shrink: 0;
+    }}
+    .sessions-footer {{
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      background: #090d16;
+      border-top: 1px solid #1e293b;
+      font-size: 10px;
+      color: #64748b;
+      flex-shrink: 0;
+      min-width: 0;
+      overflow: hidden;
+    }}
+    #sessions-list {{
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
     }}
     .session-item {{
-      display: flex;
-      justify-content: space-between;
+      display: inline-flex;
       align-items: center;
-      padding: 6px 0;
-      border-bottom: 1px solid #334155;
-      font-size: 12px;
+      gap: 4px;
+      font-size: 10px;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }}
-    .session-item:last-child {{ border-bottom: none; }}
     a {{ color: #38bdf8; text-decoration: none; }}
     a:hover {{ text-decoration: underline; }}
     .chat-log {{
+      flex: 1;
+      min-height: 0;
+      width: 100%;
       background: #020617;
-      border: 1px solid #334155;
-      border-radius: 4px;
-      height: 250px;
       overflow-y: auto;
+      overflow-x: hidden;
       padding: 8px;
-      margin: 6px 0 8px 0;
+      margin: 0;
       font-size: 12px;
     }}
     .msg {{
-      margin-bottom: 8px;
-      padding: 6px 10px;
+      margin-bottom: 6px;
+      padding: 6px 8px;
       border-radius: 6px;
       line-height: 1.4;
       white-space: pre-wrap;
+      overflow-wrap: anywhere;
       word-break: break-word;
+      max-width: 100%;
     }}
     .msg.agent {{
       background: #1e293b;
@@ -1157,15 +2039,24 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
     .msg.user {{
       background: #0369a1;
       color: #ffffff;
-      margin-left: 20%;
+      margin-left: 12%;
     }}
-    .chat-form {{ display: flex; gap: 6px; }}
+    .chat-form {{
+      display: flex;
+      gap: 6px;
+      padding: 6px 8px;
+      background: #0f172a;
+      border-top: 1px solid #1e293b;
+      flex-shrink: 0;
+      min-width: 0;
+    }}
     .chat-form input {{
       flex: 1;
+      min-width: 0;
       background: #020617;
       border: 1px solid #475569;
       color: #f8fafc;
-      padding: 6px 8px;
+      padding: 5px 8px;
       border-radius: 4px;
       font-size: 12px;
     }}
@@ -1173,10 +2064,11 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
       background: #0284c7;
       color: white;
       border: none;
-      padding: 6px 12px;
+      padding: 5px 10px;
       border-radius: 4px;
       cursor: pointer;
       font-size: 12px;
+      flex-shrink: 0;
     }}
     .chat-form button:disabled {{
       opacity: 0.5;
@@ -1200,24 +2092,28 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
       border: 1px dashed #b45309;
       border-left: 3px solid #fbbf24;
       border-radius: 6px;
-      padding: 8px 10px;
-      margin-bottom: 8px;
+      padding: 6px 8px;
+      margin-bottom: 6px;
       font-size: 11px;
       color: #e2e8f0;
+      max-width: 100%;
+      overflow: hidden;
     }}
     .activity-header {{
       display: flex;
       justify-content: space-between;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       color: #fbbf24;
       font-weight: 600;
+      min-width: 0;
     }}
     .activity-title {{
       display: flex;
       align-items: center;
       gap: 6px;
-      word-break: break-word;
+      min-width: 0;
+      overflow-wrap: anywhere;
     }}
     .activity-elapsed {{
       color: #94a3b8;
@@ -1225,29 +2121,31 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
       font-weight: 400;
       font-size: 10px;
       white-space: nowrap;
+      flex-shrink: 0;
     }}
     .activity-thinking {{
       color: #94a3b8;
       font-style: italic;
       margin-top: 4px;
       line-height: 1.35;
+      overflow-wrap: anywhere;
     }}
     .activity-steps {{
-      margin-top: 5px;
+      margin-top: 4px;
       padding-top: 4px;
       border-top: 1px solid #1e293b;
       color: #cbd5e1;
       font-size: 10px;
-      line-height: 1.45;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
     }}
   </style>
 </head>
 <body>
-  <h1>{escaped_label}</h1>
   {body_section}
-  <div class="card">
-    <h2>Active 1:1 Agent &amp; Web Server Sessions (Gateway :{config.host_port})</h2>
-    <div id="sessions-list" style="margin-top:6px;">Loading active sessions...</div>
+  <div class="sessions-footer">
+    <span>Sessions:</span>
+    <div id="sessions-list">Loading...</div>
   </div>
   <script>
     const UI_ID = {json.dumps(ui_id)};
@@ -1260,77 +2158,167 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
         const data = await resp.json();
         const entries = Object.entries(data.sessions || {{}});
         if (entries.length === 0) {{
-          container.innerHTML = "<em>No active web server sessions.</em>";
+          container.innerHTML = "<em>None</em>";
           return;
         }}
         const portPart = window.location.port ? `:${{window.location.port}}` : "";
         container.innerHTML = entries.map(([tag, info]) => {{
           const isCorrelated = currentTag && currentTag === tag;
           const badge = isCorrelated
-            ? `<span style="background:#065f46;color:#6ee7b7;border:1px solid #059669;padding:1px 6px;border-radius:4px;font-size:10px;margin-left:6px;">ACTIVE</span>`
-            : "";
-          const agentBadge = info.agent_running
-            ? `<span style="background:#1e3a8a;color:#93c5fd;border:1px solid #2563eb;padding:1px 6px;border-radius:4px;font-size:10px;margin-left:6px;">agent:${{tag}}</span>`
+            ? `<span style="background:#065f46;color:#6ee7b7;border:1px solid #059669;padding:0 4px;border-radius:3px;font-size:9px;">ACTIVE</span>`
             : "";
           const vhostUrl = `${{window.location.protocol}}//${{tag}}.localhost${{portPart}}`;
           const uiSwitchUrl = `${{window.location.pathname}}?tag=${{encodeURIComponent(tag)}}`;
-          return `<div class="session-item">
-            <span><a href="${{uiSwitchUrl}}"><strong>${{tag}}</strong></a> (<code>${{info.commit.slice(0, 8)}}</code>)${{agentBadge}}${{badge}}</span>
-            <a href="${{vhostUrl}}" target="_blank">${{vhostUrl}}</a>
-          </div>`;
-        }}).join("");
+          return `<span class="session-item">
+            <a href="${{uiSwitchUrl}}"><strong>${{tag}}</strong></a>
+            <code>${{info.commit.slice(0, 7)}}</code>${{badge}}
+            <a href="${{vhostUrl}}" target="_blank" title="Open ${{vhostUrl}}">↗</a>
+          </span>`;
+        }}).join(" · ");
       }} catch (e) {{
-        container.innerHTML = "<em>Unable to reach web_mcp daemon.</em>";
+        container.innerHTML = "<em>Offline</em>";
       }}
     }}
 
     // -------------------------------------------------------------------------
-    // Technique 1: cliView polling & terminal input
+    // Technique 1: cliView interactive xterm.js terminal & tmux pane bridge
     // -------------------------------------------------------------------------
-    let lastCliOutput = "";
-    async function pollCliView() {{
-      if (!currentTag) return;
-      const pre = document.getElementById("cli-output");
-      const pill = document.getElementById("cli-status-pill");
-      if (!pre) return;
+    let cliTerm = null;
+    let cliFitAddon = null;
+    let cliOffset = 0;
+    let cliPolling = false;
+    let cliInputBuffer = [];
+    let cliFlushTimeout = null;
+    let lastCols = 0;
+    let lastRows = 0;
+
+    async function flushCliHexKeys() {{
+      cliFlushTimeout = null;
+      if (!currentTag || cliInputBuffer.length === 0) return;
+      const keysToSend = cliInputBuffer;
+      cliInputBuffer = [];
       try {{
-        const qs = `?tag=${{encodeURIComponent(currentTag)}}`;
+        await fetch("/api/cli", {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json" }},
+          body: JSON.stringify({{ tag: currentTag, hexKeys: keysToSend }}),
+        }});
+      }} catch (e) {{}}
+    }}
+
+    async function syncCliSize() {{
+      if (!currentTag || !cliTerm || !cliFitAddon) return;
+      try {{
+        cliFitAddon.fit();
+        const cols = cliTerm.cols;
+        const rows = cliTerm.rows;
+        if (cols && rows && (cols !== lastCols || rows !== lastRows)) {{
+          lastCols = cols;
+          lastRows = rows;
+          await fetch("/api/cli", {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify({{ tag: currentTag, cols, rows }}),
+          }});
+        }}
+      }} catch (e) {{}}
+    }}
+
+    async function pollCliView() {{
+      if (!currentTag || cliPolling) return;
+      cliPolling = true;
+      const pill = document.getElementById("cli-status-pill");
+      try {{
+        const qs = `?tag=${{encodeURIComponent(currentTag)}}&offset=${{cliOffset}}`;
         const resp = await fetch(`/api/cli${{qs}}`);
         const data = await resp.json();
         if (pill) {{
-          pill.textContent = data.running ? `● Live (${{data.window}})` : "○ Stopped";
+          pill.textContent = data.running ? "● Live" : "○ Stopped";
+          pill.title = data.window || "";
           pill.className = data.running ? "pill ok" : "pill";
         }}
-        if (typeof data.output === "string" && data.output !== lastCliOutput) {{
-          const nearBottom = (pre.scrollHeight - pre.scrollTop - pre.clientHeight) < 40;
-          lastCliOutput = data.output;
-          pre.textContent = data.output;
-          if (nearBottom) pre.scrollTop = pre.scrollHeight;
+        if (cliTerm) {{
+          if (data.cleared) {{
+            cliTerm.clear();
+          }}
+          if (data.data) {{
+            const binStr = atob(data.data);
+            const bytes = new Uint8Array(binStr.length);
+            for (let i = 0; i < binStr.length; i++) {{
+              bytes[i] = binStr.charCodeAt(i);
+            }}
+            cliTerm.write(bytes);
+          }}
+          if (typeof data.offset === "number") {{
+            cliOffset = data.offset;
+          }}
         }}
       }} catch (e) {{
         if (pill) pill.textContent = "Disconnected";
+      }} finally {{
+        cliPolling = false;
       }}
     }}
 
     async function sendCliPayload(payload) {{
       if (!currentTag) return;
       try {{
-        const resp = await fetch("/api/cli", {{
+        await fetch("/api/cli", {{
           method: "POST",
           headers: {{ "Content-Type": "application/json" }},
           body: JSON.stringify({{ tag: currentTag, ...payload }}),
         }});
-        const data = await resp.json();
-        const pre = document.getElementById("cli-output");
-        if (pre && typeof data.output === "string") {{
-          lastCliOutput = data.output;
-          pre.textContent = data.output;
-          pre.scrollTop = pre.scrollHeight;
-        }}
+        if (cliTerm) cliTerm.focus();
       }} catch (e) {{}}
     }}
 
     if (UI_ID === "cliView" && currentTag) {{
+      const xtermContainer = document.getElementById("cli-xterm-container");
+      if (xtermContainer && window.Terminal && window.FitAddon) {{
+        cliTerm = new window.Terminal({{
+          cursorBlink: true,
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace',
+          fontSize: 12,
+          theme: {{
+            background: "#020617",
+            foreground: "#e2e8f0",
+            cursor: "#38bdf8",
+            selectionBackground: "rgba(56, 189, 248, 0.3)",
+          }},
+          convertEol: false,
+          scrollback: 0,
+        }});
+        cliFitAddon = new window.FitAddon.FitAddon();
+        cliTerm.loadAddon(cliFitAddon);
+        cliTerm.open(xtermContainer);
+
+        cliTerm.onData((data) => {{
+          const encoder = new TextEncoder();
+          const bytes = encoder.encode(data);
+          const hexArray = Array.from(bytes).map((b) =>
+            b.toString(16).padStart(2, "0")
+          );
+          cliInputBuffer.push(...hexArray);
+          if (!cliFlushTimeout) {{
+            cliFlushTimeout = setTimeout(flushCliHexKeys, 15);
+          }}
+        }});
+
+        let resizeTimer = null;
+        const ro = new ResizeObserver(() => {{
+          if (resizeTimer) clearTimeout(resizeTimer);
+          resizeTimer = setTimeout(syncCliSize, 100);
+        }});
+        ro.observe(xtermContainer);
+
+        (async () => {{
+          await syncCliSize();
+          await pollCliView();
+          setInterval(pollCliView, 200);
+          cliTerm.focus();
+        }})();
+      }}
+
       const cliForm = document.getElementById("cli-form");
       if (cliForm) {{
         cliForm.addEventListener("submit", async (ev) => {{
@@ -1341,13 +2329,24 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
           await sendCliPayload({{ text, submit: true }});
         }});
       }}
+      const restartBtn = document.getElementById("cli-restart-btn");
+      if (restartBtn) {{
+        restartBtn.addEventListener("click", async () => {{
+          restartBtn.disabled = true;
+          try {{
+            if (cliTerm) cliTerm.clear();
+            cliOffset = 0;
+            await sendCliPayload({{ action: "restart" }});
+          }} finally {{
+            restartBtn.disabled = false;
+          }}
+        }});
+      }}
       document.querySelectorAll(".key-btn[data-key]").forEach((btn) => {{
         btn.addEventListener("click", () => {{
           sendCliPayload({{ key: btn.getAttribute("data-key") }});
         }});
       }});
-      pollCliView();
-      setInterval(pollCliView, 1000);
     }}
 
     // -------------------------------------------------------------------------
@@ -1389,17 +2388,19 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
       if (startBtn) {{
         startBtn.addEventListener("click", async () => {{
           startBtn.disabled = true;
-          startBtn.textContent = "Launching Hub...";
+          startBtn.textContent = "Reloading...";
           try {{
             await fetch("/api/hub/start", {{
               method: "POST",
               headers: {{ "Content-Type": "application/json" }},
               body: JSON.stringify({{ tag: currentTag }}),
             }});
+            const iframe = document.getElementById("hub-iframe");
+            if (iframe) iframe.setAttribute("src", "about:blank");
             await pollHubStatus();
           }} finally {{
             startBtn.disabled = false;
-            startBtn.textContent = "Launch / Rebind Jetski Hub";
+            startBtn.textContent = "Reload Hub";
           }}
         }});
       }}
@@ -1701,10 +2702,26 @@ class UIHostHandler(BaseHTTPRequestHandler):
         forward_headers[k] = v
     forward_headers["Connection"] = "close"
 
-    conn = http.client.HTTPConnection("127.0.0.1", session_port, timeout=60)
+    conn: Optional[http.client.HTTPConnection] = None
     try:
-      conn.request(method, self.path, body=body, headers=forward_headers)
-      upstream = conn.getresponse()
+      upstream = None
+      last_err: Optional[Exception] = None
+      for attempt in range(6):
+        conn = http.client.HTTPConnection("127.0.0.1", session_port, timeout=60)
+        try:
+          conn.request(method, self.path, body=body, headers=forward_headers)
+          upstream = conn.getresponse()
+          break
+        except ConnectionRefusedError as e:
+          last_err = e
+          conn.close()
+          conn = None
+          if attempt < 5:
+            time.sleep(0.25)
+      if upstream is None:
+        raise last_err or ConnectionRefusedError(
+            f"Connection refused on port {session_port}"
+        )
 
       content_type = (upstream.getheader("Content-Type") or "").lower()
       is_sse = "text/event-stream" in content_type
@@ -1753,7 +2770,8 @@ class UIHostHandler(BaseHTTPRequestHandler):
           },
       )
     finally:
-      conn.close()
+      if conn is not None:
+        conn.close()
 
   def do_OPTIONS(self) -> None:
     vhost_tag = self._extract_vhost_tag()
@@ -1822,7 +2840,9 @@ class UIHostHandler(BaseHTTPRequestHandler):
     except Exception as e:
       self._send_json(502, {"error": f"Failed to reach web_mcp daemon: {e}"})
 
-  def _proxy_webmcp_post(self, target_path: str, body: bytes) -> None:
+  def _proxy_webmcp_post(
+      self, target_path: str, body: bytes, timeout: float = 5.0
+  ) -> None:
     cfg = self.config
     target_url = f"http://127.0.0.1:{cfg.webmcp_port}{target_path}"
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -1833,7 +2853,7 @@ class UIHostHandler(BaseHTTPRequestHandler):
         method="POST",
     )
     try:
-      with opener.open(req, timeout=5.0) as resp:
+      with opener.open(req, timeout=timeout) as resp:
         raw = resp.read()
         self.send_response(resp.status)
         self.send_header("Content-Type", "application/json")
@@ -1864,6 +2884,50 @@ class UIHostHandler(BaseHTTPRequestHandler):
     query_params = parse_qs(parsed.query)
     tag_param = (query_params.get("tag") or [""])[0].strip()
 
+    if parsed_path in (
+        "/vendor/xterm/xterm.js",
+        "/vendor/xterm/xterm-addon-fit.js",
+        "/vendor/xterm/xterm.css",
+    ):
+      fname = os.path.basename(parsed_path)
+      fpath = os.path.join(
+          UDMI_ROOT, "gummi", "src", "static", "vendor", "xterm", fname
+      )
+      if os.path.exists(fpath):
+        with open(fpath, "rb") as f:
+          raw = f.read()
+        ctype = (
+            "text/css; charset=utf-8"
+            if fname.endswith(".css")
+            else "application/javascript; charset=utf-8"
+        )
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(raw)
+        return
+
+    if parsed_path in ("/ui/axoloctl.svg", "/favicon.ico"):
+      icon_dir = os.path.join(UDMI_ROOT, "mcp", "axoloctl", "extension", "icons")
+      if parsed_path == "/ui/axoloctl.svg":
+        icon_path = os.path.join(icon_dir, "axoloctl.svg")
+        ctype = "image/svg+xml; charset=utf-8"
+      else:
+        icon_path = os.path.join(icon_dir, "icon32.png")
+        ctype = "image/png"
+      if os.path.exists(icon_path):
+        with open(icon_path, "rb") as f:
+          raw = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(raw)
+        return
+
     if parsed_path in ("/api/status", "/status"):
       self._proxy_webmcp_get("/status")
       return
@@ -1874,7 +2938,15 @@ class UIHostHandler(BaseHTTPRequestHandler):
       return
 
     if parsed_path == "/api/cli":
-      self._send_json(200, self.get_bridge().capture_cli(tag_param))
+      offset_val: Optional[int] = None
+      if "offset" in query_params:
+        try:
+          offset_val = int(query_params["offset"][0])
+        except ValueError:
+          offset_val = 0
+      self._send_json(
+          200, self.get_bridge().capture_cli(tag_param, offset=offset_val)
+      )
       return
 
     if parsed_path == "/api/hub/status":
@@ -1912,8 +2984,17 @@ class UIHostHandler(BaseHTTPRequestHandler):
 
     for item in cfg.uis:
       if parsed_path == item.path:
-        resolved_tag = self.get_bridge().resolve_default_tag(tag_param)
-        body = _render_ui_page(cfg, item.id, item.label, active_tag=resolved_tag)
+        bridge = self.get_bridge()
+        resolved_tag = bridge.resolve_default_tag(tag_param)
+        if item.id == "hubView":
+          bridge.get_hub_status(resolved_tag)
+        body = _render_ui_page(
+            cfg,
+            item.id,
+            item.label,
+            active_tag=resolved_tag,
+            hub_port=bridge.hub_port,
+        )
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -1945,6 +3026,12 @@ class UIHostHandler(BaseHTTPRequestHandler):
     parsed = urlparse(self.path)
     parsed_path = parsed.path
 
+    if parsed_path in ("/api/sessions", "/sessions"):
+      content_length = int(self.headers.get("Content-Length", 0))
+      post_data = self.rfile.read(content_length)
+      self._proxy_webmcp_post("/sessions", post_data, timeout=30.0)
+      return
+
     if parsed_path in ("/api/telemetry", "/telemetry"):
       content_length = int(self.headers.get("Content-Length", 0))
       post_data = self.rfile.read(content_length)
@@ -1954,11 +3041,29 @@ class UIHostHandler(BaseHTTPRequestHandler):
     if parsed_path == "/api/cli":
       try:
         payload = self._read_json_body()
+        raw_hex = payload.get("hexKeys")
+        hex_keys = (
+            [str(k) for k in raw_hex] if isinstance(raw_hex, list) else None
+        )
+        cols = (
+            int(payload["cols"])
+            if "cols" in payload and payload["cols"] is not None
+            else None
+        )
+        rows = (
+            int(payload["rows"])
+            if "rows" in payload and payload["rows"] is not None
+            else None
+        )
         res = self.get_bridge().send_cli_input(
             tag=str(payload.get("tag", "")),
             text=str(payload.get("text", "")),
             key=str(payload.get("key", "")),
             submit=bool(payload.get("submit", True)),
+            hex_keys=hex_keys,
+            cols=cols,
+            rows=rows,
+            action=str(payload.get("action", "")),
         )
         self._send_json(200, res)
       except ValueError as e:
@@ -2133,6 +3238,7 @@ def main() -> None:
   UIHostHandler.sessions_dir = os.path.join(
       UDMI_ROOT, "var", "axoloctl", "sessions"
   )
+  UIHostHandler.get_bridge()._ensure_hub_server()
 
   server = ThreadingHTTPServer(("127.0.0.1", config.host_port), UIHostHandler)
   server.allow_reuse_address = True

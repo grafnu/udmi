@@ -1,0 +1,105 @@
+#!/bin/bash -e
+#
+# Starts the Axoloctl control plane (web_mcp + ui_host) and deploys an initial
+# 1:1 Managed Web Server and paired Agent session for the configured application.
+#
+# Usage: bin/start_axoloctl <config_file> [tag] [project_spec]
+#
+
+UDMI_ROOT=$(cd "$(dirname "$(realpath "$0")")/.." && pwd)
+source "$UDMI_ROOT/etc/shell_common.sh"
+
+CONFIG_ARG=""
+TAG_ARG=""
+PROJECT_SPEC=""
+
+while [[ $# -gt 0 ]]; do
+    arg="$1"
+    shift
+    if [[ "$arg" == "-h" || "$arg" == "--help" || "$arg" == "help" ]]; then
+        echo "Usage: bin/start_axoloctl <config_file> [tag] [project_spec]"
+        exit 0
+    elif [[ "$arg" =~ ^// || "$arg" =~ ^(mqtt|mqtts|ssl):// || "$arg" =~ localhost: || "$arg" =~ :[0-9]+$ ]]; then
+        PROJECT_SPEC=$(normalize_conn_spec "$arg")
+    elif [[ -z "$CONFIG_ARG" ]]; then
+        CONFIG_ARG="$arg"
+    elif [[ -z "$TAG_ARG" ]]; then
+        TAG_ARG="$arg"
+    else
+        echo "ERROR: Unexpected argument '$arg'." >&2
+        echo "Usage: bin/start_axoloctl <config_file> [tag] [project_spec]" >&2
+        exit 1
+    fi
+done
+
+CFG_INPUT="${CONFIG_ARG:-${AXOLOCTL_CONFIG:-}}"
+if [[ -z "$CFG_INPUT" ]]; then
+    echo "ERROR: Axoloctl requires an explicit configuration file." >&2
+    echo "Usage: bin/start_axoloctl <config_file> [tag] [project_spec]" >&2
+    exit 1
+fi
+
+PYTHON_BIN="$UDMI_ROOT/venv/bin/python3"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    echo "ERROR: Python virtualenv not found at $PYTHON_BIN. Run bin/setup_base first." >&2
+    exit 1
+fi
+
+eval "$($PYTHON_BIN -c "
+import os, shlex, sys
+sys.path.insert(0, os.path.join('$UDMI_ROOT', 'mcp', 'axoloctl', 'src'))
+from config import load_config
+try:
+    cfg = load_config('$CFG_INPUT', '$UDMI_ROOT')
+except Exception as e:
+    sys.stderr.write(f'ERROR: {e}\n')
+    sys.exit(1)
+default_tag = os.path.basename(cfg.app_subpath.rstrip('/'))
+print('RESOLVED_CONFIG=' + shlex.quote(cfg.config_path))
+print('REPO_PATH=' + shlex.quote(cfg.repo_path))
+print('DEFAULT_TAG=' + shlex.quote(default_tag))
+print('AXOLOCTL_HOST_PORT=' + str(cfg.host_port))
+print('AXOLOCTL_WEBMCP_PORT=' + str(cfg.webmcp_port))
+")"
+
+SESSION_TAG="${TAG_ARG:-$DEFAULT_TAG}"
+if [[ -z "$SESSION_TAG" ]]; then
+    echo "ERROR: Could not determine session tag." >&2
+    exit 1
+fi
+
+if [[ -n "$PROJECT_SPEC" ]]; then
+    "$UDMI_ROOT/bin/tmux_axoloctl" start "$RESOLVED_CONFIG" "$PROJECT_SPEC"
+else
+    "$UDMI_ROOT/bin/tmux_axoloctl" start "$RESOLVED_CONFIG"
+fi
+
+echo "Waiting for Axoloctl daemons (:9290 / :9291) to bind..."
+READY=0
+for _ in $(seq 1 20); do
+    if curl -s -f --noproxy '*' "http://127.0.0.1:${AXOLOCTL_HOST_PORT}/api/uis" >/dev/null 2>&1 && \
+       curl -s -f --noproxy '*' "http://127.0.0.1:${AXOLOCTL_WEBMCP_PORT}/status" >/dev/null 2>&1; then
+        READY=1
+        break
+    fi
+    sleep 0.5
+done
+
+if [[ "$READY" -ne 1 ]]; then
+    echo "ERROR: Axoloctl daemons failed to bind on ports ${AXOLOCTL_HOST_PORT}/${AXOLOCTL_WEBMCP_PORT}." >&2
+    exit 1
+fi
+
+COMMIT_HASH=$(git -C "$REPO_PATH" rev-parse HEAD)
+echo "=== Deploying Session '$SESSION_TAG' @ ${COMMIT_HASH:0:8} ==="
+START_OUT=$(no_proxy='*' NO_PROXY='*' "$UDMI_ROOT/bin/mcp_axoloctl" --config "$RESOLVED_CONFIG" --tag "$SESSION_TAG" start "$COMMIT_HASH" "Initial $SESSION_TAG session")
+echo "$START_OUT"
+
+echo "$START_OUT" | jq -e '.running == true' >/dev/null
+SESSION_URL=$(echo "$START_OUT" | jq -r '.url')
+WORKSPACE_DIR=$(echo "$START_OUT" | jq -r '.workspace')
+
+echo "=== Axoloctl Dev Environment Ready ==="
+echo "  Web View URL : ${SESSION_URL}/"
+echo "  Host Control : http://localhost:${AXOLOCTL_HOST_PORT}/ui/api?tag=${SESSION_TAG}"
+echo "  Agent Window : udmi_axoloctl_agent:${SESSION_TAG} (${WORKSPACE_DIR})"

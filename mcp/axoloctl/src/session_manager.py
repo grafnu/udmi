@@ -187,12 +187,12 @@ class SessionManager:
   def _ensure_agent_window(
       self, tag: str, app_worktree_dir: str, shared_dir: str
   ) -> None:
-    if self.is_agent_running(tag):
-      return
     session_root = os.path.join(self.sessions_dir, tag)
+    os.makedirs(session_root, exist_ok=True)
     conv_id = self.get_conversation_id(tag)
     venv_activate = os.path.join(self.udmi_root, "venv", "bin", "activate")
     agent_script = os.path.join(session_root, "runner_agent.sh")
+    agent_term_log = os.path.join(session_root, "agent_term.log")
     with open(agent_script, "w", encoding="utf-8") as f:
       f.write(
           f"""#!/bin/bash
@@ -210,19 +210,48 @@ export MCP_CONFIG="{self.config.mcp_config_path}"
 cd "{app_worktree_dir}"
 echo "Axoloctl Dedicated Agent [{tag}]"
 echo "  Worktree : {app_worktree_dir} (branch: axoloctl-{tag})"
-echo "  Conv ID  : {conv_id}"
 echo "  MCP Cfg  : {self.config.mcp_config_path}"
 export PS1="[axoloctl:{tag}] \\W $ "
-if [[ "${{AXOLOCTL_AUTO_JETSKI:-0}}" == "1" ]] && command -v jetski >/dev/null 2>&1; then
+CONV_FILE="{session_root}/conversation_id.txt"
+if [[ "${{AXOLOCTL_AUTO_JETSKI:-1}}" != "0" ]]; then
   unset ANTIGRAVITY_AGENT ANTIGRAVITY_CONVERSATION_ID ANTIGRAVITY_LS_ADDRESS ANTIGRAVITY_SOURCE_METADATA ANTIGRAVITY_TRAJECTORY_ID
   export ANTIGRAVITY_CSRF_TOKEN="axoloctl-{tag}"
-  jetski --repl_mode --csrf_token="axoloctl-{tag}" || true
+  while true; do
+    if [[ -f "$CONV_FILE" ]]; then
+      export AXOLOCTL_CONV_ID="$(tr -d '[:space:]' < "$CONV_FILE")"
+    fi
+    if command -v jetski >/dev/null 2>&1; then
+      if [[ -n "${{AXOLOCTL_CONV_ID:-}}" && -d "$HOME/.gemini/jetski/brain/$AXOLOCTL_CONV_ID" ]]; then
+        jetski --repl_mode --conversation "$AXOLOCTL_CONV_ID" --csrf_token="axoloctl-{tag}" || true
+      else
+        jetski --repl_mode --csrf_token="axoloctl-{tag}" || true
+      fi
+    elif command -v gemini >/dev/null 2>&1; then
+      gemini || true
+    else
+      break
+    fi
+    echo "Agent CLI exited. Restarting in 2 seconds..."
+    sleep 2
+  done
 fi
 exec bash --norc -i
 """
       )
     os.chmod(agent_script, 0o755)
-    self._ensure_tmux_window(self.session_agent, tag, agent_script)
+    if not self.is_agent_running(tag):
+      self._ensure_tmux_window(self.session_agent, tag, agent_script)
+    open(agent_term_log, "a", encoding="utf-8").close()
+    subprocess.run(
+        [
+            "tmux",
+            "pipe-pane",
+            "-t",
+            f"{self.session_agent}:{tag}",
+            f"cat >> '{agent_term_log}'",
+        ],
+        check=False,
+    )
 
   def _probe_http(self, port: int) -> bool:
     try:
@@ -357,17 +386,16 @@ exec bash --norc -i
     code_dir = os.path.join(session_root, "code")
     log_file = os.path.join(session_root, "unified.log")
     shared_dir = os.path.join(self.shared_dir, tag)
+    desc_path = os.path.join(session_root, "description.txt")
+    commit_path = os.path.join(session_root, "commit.txt")
 
     os.makedirs(session_root, exist_ok=True)
     os.makedirs(shared_dir, exist_ok=True)
-    with open(
-        os.path.join(session_root, "description.txt"), "w", encoding="utf-8"
-    ) as f:
-      f.write(description or "")
-    with open(
-        os.path.join(session_root, "commit.txt"), "w", encoding="utf-8"
-    ) as f:
-      f.write(commit_hash)
+    if not os.path.exists(commit_path):
+      with open(desc_path, "w", encoding="utf-8") as f:
+        f.write(description or "")
+      with open(commit_path, "w", encoding="utf-8") as f:
+        f.write(commit_hash)
 
     # Provision isolated Git worktree and paired Agent window for this tag
     app_worktree_dir = self._ensure_agent_worktree(tag, commit_hash)
@@ -472,6 +500,11 @@ exec python3 "{proxy_script}" \\
         break
       time.sleep(0.5)
 
+    with open(desc_path, "w", encoding="utf-8") as f:
+      f.write(description or "")
+    with open(commit_path, "w", encoding="utf-8") as f:
+      f.write(commit_hash)
+
     logs = self.read_logs(tag)["lines"]
     if not running:
       if self.is_running(tag):
@@ -492,6 +525,122 @@ exec python3 "{proxy_script}" \\
         "url": url,
         "cursor": len(logs),
         "logs": logs,
+    }
+
+  def list_defined_sessions(self) -> Dict[str, Dict[str, Any]]:
+    """Returns all defined sessions (both running and stopped) keyed by tag."""
+    ports = self._load_ports()
+    defined_tags = list(ports.keys())
+    if os.path.isdir(self.sessions_dir):
+      for entry in sorted(os.listdir(self.sessions_dir)):
+        if entry not in ports and self._is_valid_tag(entry):
+          cpath = os.path.join(self.sessions_dir, entry, "commit.txt")
+          if os.path.isfile(cpath):
+            defined_tags.append(entry)
+
+    result: Dict[str, Dict[str, Any]] = {}
+    for tag in defined_tags:
+      session_root = os.path.join(self.sessions_dir, tag)
+      commit_path = os.path.join(session_root, "commit.txt")
+      commit_hash = ""
+      if os.path.isfile(commit_path):
+        with open(commit_path, "r", encoding="utf-8") as f:
+          commit_hash = f.read().strip()
+      desc_path = os.path.join(session_root, "description.txt")
+      desc = ""
+      if os.path.isfile(desc_path):
+        with open(desc_path, "r", encoding="utf-8") as f:
+          desc = f.read().strip()
+      running = self.is_running(tag)
+      result[tag] = {
+          "tag": tag,
+          "port": ports.get(tag),
+          "running": running,
+          "commit": commit_hash,
+          "description": desc,
+          "url": self.session_url(tag),
+          "agent_running": self.is_agent_running(tag),
+          "workspace": self.agent_workspace_dir(tag),
+          "nonces": self.get_beacons(tag) if running else {},
+      }
+    return result
+
+  def create_or_start_session(
+      self, tag: str, commit_hash: str = "", description: str = ""
+  ) -> Dict[str, Any]:
+    """Creates a new tagged session at HEAD or starts an existing defined session."""
+    tag = (tag or "").strip()
+    if not self._is_valid_tag(tag) or tag.lower() in ("localhost", "__new__"):
+      raise ValueError(
+          f"Invalid session tag '{tag}'. Use alphanumeric characters, '-' or '_'."
+      )
+
+    session_root = os.path.join(self.sessions_dir, tag)
+    commit_path = os.path.join(session_root, "commit.txt")
+    desc_path = os.path.join(session_root, "description.txt")
+
+    resolved_commit = (commit_hash or "").strip()
+    if not resolved_commit and os.path.isfile(commit_path):
+      with open(commit_path, "r", encoding="utf-8") as f:
+        resolved_commit = f.read().strip()
+
+    if not resolved_commit:
+      head_res = subprocess.run(
+          [
+              "git",
+              "-c",
+              "safe.bareRepository=all",
+              "-C",
+              self.config.repo_path,
+              "rev-parse",
+              "HEAD",
+          ],
+          stdout=subprocess.PIPE,
+          stderr=subprocess.PIPE,
+          text=True,
+          check=False,
+      )
+      if head_res.returncode != 0:
+        raise ValueError(
+            f"Failed to resolve HEAD commit in {self.config.repo_path}: "
+            f"{head_res.stderr.strip()}"
+        )
+      resolved_commit = head_res.stdout.strip()
+
+    resolved_desc = (description or "").strip()
+    if not resolved_desc and os.path.isfile(desc_path):
+      with open(desc_path, "r", encoding="utf-8") as f:
+        resolved_desc = f.read().strip()
+    if not resolved_desc:
+      resolved_desc = f"Session {tag}"
+
+    ports = self._load_ports()
+    if (
+        not commit_hash
+        and self.is_running(tag)
+        and tag in ports
+        and self._probe_http(ports[tag])
+    ):
+      shared_dir = os.path.join(self.shared_dir, tag)
+      os.makedirs(shared_dir, exist_ok=True)
+      app_wt = self._ensure_agent_worktree(tag, resolved_commit)
+      self._ensure_agent_window(tag, app_wt, shared_dir)
+      return {
+          "running": True,
+          "tag": tag,
+          "commit": resolved_commit,
+          "description": resolved_desc,
+          "agent_running": self.is_agent_running(tag),
+          "workspace": app_wt,
+          "url": self.session_url(tag),
+      }
+
+    res = self.start_server(tag, resolved_commit, resolved_desc)
+    return {
+        **res,
+        "tag": tag,
+        "commit": resolved_commit,
+        "description": resolved_desc,
     }
 
   def get_beacons(self, tag: str) -> Dict[str, Any]:

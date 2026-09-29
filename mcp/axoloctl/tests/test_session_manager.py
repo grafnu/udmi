@@ -544,6 +544,7 @@ def test_agent_bridge_three_techniques(tmp_path):
       assert new_res["ok"] is True
       assert new_res["conversation_id"] != cid
   finally:
+    bridge.stop_hub()
     gateway_srv.shutdown()
     subprocess.run(
         ["tmux", "kill-session", "-t", test_tmux_session],
@@ -702,5 +703,424 @@ def test_chat_activity_preflush_and_background_tasks(tmp_path):
   assert "No correlated viewer in active tab" in uncorrelated_html
   assert "udmi_axoloctl_agent:alpha" not in uncorrelated_html
 
+
+def test_xterm_cli_streaming_and_agentapi_resolution(tmp_path, monkeypatch):
+  """Verifies xterm.js incremental PTY streaming, hexKeys translation, and agentapi resolution."""
+  import base64
+  from http.server import ThreadingHTTPServer
+  import subprocess
+  import threading
+  import urllib.request
+  from session_proxy import allocate_ephemeral_port
+  from ui_host import JetskiAgentBridge, UIHostHandler, _render_ui_page
+
+  cfg = load_config(GUMMI_CONFIG_PATH, UDMI_ROOT)
+  sessions_dir = tmp_path / "sessions"
+  alpha_dir = sessions_dir / "alpha"
+  (alpha_dir / "workspace" / "gummi").mkdir(parents=True)
+  (sessions_dir / "ports.json").write_text(
+      json.dumps({"alpha": 9300}), encoding="utf-8"
+  )
+
+  bridge = JetskiAgentBridge(str(tmp_path), cfg, str(sessions_dir))
+  bridge.brain_root = str(tmp_path / "brain")
+  test_tmux_session = f"axoloctl_test_xterm_{os.getpid()}"
+  bridge.session_agent = test_tmux_session
+
+  # Verify _build_tmux_key_commands translates Backspace (7f/08) and Delete (1b 5b 33 7e)
+  cmds = bridge._build_tmux_key_commands(
+      "sess:alpha", ["68", "69", "7f", "1b", "5b", "33", "7e", "0d"]
+  )
+  assert cmds == [
+      ["tmux", "send-keys", "-t", "sess:alpha", "-H", "68", "69"],
+      ["tmux", "send-keys", "-t", "sess:alpha", "BSpace"],
+      ["tmux", "send-keys", "-t", "sess:alpha", "DC"],
+      ["tmux", "send-keys", "-t", "sess:alpha", "-H", "0d"],
+  ]
+
+  # Verify _resolve_ls_credentials prioritizes pane ports over host_ls and passes 'agentapi' at argv[1]
+  fake_agentapi = tmp_path / "fake_cli"
+  fake_agentapi.write_text(
+      """#!/bin/bash
+if [[ "$1" != "agentapi" ]]; then
+  echo "Error: unexpected argument $1" >&2
+  exit 1
+fi
+if [[ "${ANTIGRAVITY_LS_ADDRESS:-}" == "localhost:46019" && "${ANTIGRAVITY_CSRF_TOKEN:-}" == "axoloctl-alpha" ]]; then
+  echo '{"response": {"conversationMetadata": {}}}'
+  exit 0
+fi
+echo "rpc error: code = Unavailable" >&2
+exit 1
+""",
+      encoding="utf-8",
+  )
+  fake_agentapi.chmod(0o755)
+  monkeypatch.setenv("ANTIGRAVITY_AGENTAPI_EXE", str(fake_agentapi))
+  monkeypatch.setenv("ANTIGRAVITY_LS_ADDRESS", "localhost:39357")
+  monkeypatch.setenv("ANTIGRAVITY_CSRF_TOKEN", "stale-host-csrf")
+  monkeypatch.setattr(bridge, "_discover_pane_ports", lambda t: ["46019"])
+
+  ls_addr, ls_csrf = bridge._resolve_ls_credentials("alpha")
+  assert ls_addr == "localhost:46019"
+  assert ls_csrf == "axoloctl-alpha"
+
+  # Verify xterm.js UI page includes xterm assets and container
+  cli_html = _render_ui_page(cfg, "cliView", "CLI Console", active_tag="alpha").decode("utf-8")
+  assert "/vendor/xterm/xterm.js" in cli_html
+  assert "/vendor/xterm/xterm-addon-fit.js" in cli_html
+  assert "cli-xterm-container" in cli_html
+
+  subprocess.run(
+      [
+          "tmux",
+          "new-session",
+          "-d",
+          "-s",
+          test_tmux_session,
+          "-n",
+          "alpha",
+          "bash --norc -i",
+      ],
+      check=True,
+  )
+
+  class CustomUIHostHandler(UIHostHandler):
+    pass
+
+  CustomUIHostHandler.config = cfg
+  CustomUIHostHandler.sessions_dir = str(sessions_dir)
+  CustomUIHostHandler.agent_bridge = bridge
+
+  gateway_port = allocate_ephemeral_port()
+  gateway_srv = ThreadingHTTPServer(("127.0.0.1", gateway_port), CustomUIHostHandler)
+  threading.Thread(target=gateway_srv.serve_forever, daemon=True).start()
+  opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+  try:
+    # 1. Verify /vendor/xterm/xterm.js is served
+    with opener.open(f"http://127.0.0.1:{gateway_port}/vendor/xterm/xterm.js", timeout=5) as resp:
+      assert resp.status == 200
+      assert len(resp.read()) > 1000
+
+    # 2. Initial offset=0 capture attaches pipe-pane and returns base64 snapshot + offset
+    with opener.open(f"http://127.0.0.1:{gateway_port}/api/cli?tag=alpha&offset=0", timeout=5) as resp:
+      snap = json.loads(resp.read().decode("utf-8"))
+      assert snap["running"] is True
+      assert isinstance(snap["offset"], int)
+      initial_offset = snap["offset"]
+
+    # 3. Send hexKeys ("echo XTERM_OK\r") and resize via POST /api/cli
+    cmd_bytes = b"echo XTERM_STREAM_99\r"
+    hex_keys = [f"{b:02x}" for b in cmd_bytes]
+    post_req = urllib.request.Request(
+        f"http://127.0.0.1:{gateway_port}/api/cli",
+        data=json.dumps({
+            "tag": "alpha",
+            "hexKeys": hex_keys,
+            "cols": 90,
+            "rows": 28,
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with opener.open(post_req, timeout=5) as resp:
+      post_res = json.loads(resp.read().decode("utf-8"))
+      assert post_res["ok"] is True
+
+    # 4. Poll incremental stream from initial_offset and verify XTERM_STREAM_99 arrives
+    import time
+    streamed = b""
+    curr_offset = initial_offset
+    for _ in range(15):
+      time.sleep(0.1)
+      with opener.open(
+          f"http://127.0.0.1:{gateway_port}/api/cli?tag=alpha&offset={curr_offset}",
+          timeout=5,
+      ) as resp:
+        chunk_res = json.loads(resp.read().decode("utf-8"))
+        if chunk_res.get("data"):
+          streamed += base64.b64decode(chunk_res["data"])
+        curr_offset = chunk_res["offset"]
+        if b"XTERM_STREAM_99" in streamed:
+          break
+    assert b"XTERM_STREAM_99" in streamed
+  finally:
+    gateway_srv.shutdown()
+    subprocess.run(
+        ["tmux", "kill-session", "-t", test_tmux_session],
+        check=False,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def test_defined_sessions_and_create_session_endpoint(tmp_path, monkeypatch):
+  """Verifies list_defined_sessions, create_or_start_session, and POST /api/sessions."""
+  import dataclasses
+  from http.server import ThreadingHTTPServer
+  import subprocess
+  import threading
+  import urllib.error
+  import urllib.request
+  from session_proxy import allocate_ephemeral_port
+  from ui_host import UIHostHandler
+  from web_mcp import WebMCPHandler, WebMCPServer
+
+  repo_dir = tmp_path / "repo"
+  app_dir = repo_dir / "gummi"
+  app_dir.mkdir(parents=True)
+  (app_dir / "index.txt").write_text("v1", encoding="utf-8")
+
+  subprocess.run(
+      ["git", "init", str(repo_dir)],
+      check=True,
+      stdout=subprocess.DEVNULL,
+      stderr=subprocess.DEVNULL,
+  )
+  subprocess.run(
+      ["git", "-C", str(repo_dir), "config", "user.email", "test@example.com"],
+      check=True,
+  )
+  subprocess.run(
+      ["git", "-C", str(repo_dir), "config", "user.name", "Test"],
+      check=True,
+  )
+  subprocess.run(["git", "-C", str(repo_dir), "add", "-A"], check=True)
+  subprocess.run(
+      ["git", "-C", str(repo_dir), "commit", "-m", "initial"],
+      check=True,
+      stdout=subprocess.DEVNULL,
+  )
+  head_sha = subprocess.check_output(
+      ["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True
+  ).strip()
+
+  webmcp_port = allocate_ephemeral_port()
+  gateway_port = allocate_ephemeral_port()
+  cfg = dataclasses.replace(
+      load_config(GUMMI_CONFIG_PATH, UDMI_ROOT),
+      repo_path=str(repo_dir),
+      webmcp_port=webmcp_port,
+      host_port=gateway_port,
+  )
+  mgr = SessionManager(str(tmp_path / "udmi"), cfg)
+
+  # Pre-populate one running session ('gummi') and one stopped defined session ('legacy_exp')
+  for tag_name, sha in [("gummi", head_sha), ("legacy_exp", "b" * 40)]:
+    mgr._allocate_port(tag_name)
+    sdir = os.path.join(mgr.sessions_dir, tag_name)
+    os.makedirs(sdir, exist_ok=True)
+    with open(os.path.join(sdir, "commit.txt"), "w", encoding="utf-8") as f:
+      f.write(sha)
+    with open(os.path.join(sdir, "description.txt"), "w", encoding="utf-8") as f:
+      f.write(f"Desc {tag_name}")
+
+  active_set = {"gummi"}
+  monkeypatch.setattr(mgr, "is_running", lambda t: t in active_set)
+  monkeypatch.setattr(mgr, "_probe_http", lambda p: True)
+  monkeypatch.setattr(mgr, "is_agent_running", lambda t: t in active_set)
+
+  def fake_start_server(tag_arg, commit_arg, desc_arg):
+    mgr._allocate_port(tag_arg)
+    sdir = os.path.join(mgr.sessions_dir, tag_arg)
+    os.makedirs(sdir, exist_ok=True)
+    with open(os.path.join(sdir, "commit.txt"), "w", encoding="utf-8") as f:
+      f.write(commit_arg)
+    with open(os.path.join(sdir, "description.txt"), "w", encoding="utf-8") as f:
+      f.write(desc_arg)
+    active_set.add(tag_arg)
+    return {
+        "running": True,
+        "agent_running": True,
+        "workspace": mgr.agent_workspace_dir(tag_arg),
+        "url": mgr.session_url(tag_arg),
+        "cursor": 0,
+        "logs": [],
+    }
+
+  monkeypatch.setattr(mgr, "start_server", fake_start_server)
+
+  defined = mgr.list_defined_sessions()
+  assert set(defined.keys()) == {"gummi", "legacy_exp"}
+  assert defined["gummi"]["running"] is True
+  assert defined["legacy_exp"]["running"] is False
+
+  class CustomWebMCPHandler(WebMCPHandler):
+    pass
+
+  CustomWebMCPHandler.mcp_server = WebMCPServer(mgr)
+  webmcp_srv = ThreadingHTTPServer(("127.0.0.1", webmcp_port), CustomWebMCPHandler)
+  threading.Thread(target=webmcp_srv.serve_forever, daemon=True).start()
+
+  class CustomUIHostHandler(UIHostHandler):
+    pass
+
+  CustomUIHostHandler.config = cfg
+  CustomUIHostHandler.sessions_dir = mgr.sessions_dir
+  gateway_srv = ThreadingHTTPServer(("127.0.0.1", gateway_port), CustomUIHostHandler)
+  threading.Thread(target=gateway_srv.serve_forever, daemon=True).start()
+
+  opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+  try:
+    # 1. GET /api/status returns both running 'sessions' (with ready=True) and 'defined_sessions'
+    with opener.open(f"http://127.0.0.1:{gateway_port}/api/status", timeout=5) as resp:
+      st = json.loads(resp.read().decode("utf-8"))
+      assert set(st["sessions"].keys()) == {"gummi"}
+      assert st["sessions"]["gummi"]["ready"] is True
+      assert set(st["defined_sessions"].keys()) == {"gummi", "legacy_exp"}
+
+    # 2. POST /api/sessions creates a brand-new session at HEAD commit when commit_hash is omitted
+    create_req = urllib.request.Request(
+        f"http://127.0.0.1:{gateway_port}/api/sessions",
+        data=json.dumps({"tag": "new_feature"}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with opener.open(create_req, timeout=5) as resp:
+      created = json.loads(resp.read().decode("utf-8"))
+      assert created["running"] is True
+      assert created["tag"] == "new_feature"
+      assert created["commit"] == head_sha
+      assert created["url"] == f"http://new_feature.localhost:{gateway_port}"
+
+    # 3. Invalid session name fails fast with HTTP 400
+    bad_req = urllib.request.Request(
+        f"http://127.0.0.1:{gateway_port}/api/sessions",
+        data=json.dumps({"tag": "bad name!"}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+      opener.open(bad_req, timeout=5)
+    assert exc_info.value.code == 400
+  finally:
+    gateway_srv.shutdown()
+    webmcp_srv.shutdown()
+
+
+def test_web_hub_server_and_ui_refinements(tmp_path, monkeypatch):
+  """Verifies embedded Jetski Web Hub server/proxy, CLI scrollbar removal, and transparent icon."""
+  from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+  import threading
+  import urllib.request
+  from session_proxy import allocate_ephemeral_port
+  from ui_host import JetskiAgentBridge, _render_ui_page
+
+  cfg = load_config(GUMMI_CONFIG_PATH, UDMI_ROOT)
+  sessions_dir = tmp_path / "sessions"
+  (sessions_dir / "alpha" / "workspace" / "gummi").mkdir(parents=True)
+  (sessions_dir / "ports.json").write_text(
+      json.dumps({"alpha": 9300}), encoding="utf-8"
+  )
+
+  # 1. Start a mock Language Server to verify Connect-RPC proxying and CSRF token injection
+  received_headers = {}
+
+  class MockLSHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+      content_len = int(self.headers.get("Content-Length", 0))
+      if content_len > 0:
+        self.rfile.read(content_len)
+      received_headers["csrf"] = self.headers.get("x-codeium-csrf-token", "")
+      received_headers["path"] = self.path
+      body = json.dumps({
+          "config": {
+              "isJetski": True,
+              "subclientType": "cli",
+          }
+      }).encode("utf-8")
+      self.send_response(200)
+      self.send_header("Content-Type", "application/json")
+      self.send_header("Content-Length", str(len(body)))
+      self.end_headers()
+      self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+      pass
+
+  ls_port = allocate_ephemeral_port()
+  ls_srv = ThreadingHTTPServer(("127.0.0.1", ls_port), MockLSHandler)
+  threading.Thread(target=ls_srv.serve_forever, daemon=True).start()
+
+  hub_port = allocate_ephemeral_port()
+  bridge = JetskiAgentBridge(str(tmp_path), cfg, str(sessions_dir))
+  bridge.hub_port = hub_port
+  monkeypatch.setattr(
+      bridge,
+      "_resolve_ls_credentials",
+      lambda t: (f"localhost:{ls_port}", f"axoloctl-{t}"),
+  )
+
+  opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+  try:
+    status = bridge.get_hub_status("alpha")
+    assert status["running"] is True
+    assert status["hub_port"] == hub_port
+    assert f"http://localhost:{hub_port}/?tag=alpha" in status["hub_url"]
+
+    # 2. Verify Hub root serves index.html with window.__APP_CONFIG__ and csrfToken
+    with opener.open(
+        f"http://127.0.0.1:{hub_port}/?tag=alpha&hostTheme=dark", timeout=5
+    ) as resp:
+      assert resp.status == 200
+      index_html = resp.read().decode("utf-8")
+      assert "window.__APP_CONFIG__" in index_html
+      assert '"csrfToken": "axoloctl-alpha"' in index_html
+      assert "window.nativeStorage" in index_html
+
+    # 3. Verify /proxy/unleash/frontend returns 200 OK with empty toggles
+    with opener.open(
+        f"http://127.0.0.1:{hub_port}/proxy/unleash/frontend", timeout=5
+    ) as resp:
+      assert resp.status == 200
+      unleash_data = json.loads(resp.read().decode("utf-8"))
+      assert unleash_data == {"toggles": []}
+
+    # 4. Verify Connect-RPC POST proxies to the session's Language Server with CSRF token
+    rpc_req = urllib.request.Request(
+        f"http://127.0.0.1:{hub_port}/exa.language_server_pb.LanguageServerService/GetServerConfiguration",
+        data=b"{}",
+        headers={
+            "Content-Type": "application/json",
+            "x-codeium-csrf-token": "axoloctl-alpha",
+        },
+        method="POST",
+    )
+    with opener.open(rpc_req, timeout=5) as resp:
+      assert resp.status == 200
+      rpc_data = json.loads(resp.read().decode("utf-8"))
+      assert rpc_data["config"]["isJetski"] is True
+      assert received_headers["csrf"] == "axoloctl-alpha"
+      assert (
+          received_headers["path"]
+          == "/exa.language_server_pb.LanguageServerService/GetServerConfiguration"
+      )
+
+    # 5. Verify CLI Console removes xterm.js scrollbar and sets scrollback: 0
+    cli_html = _render_ui_page(
+        cfg, "cliView", "CLI Console", active_tag="alpha", hub_port=hub_port
+    ).decode("utf-8")
+    assert ".xterm-wrapper .xterm-viewport" in cli_html
+    assert "overflow: hidden !important;" in cli_html
+    assert "scrollback: 0" in cli_html
+
+    # 6. Verify Axoloctl SVG icon has no background rect/border and sidepanel uses transparent background
+    svg_path = os.path.join(
+        UDMI_ROOT, "mcp", "axoloctl", "extension", "icons", "axoloctl.svg"
+    )
+    with open(svg_path, "r", encoding="utf-8") as f:
+      svg_text = f.read()
+    assert "<rect" not in svg_text
+    assert "ringGrad" not in svg_text
+
+    sidepanel_path = os.path.join(
+        UDMI_ROOT, "mcp", "axoloctl", "extension", "sidepanel.html"
+    )
+    with open(sidepanel_path, "r", encoding="utf-8") as f:
+      sidepanel_html = f.read()
+    assert "background: transparent;" in sidepanel_html
+  finally:
+    bridge.stop_hub()
+    ls_srv.shutdown()
 
 

@@ -30,6 +30,10 @@ if bin/tmux_axoloctl start >/dev/null 2>&1; then
     echo "FAIL: bin/tmux_axoloctl start succeeded without a config file!" >&2
     exit 1
 fi
+if bin/start_axoloctl >/dev/null 2>&1; then
+    echo "FAIL: bin/start_axoloctl succeeded without a config file!" >&2
+    exit 1
+fi
 echo "Confirmed fail-fast when no config file is provided."
 
 echo ""
@@ -38,16 +42,7 @@ echo "Testing Axoloctl Server Control Flow & End-to-End Session Lifecycle..."
 echo "=========================================================================="
 
 bin/tmux_axoloctl clean
-bin/tmux_axoloctl start "$CONFIG_FILE"
-
-# Wait for daemons to bind
-for i in $(seq 1 15); do
-    if curl -s -f --noproxy '*' http://127.0.0.1:9290/api/uis >/dev/null 2>&1 && \
-       curl -s -f --noproxy '*' http://127.0.0.1:9291/status >/dev/null 2>&1; then
-        break
-    fi
-    sleep 0.5
-done
+bin/start_axoloctl "$CONFIG_FILE"
 
 echo "Checking UI Discovery & Host UI endpoints (:9290)..."
 curl -s -f --noproxy '*' http://127.0.0.1:9290/api/uis | jq -e '.default_ui == "cliView" and (.uis | length == 3)' >/dev/null
@@ -62,7 +57,7 @@ echo "$INIT_OUT" | jq -e '.result.serverInfo.name == "udmi-axoloctl"' >/dev/null
 TOOLS_OUT=$(echo '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | bin/mcp_axoloctl --config "$CONFIG_FILE" --tag gummi mcp)
 echo "$TOOLS_OUT" | jq -e '.result.tools | length == 4' >/dev/null
 
-echo "Deploying HEAD commit via bin/mcp_axoloctl --tag gummi start..."
+echo "Redeploying HEAD commit via bin/mcp_axoloctl --tag gummi start..."
 HEAD_SHA=$(git rev-parse HEAD)
 START_OUT=$(bin/mcp_axoloctl --config "$CONFIG_FILE" --tag gummi start "$HEAD_SHA" "CI E2E test session")
 echo "$START_OUT"
