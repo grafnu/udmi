@@ -365,3 +365,65 @@ def test_gummi_etcd_explorer_full_workflow(gummi_server_url: str, browser_contex
     page.close()
 
 
+def test_gummi_top_rows_fixed_width_and_scoped_vertical_scroll(gummi_server_url: str, browser_context: Browser):
+    """Verifies that the vertical scrollbar only scrolls below the tab row and top rows maintain fixed width."""
+    page: Page = browser_context.new_page()
+    page_errors: List[str] = []
+    page.on("pageerror", lambda err: page_errors.append(str(err)))
+
+    page.goto(gummi_server_url)
+    page.wait_for_load_state("domcontentloaded")
+
+    # 1. Verify window/document is non-scrolling (overflow: hidden)
+    body_overflow = page.evaluate("() => window.getComputedStyle(document.body).overflow")
+    html_overflow = page.evaluate("() => window.getComputedStyle(document.documentElement).overflow")
+    assert body_overflow == "hidden"
+    assert html_overflow == "hidden"
+
+    # 2. Main content area is the scroll container with overflow-y: auto
+    main_overflow_y = page.evaluate("() => window.getComputedStyle(document.querySelector('.main-content')).overflowY")
+    assert main_overflow_y == "auto"
+
+    # 3. Verify top rows (header and nav-bar) width does NOT change across different tabs
+    tab_names = ["portfolio", "devices", "config", "admin", "explorer"]
+    header_widths = {}
+    nav_widths = {}
+
+    for tab in tab_names:
+        page.locator(f'.nav-tab[data-tab="{tab}"]').click()
+        page.wait_for_timeout(100)
+        h_width = page.evaluate("() => document.querySelector('.top-header').offsetWidth")
+        n_width = page.evaluate("() => document.querySelector('.nav-bar').offsetWidth")
+        viewport_w = page.evaluate("() => window.innerWidth")
+        header_widths[tab] = h_width
+        nav_widths[tab] = n_width
+        assert h_width == viewport_w, f"Header width {h_width} != viewport {viewport_w} on {tab}"
+        assert n_width == viewport_w, f"Nav bar width {n_width} != viewport {viewport_w} on {tab}"
+
+    # All tabs must have identical header and nav bar width
+    assert len(set(header_widths.values())) == 1, f"Header width changed across tabs: {header_widths}"
+    assert len(set(nav_widths.values())) == 1, f"Nav bar width changed across tabs: {nav_widths}"
+
+    # 4. Verify scrolling .main-content keeps top-header and nav-bar stationary
+    page.locator('.nav-tab[data-tab="devices"]').click()
+    page.wait_for_selector("#devices-table-body tr")
+
+    # Scroll main-content
+    page.evaluate("() => document.querySelector('.main-content').scrollTop = 200")
+    page.wait_for_timeout(100)
+
+    # Window scroll must remain 0
+    window_scroll_y = page.evaluate("() => window.scrollY")
+    assert window_scroll_y == 0
+
+    # Header and Nav positions must remain at top of screen
+    header_rect_top = page.evaluate("() => document.querySelector('.top-header').getBoundingClientRect().top")
+    nav_rect_top = page.evaluate("() => document.querySelector('.nav-bar').getBoundingClientRect().top")
+    assert header_rect_top == 0
+    assert nav_rect_top > 0  # Below header, but fixed
+
+    assert len(page_errors) == 0, f"Errors: {page_errors}"
+    page.close()
+
+
+
