@@ -47,10 +47,7 @@
         <span class="tab-icon">🗄️</span> ETCD Explorer
       </button>
       <button class="nav-tab" data-tab="config">
-        <span class="tab-icon">📝</span> Configuration
-      </button>
-      <button class="nav-tab" data-tab="rollout">
-        <span class="tab-icon">🚀</span> Managed Rollout
+        <span class="tab-icon">📝</span> Configuration Manager
       </button>
       <button class="nav-tab" data-tab="admin">
         <span class="tab-icon">🛠️</span> Bridgehead Admin
@@ -391,10 +388,10 @@
         </div>
       </section>
 
-      <!-- 5. Configuration Management Pane -->
+      <!-- 5. Configuration Manager Pane -->
       <section id="pane-config" class="tab-pane">
         <div class="section-header">
-          <h2>Configuration Management</h2>
+          <h2>Configuration Manager</h2>
         </div>
 
         <div class="panel">
@@ -439,26 +436,6 @@
               <button id="btn-validate-config" class="btn btn-secondary">🔍 Validate Schema</button>
               <button id="btn-publish-config" class="btn btn-primary">🚀 Publish to UUFI</button>
               <span id="config-status-msg" class="status-inline"></span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 5. Managed Rollout Pane -->
-      <section id="pane-rollout" class="tab-pane">
-        <div class="section-header">
-          <h2>Managed Rollouts</h2>
-          <button id="btn-new-rollout" class="btn btn-primary btn-sm">➕ New Rollout Campaign</button>
-        </div>
-
-        <!-- Active Rollouts List -->
-        <div class="panel">
-          <div class="panel-header">
-            <h3>Campaigns & Staged Deployments</h3>
-          </div>
-          <div class="panel-body">
-            <div id="rollouts-list" class="rollouts-grid">
-              <div class="empty-state">No active rollout campaigns. Click "New Rollout Campaign" to create one.</div>
             </div>
           </div>
         </div>

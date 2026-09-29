@@ -99,7 +99,6 @@ function switchTab(tabId, updateHash = true) {
   if (tabId === "portfolio") loadPortfolio();
   if (tabId === "devices") loadDevices();
   if (tabId === "admin") loadBridgeheadStatus();
-  if (tabId === "rollout") loadRollouts();
   if (tabId === "explorer") loadExplorerRegistries();
 }
 
@@ -503,6 +502,7 @@ async function loadRollouts() {
     state.rollouts = rollouts || [];
 
     const listEl = document.getElementById("rollouts-list");
+    if (!listEl) return;
     listEl.innerHTML = "";
     if (state.rollouts.length === 0) {
       listEl.innerHTML = '<div class="empty-state">No active rollout campaigns. Click "New Rollout Campaign" to create one.</div>';
@@ -730,23 +730,26 @@ function setupEventHandlers() {
   });
 
   // New Rollout Campaign Button
-  document.getElementById("btn-new-rollout").addEventListener("click", async () => {
-    const name = prompt("Enter Rollout Campaign Name:", "HVAC Firmware Upgrade v2.5");
-    if (!name) return;
-    await fetch(`${API_BASE}/api/rollouts`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name,
-        target_filter: { make: "Acme" },
-        target_subfolder: "system",
-        target_payload: { system: { software: { system: "2.5.0" } } },
-        batch_size: 5,
-        batch_interval_sec: 30,
-      }),
+  const btnNewRollout = document.getElementById("btn-new-rollout");
+  if (btnNewRollout) {
+    btnNewRollout.addEventListener("click", async () => {
+      const name = prompt("Enter Rollout Campaign Name:", "HVAC Firmware Upgrade v2.5");
+      if (!name) return;
+      await fetch(`${API_BASE}/api/rollouts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          target_filter: { make: "Acme" },
+          target_subfolder: "system",
+          target_payload: { system: { software: { system: "2.5.0" } } },
+          batch_size: 5,
+          batch_interval_sec: 30,
+        }),
+      });
+      loadRollouts();
     });
-    loadRollouts();
-  });
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -928,7 +931,7 @@ function parseHash() {
   }
 
   // Check if hash points to another GUMMI tab
-  const knownTabs = ["portfolio", "devices", "device-detail", "config", "rollout", "admin"];
+  const knownTabs = ["portfolio", "devices", "device-detail", "config", "admin"];
   if (knownTabs.includes(first)) {
     switchTab(first, false);
     if (first === "device-detail" && parts[1] && parts[2]) {

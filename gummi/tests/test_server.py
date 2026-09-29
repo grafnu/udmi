@@ -79,6 +79,8 @@ class TestGummiServer:
             assert "GUMMI" in content
             assert "Portfolio Overview" in content
             assert "Devices Explorer" in content
+            assert "Configuration Manager" in content
+            assert "Managed Rollout" not in content
             assert "Bridgehead Admin" in content
 
     def test_static_css_and_js(self, gummi_server):

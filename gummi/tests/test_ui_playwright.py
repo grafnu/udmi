@@ -104,12 +104,14 @@ def test_gummi_page_load_and_navigation(gummi_server_url: str, browser_context: 
     page.wait_for_function('document.querySelectorAll("#detail-messages-timeline div").length > 0')
     expect(lifecycle_container).to_contain_text("MODEL")
 
-    # 6. Test Navigation to Configuration & Rollout Tabs
-    page.locator('.nav-tab[data-tab="config"]').click()
+    # 6. Test Navigation to Configuration Manager Tab & Verify Managed Rollout Tab Removed
+    config_tab = page.locator('.nav-tab[data-tab="config"]')
+    expect(config_tab).to_contain_text("Configuration Manager")
+    config_tab.click()
     expect(page.locator("#pane-config")).to_have_class("tab-pane active")
 
-    page.locator('.nav-tab[data-tab="rollout"]').click()
-    expect(page.locator("#pane-rollout")).to_have_class("tab-pane active")
+    expect(page.locator('.nav-tab[data-tab="rollout"]')).to_have_count(0)
+    expect(page.locator("#pane-rollout")).to_have_count(0)
 
     page.locator('.nav-tab[data-tab="admin"]').click()
     expect(page.locator("#pane-admin")).to_have_class("tab-pane active")
