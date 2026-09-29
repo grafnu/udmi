@@ -1,20 +1,20 @@
 /* GUMMI UI Stylesheet */
 
 :root {
-  --primary-color: #2ebd6a;
-  --primary-hover: #25a25a;
-  --bg-color: #0b1a12;
-  --surface-color: #12261b;
-  --surface-hover: #193325;
-  --surface-header: #152c20;
-  --border-color: #1f3d2b;
-  --text-main: #e8f2ec;
-  --text-secondary: #9db5a6;
-  --text-muted: #6b8574;
+  --primary-color: #3b82f6;
+  --primary-hover: #2563eb;
+  --bg-color: #0b1329;
+  --surface-color: #111d38;
+  --surface-hover: #18284c;
+  --surface-header: #142242;
+  --border-color: #1e355e;
+  --text-main: #e8effc;
+  --text-secondary: #9bb1d4;
+  --text-muted: #667c9e;
   --success: #34d399;
   --warning: #fbbf24;
   --danger: #f87171;
-  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(3, 14, 8, 0.5);
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(2, 6, 23, 0.6);
   --border-radius: 8px;
 }
 
@@ -404,8 +404,8 @@ body {
   line-height: 1;
   font-weight: 700;
   color: var(--primary-color);
-  background: rgba(46, 189, 106, 0.15);
-  border: 1px solid rgba(46, 189, 106, 0.35);
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.35);
   border-radius: 4px;
   width: 14px;
   min-width: 14px;
@@ -446,7 +446,7 @@ body {
 }
 
 .data-table tbody tr:hover {
-  background-color: rgba(46, 189, 106, 0.08);
+  background-color: rgba(59, 130, 246, 0.08);
 }
 
 .empty-state {
@@ -489,7 +489,7 @@ body {
 .filter-group input, .filter-group select, .form-group input, .form-group select {
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--border-color);
-  background-color: #0c1c13;
+  background-color: #091024;
   color: var(--text-main);
   border-radius: 4px;
   font-size: 0.875rem;
@@ -671,8 +671,8 @@ body.tab-explorer .main-content,
   --etcd-accent-color: var(--primary-color);
   --etcd-accent-hover: var(--primary-hover);
   --etcd-active-bg: var(--surface-hover);
-  --etcd-hover-bg: rgba(46, 189, 106, 0.08);
-  --etcd-code-bg: #0c1c13;
+  --etcd-hover-bg: rgba(59, 130, 246, 0.08);
+  --etcd-code-bg: #091024;
   --etcd-code-text: var(--text-main);
   --etcd-badge-bg: rgba(255, 255, 255, 0.08);
   --etcd-toast-bg: var(--danger);
@@ -953,13 +953,13 @@ body.tab-explorer .main-content,
   font-size: 0.85rem;
   vertical-align: top;
   width: 35%;
-  color: #6ee7b7;
+  color: #60a5fa;
   word-break: break-word;
   overflow-wrap: anywhere;
 }
 
 #pane-explorer.light-theme .property-key {
-  color: #6ee7b7;
+  color: #60a5fa;
 }
 
 .device-link {
