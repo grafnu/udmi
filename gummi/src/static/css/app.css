@@ -291,6 +291,64 @@ body {
   border-bottom: 1px solid var(--border-color);
 }
 
+.data-table th.sortable-th {
+  user-select: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.data-table th.sortable-th:hover {
+  background-color: var(--surface-hover);
+}
+
+.data-table th .th-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.data-table th .th-label {
+  font-weight: 500;
+}
+
+.data-table th .sort-buttons {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  gap: 1px;
+}
+
+.data-table th .btn-sort {
+  background: transparent;
+  border: none;
+  padding: 0 2px;
+  margin: 0;
+  cursor: pointer;
+  font-size: 0.6rem;
+  line-height: 0.65rem;
+  color: var(--text-muted);
+  transition: color 0.15s ease, transform 0.1s ease;
+  display: block;
+}
+
+.data-table th .btn-sort:hover {
+  color: var(--text-main);
+  transform: scale(1.15);
+}
+
+.data-table th .btn-sort.active {
+  color: var(--primary-color);
+  font-weight: 700;
+}
+
+.data-table th[data-sorted="asc"] .th-label,
+.data-table th[data-sorted="desc"] .th-label {
+  color: var(--text-main);
+}
+
 .data-table td {
   padding: 0.75rem 1rem;
   border-bottom: 1px solid var(--border-color);

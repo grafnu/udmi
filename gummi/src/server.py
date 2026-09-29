@@ -126,6 +126,8 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
                 model = query.get("model", [None])[0]
                 status = query.get("status", [None])[0]
                 search = query.get("search", [None])[0]
+                sort_by = query.get("sort_by", [None])[0]
+                sort_dir = query.get("sort_dir", ["asc"])[0]
 
                 res = self.db.get_devices(
                     limit=limit,
@@ -136,6 +138,8 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
                     model=model,
                     status=status,
                     search=search,
+                    sort_by=sort_by,
+                    sort_dir=sort_dir,
                 )
                 return self._send_json(res)
 

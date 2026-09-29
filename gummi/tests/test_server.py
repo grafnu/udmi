@@ -133,6 +133,39 @@ class TestGummiServer:
             if dev.get("last_seen") and dev["last_seen"] != "None":
                 assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", dev["last_seen"]), f"Bad ISO format: {dev['last_seen']}"
 
+    def test_api_devices_sorting_registry(self, gummi_server):
+        # Ascending sort by registry_id
+        data_asc = http_get_json(f"{gummi_server}/api/devices?limit=25&offset=0&sort_by=registry_id&sort_dir=asc")
+        regs_asc = [d["registry_id"].lower() for d in data_asc["devices"]]
+        assert regs_asc == sorted(regs_asc)
+
+        # Descending sort by registry_id
+        data_desc = http_get_json(f"{gummi_server}/api/devices?limit=25&offset=0&sort_by=registry_id&sort_dir=desc")
+        regs_desc = [d["registry_id"].lower() for d in data_desc["devices"]]
+        assert regs_desc == sorted(regs_desc, reverse=True)
+
+    def test_api_devices_sorting_software(self, gummi_server):
+        # Ascending sort by software_version
+        data_asc = http_get_json(f"{gummi_server}/api/devices?limit=25&offset=0&sort_by=software_version&sort_dir=asc")
+        soft_asc = [(d.get("software_version") or "").lower() for d in data_asc["devices"]]
+        assert soft_asc == sorted(soft_asc)
+
+        # Descending sort by software_version
+        data_desc = http_get_json(f"{gummi_server}/api/devices?limit=25&offset=0&sort_by=software_version&sort_dir=desc")
+        soft_desc = [(d.get("software_version") or "").lower() for d in data_desc["devices"]]
+        assert soft_desc == sorted(soft_desc, reverse=True)
+
+    def test_api_devices_sorting_device_id_and_make(self, gummi_server):
+        # Ascending sort by device_id
+        data_dev_asc = http_get_json(f"{gummi_server}/api/devices?limit=25&offset=0&sort_by=device_id&sort_dir=asc")
+        devs_asc = [d["device_id"].lower() for d in data_dev_asc["devices"]]
+        assert devs_asc == sorted(devs_asc)
+
+        # Ascending sort by make
+        data_make_asc = http_get_json(f"{gummi_server}/api/devices?limit=25&offset=0&sort_by=make&sort_dir=asc")
+        makes_asc = [f"{d.get('make') or ''} {d.get('model') or ''}".strip().lower() for d in data_make_asc["devices"]]
+        assert makes_asc == sorted(makes_asc)
+
     def test_api_device_detail(self, gummi_server):
         data = http_get_json(f"{gummi_server}/api/devices/ZZ-TRI-FECTA/AHU-1")
         assert data.get("registry_id") == "ZZ-TRI-FECTA"

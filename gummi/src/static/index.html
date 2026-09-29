@@ -160,12 +160,60 @@
               <table class="data-table">
                 <thead>
                   <tr>
-                    <th>Device ID</th>
-                    <th>Registry</th>
-                    <th>Make / Model</th>
-                    <th>Software</th>
-                    <th>Status</th>
-                    <th>Last Seen</th>
+                    <th class="sortable-th" data-column="device_id">
+                      <div class="th-content">
+                        <span class="th-label">Device ID</span>
+                        <span class="sort-buttons">
+                          <button type="button" class="btn-sort btn-sort-up" data-sort="device_id" data-dir="asc" title="Sort by Device ID ascending" aria-label="Sort Device ID ascending">▲</button>
+                          <button type="button" class="btn-sort btn-sort-down" data-sort="device_id" data-dir="desc" title="Sort by Device ID descending" aria-label="Sort Device ID descending">▼</button>
+                        </span>
+                      </div>
+                    </th>
+                    <th class="sortable-th" data-column="registry_id">
+                      <div class="th-content">
+                        <span class="th-label">Registry</span>
+                        <span class="sort-buttons">
+                          <button type="button" class="btn-sort btn-sort-up" data-sort="registry_id" data-dir="asc" title="Sort by Registry ascending" aria-label="Sort Registry ascending">▲</button>
+                          <button type="button" class="btn-sort btn-sort-down" data-sort="registry_id" data-dir="desc" title="Sort by Registry descending" aria-label="Sort Registry descending">▼</button>
+                        </span>
+                      </div>
+                    </th>
+                    <th class="sortable-th" data-column="make">
+                      <div class="th-content">
+                        <span class="th-label">Make / Model</span>
+                        <span class="sort-buttons">
+                          <button type="button" class="btn-sort btn-sort-up" data-sort="make" data-dir="asc" title="Sort by Make / Model ascending" aria-label="Sort Make / Model ascending">▲</button>
+                          <button type="button" class="btn-sort btn-sort-down" data-sort="make" data-dir="desc" title="Sort by Make / Model descending" aria-label="Sort Make / Model descending">▼</button>
+                        </span>
+                      </div>
+                    </th>
+                    <th class="sortable-th" data-column="software_version">
+                      <div class="th-content">
+                        <span class="th-label">Software</span>
+                        <span class="sort-buttons">
+                          <button type="button" class="btn-sort btn-sort-up" data-sort="software_version" data-dir="asc" title="Sort by Software ascending" aria-label="Sort Software ascending">▲</button>
+                          <button type="button" class="btn-sort btn-sort-down" data-sort="software_version" data-dir="desc" title="Sort by Software descending" aria-label="Sort Software descending">▼</button>
+                        </span>
+                      </div>
+                    </th>
+                    <th class="sortable-th" data-column="status">
+                      <div class="th-content">
+                        <span class="th-label">Status</span>
+                        <span class="sort-buttons">
+                          <button type="button" class="btn-sort btn-sort-up" data-sort="status" data-dir="asc" title="Sort by Status ascending" aria-label="Sort Status ascending">▲</button>
+                          <button type="button" class="btn-sort btn-sort-down" data-sort="status" data-dir="desc" title="Sort by Status descending" aria-label="Sort Status descending">▼</button>
+                        </span>
+                      </div>
+                    </th>
+                    <th class="sortable-th" data-column="last_seen">
+                      <div class="th-content">
+                        <span class="th-label">Last Seen</span>
+                        <span class="sort-buttons">
+                          <button type="button" class="btn-sort btn-sort-up" data-sort="last_seen" data-dir="asc" title="Sort by Last Seen ascending" aria-label="Sort Last Seen ascending">▲</button>
+                          <button type="button" class="btn-sort btn-sort-down" data-sort="last_seen" data-dir="desc" title="Sort by Last Seen descending" aria-label="Sort Last Seen descending">▼</button>
+                        </span>
+                      </div>
+                    </th>
                     <th>Actions</th>
                   </tr>
                 </thead>

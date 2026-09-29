@@ -267,6 +267,32 @@ class GummiDB:
     # Devices Explorer Queries
     # --------------------------------------------------------------------------
 
+    @staticmethod
+    def _sort_device_list(devices: List[Dict[str, Any]], sort_by: str, sort_dir: str = "asc") -> List[Dict[str, Any]]:
+        if not sort_by:
+            return devices
+        sort_key = sort_by.lower()
+        is_desc = (sort_dir.lower() == "desc")
+
+        def extract_sort_key(d: Dict[str, Any]):
+            if sort_key in ("device_id", "deviceid", "device"):
+                val = d.get("device_id") or ""
+            elif sort_key in ("registry_id", "registryid", "registry"):
+                val = d.get("registry_id") or ""
+            elif sort_key in ("make", "model", "make_model", "makemodel"):
+                val = f"{d.get('make') or ''} {d.get('model') or ''}".strip()
+            elif sort_key in ("software_version", "softwareversion", "software"):
+                val = d.get("software_version") or ""
+            elif sort_key in ("liveness_status", "status"):
+                val = d.get("liveness_status") or ""
+            elif sort_key in ("last_seen", "lastseen"):
+                val = d.get("last_seen") or ""
+            else:
+                val = d.get(sort_by) or ""
+            return str(val).lower()
+
+        return sorted(devices, key=lambda d: (extract_sort_key(d), (d.get("device_id") or "").lower()), reverse=is_desc)
+
     def get_devices(
         self,
         limit: int = 100,
@@ -277,8 +303,10 @@ class GummiDB:
         model: Optional[str] = None,
         status: Optional[str] = None,
         search: Optional[str] = None,
+        sort_by: Optional[str] = None,
+        sort_dir: str = "asc",
     ) -> Dict[str, Any]:
-        """Fetches a paginated, filtered list of devices via Butler MCP."""
+        """Fetches a paginated, filtered, and sorted list of devices via Butler MCP."""
         if self.mock_mode:
             return self._filter_mock_devices(
                 limit=limit,
@@ -289,12 +317,14 @@ class GummiDB:
                 model=model,
                 status=status,
                 search=search,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
             )
 
         if not self.butler:
             raise ConnectionError("Butler MCP client is not configured or unavailable")
         try:
-            return self.butler.get_devices(
+            res = self.butler.get_devices(
                 limit=limit,
                 offset=offset,
                 registry_id=registry_id,
@@ -304,6 +334,9 @@ class GummiDB:
                 status=status,
                 search=search,
             )
+            if sort_by and res and "devices" in res:
+                res["devices"] = self._sort_device_list(res["devices"], sort_by, sort_dir)
+            return res
         except Exception as e:
             raise ConnectionError(f"Butler MCP request failed: {e}") from e
 
@@ -854,9 +887,11 @@ class GummiDB:
         model: Optional[str] = None,
         status: Optional[str] = None,
         search: Optional[str] = None,
+        sort_by: Optional[str] = None,
+        sort_dir: str = "asc",
     ) -> Dict[str, Any]:
         """Filters mock devices list according to query parameters."""
-        filtered = self._mock_fleet
+        filtered = list(self._mock_fleet)
         if registry_id:
             filtered = [d for d in filtered if registry_id.lower() in d["registry_id"].lower()]
         if device_prefix:
@@ -873,6 +908,9 @@ class GummiDB:
                 d for d in filtered
                 if s in d["device_id"].lower() or s in d["make"].lower() or s in d["model"].lower() or s in d["registry_id"].lower()
             ]
+
+        if sort_by:
+            filtered = self._sort_device_list(filtered, sort_by, sort_dir)
 
         total = len(filtered)
         paginated = filtered[offset : offset + limit]

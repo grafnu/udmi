@@ -147,6 +147,80 @@ def test_gummi_device_filtering_and_pagination(gummi_server_url: str, browser_co
     page.close()
 
 
+def test_gummi_device_column_sorting(gummi_server_url: str, browser_context: Browser):
+    """Tests device table sort up/down buttons on column headings and server-side sorting."""
+    page: Page = browser_context.new_page()
+    page_errors: List[str] = []
+    page.on("pageerror", lambda err: page_errors.append(str(err)))
+
+    page.goto(gummi_server_url)
+    page.locator('.nav-tab[data-tab="devices"]').click()
+    page.wait_for_selector("#devices-table-body tr")
+
+    # 1. Verify sort up/down buttons exist for headings
+    reg_th = page.locator('th[data-column="registry_id"]')
+    soft_th = page.locator('th[data-column="software_version"]')
+    expect(reg_th.locator(".btn-sort-up")).to_be_visible()
+    expect(reg_th.locator(".btn-sort-down")).to_be_visible()
+    expect(soft_th.locator(".btn-sort-up")).to_be_visible()
+    expect(soft_th.locator(".btn-sort-down")).to_be_visible()
+
+    # 2. Sort by Registry ascending
+    reg_th.locator(".btn-sort-up").click()
+    page.wait_for_timeout(300)
+    expect(reg_th).to_have_attribute("data-sorted", "asc")
+    expect(reg_th.locator(".btn-sort-up")).to_have_class(re.compile(r"\bactive\b"))
+    regs_asc = [el.inner_text().strip().lower() for el in page.locator("#devices-table-body tr td:nth-child(2)").all()]
+    assert len(regs_asc) > 0
+    assert regs_asc == sorted(regs_asc)
+
+    # 3. Sort by Registry descending
+    reg_th.locator(".btn-sort-down").click()
+    page.wait_for_timeout(300)
+    expect(reg_th).to_have_attribute("data-sorted", "desc")
+    expect(reg_th.locator(".btn-sort-down")).to_have_class(re.compile(r"\bactive\b"))
+    regs_desc = [el.inner_text().strip().lower() for el in page.locator("#devices-table-body tr td:nth-child(2)").all()]
+    assert len(regs_desc) > 0
+    assert regs_desc == sorted(regs_desc, reverse=True)
+
+    # 4. Sort by Software ascending
+    soft_th.locator(".btn-sort-up").click()
+    page.wait_for_timeout(300)
+    expect(soft_th).to_have_attribute("data-sorted", "asc")
+    expect(soft_th.locator(".btn-sort-up")).to_have_class(re.compile(r"\bactive\b"))
+    soft_asc = [el.inner_text().strip().lower() for el in page.locator("#devices-table-body tr td:nth-child(4)").all()]
+    assert len(soft_asc) > 0
+    assert soft_asc == sorted(soft_asc)
+
+    # 5. Sort by Software descending
+    soft_th.locator(".btn-sort-down").click()
+    page.wait_for_timeout(300)
+    expect(soft_th).to_have_attribute("data-sorted", "desc")
+    expect(soft_th.locator(".btn-sort-down")).to_have_class(re.compile(r"\bactive\b"))
+    soft_desc = [el.inner_text().strip().lower() for el in page.locator("#devices-table-body tr td:nth-child(4)").all()]
+    assert len(soft_desc) > 0
+    assert soft_desc == sorted(soft_desc, reverse=True)
+
+    # 6. Click Device ID column header label to toggle sorting
+    dev_th = page.locator('th[data-column="device_id"]')
+    dev_th.locator(".th-label").click()
+    page.wait_for_timeout(300)
+    expect(dev_th).to_have_attribute("data-sorted", "asc")
+    devs_asc = [el.inner_text().strip().lower() for el in page.locator("#devices-table-body tr td:nth-child(1)").all()]
+    assert len(devs_asc) > 0
+    assert devs_asc == sorted(devs_asc)
+
+    dev_th.locator(".th-label").click()
+    page.wait_for_timeout(300)
+    expect(dev_th).to_have_attribute("data-sorted", "desc")
+    devs_desc = [el.inner_text().strip().lower() for el in page.locator("#devices-table-body tr td:nth-child(1)").all()]
+    assert len(devs_desc) > 0
+    assert devs_desc == sorted(devs_desc, reverse=True)
+
+    assert len(page_errors) == 0, f"JavaScript errors during sorting: {page_errors}"
+    page.close()
+
+
 def test_gummi_jetski_deprecated(gummi_server_url: str, browser_context: Browser):
     """Verifies that the deprecated Jetski button and console pane are completely removed from the DOM."""
     page: Page = browser_context.new_page()

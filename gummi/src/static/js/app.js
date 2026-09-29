@@ -12,6 +12,8 @@ const state = {
     total: 0,
     limit: 25,
     offset: 0,
+    sortBy: null,
+    sortDir: "asc",
     filters: {
       search: "",
       registry: "",
@@ -209,7 +211,7 @@ async function loadPortfolio() {
 }
 
 async function loadDevices() {
-  const { limit, offset, filters } = state.devices;
+  const { limit, offset, filters, sortBy, sortDir } = state.devices;
   const params = new URLSearchParams({
     limit: limit.toString(),
     offset: offset.toString(),
@@ -218,6 +220,10 @@ async function loadDevices() {
   if (filters.registry) params.append("registry_id", filters.registry);
   if (filters.prefix) params.append("device_prefix", filters.prefix);
   if (filters.make) params.append("make", filters.make);
+  if (sortBy) {
+    params.append("sort_by", sortBy);
+    params.append("sort_dir", sortDir || "asc");
+  }
 
   try {
     const res = await fetch(`${API_BASE}/api/devices?${params.toString()}`);
@@ -226,10 +232,37 @@ async function loadDevices() {
     state.devices.total = data.total || 0;
 
     renderDevicesTable();
+    updateSortIndicators();
   } catch (err) {
     console.warn("Failed to load devices:", err);
   }
 }
+
+function updateSortIndicators() {
+  const { sortBy, sortDir } = state.devices;
+  document.querySelectorAll("#pane-devices th.sortable-th").forEach((th) => {
+    const col = th.dataset.column;
+    const btnUp = th.querySelector(".btn-sort-up");
+    const btnDown = th.querySelector(".btn-sort-down");
+    if (col === sortBy) {
+      th.setAttribute("data-sorted", sortDir);
+      if (btnUp) btnUp.classList.toggle("active", sortDir === "asc");
+      if (btnDown) btnDown.classList.toggle("active", sortDir === "desc");
+    } else {
+      th.removeAttribute("data-sorted");
+      if (btnUp) btnUp.classList.remove("active");
+      if (btnDown) btnDown.classList.remove("active");
+    }
+  });
+}
+
+function setDeviceSorting(sortBy, sortDir) {
+  state.devices.sortBy = sortBy;
+  state.devices.sortDir = sortDir;
+  state.devices.offset = 0;
+  loadDevices();
+}
+window.setDeviceSorting = setDeviceSorting;
 
 function renderDevicesTable() {
   const tbody = document.getElementById("devices-table-body");
@@ -454,6 +487,34 @@ function setupEventHandlers() {
   document.getElementById("btn-refresh-portfolio").addEventListener("click", loadPortfolio);
   document.getElementById("btn-refresh-devices").addEventListener("click", loadDevices);
   document.getElementById("btn-probe-admin").addEventListener("click", loadBridgeheadStatus);
+
+  // Device table column sorting
+  document.querySelectorAll("#pane-devices th.sortable-th").forEach((th) => {
+    const col = th.dataset.column;
+    const btnUp = th.querySelector(".btn-sort-up");
+    const btnDown = th.querySelector(".btn-sort-down");
+
+    if (btnUp) {
+      btnUp.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setDeviceSorting(col, "asc");
+      });
+    }
+    if (btnDown) {
+      btnDown.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setDeviceSorting(col, "desc");
+      });
+    }
+    th.addEventListener("click", () => {
+      if (state.devices.sortBy === col) {
+        const nextDir = state.devices.sortDir === "asc" ? "desc" : "asc";
+        setDeviceSorting(col, nextDir);
+      } else {
+        setDeviceSorting(col, "asc");
+      }
+    });
+  });
 
   // ETCD Explorer Controls
   const btnRefreshAll = document.getElementById("btn-refresh-explorer-all");
