@@ -278,8 +278,8 @@ function updateSortIndicators() {
       if (btnUp) btnUp.classList.toggle("active", info.dir === "asc");
       if (btnDown) btnDown.classList.toggle("active", info.dir === "desc");
       if (rankEl) {
-        rankEl.textContent = state.devices.sortList.length > 1 ? info.rank.toString() : "";
-        rankEl.style.display = state.devices.sortList.length > 1 ? "inline-block" : "none";
+        rankEl.textContent = info.rank.toString();
+        rankEl.style.visibility = "visible";
       }
     } else {
       th.removeAttribute("data-sorted");
@@ -289,7 +289,7 @@ function updateSortIndicators() {
       if (btnDown) btnDown.classList.remove("active");
       if (rankEl) {
         rankEl.textContent = "";
-        rankEl.style.display = "none";
+        rankEl.style.visibility = "hidden";
       }
     }
   });

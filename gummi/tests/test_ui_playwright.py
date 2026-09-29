@@ -426,4 +426,108 @@ def test_gummi_top_rows_fixed_width_and_scoped_vertical_scroll(gummi_server_url:
     page.close()
 
 
+def test_gummi_sort_rank_placeholder_preserves_item_width(gummi_server_url: str, browser_context: Browser):
+    """Verifies that sort-rank markers have exact-size invisible placeholders in unsorted state so column widths do not change."""
+    page: Page = browser_context.new_page()
+    page_errors: List[str] = []
+    page.on("pageerror", lambda err: page_errors.append(str(err)))
+
+    page.goto(gummi_server_url)
+    page.locator('.nav-tab[data-tab="devices"]').click()
+    page.wait_for_selector("#devices-table-body tr")
+
+    columns = ["device_id", "registry_id", "make", "software_version", "status", "last_seen"]
+
+    # 1. In unsorted state, verify .sort-priority is an invisible placeholder of fixed size 14x14
+    for col in columns:
+        th = page.locator(f'th[data-column="{col}"]')
+        rank_span = th.locator(".sort-priority")
+        expect(th).to_have_attribute("data-sort-state", "unsorted")
+        box = rank_span.bounding_box()
+        assert box is not None
+        assert abs(box["width"] - 14.0) < 0.5, f"Expected 14px width, got {box['width']}"
+        assert abs(box["height"] - 14.0) < 0.5, f"Expected 14px height, got {box['height']}"
+        vis = page.evaluate(f"() => window.getComputedStyle(document.querySelector('th[data-column=\"{col}\"] .sort-priority')).visibility")
+        assert vis == "hidden"
+
+    # 2. Record initial widths of all th elements and th-content elements
+    def get_th_widths():
+        return {
+            col: page.evaluate(f"() => document.querySelector('th[data-column=\"{col}\"]').getBoundingClientRect().width")
+            for col in columns
+        }
+
+    def get_content_widths():
+        return {
+            col: page.evaluate(f"() => document.querySelector('th[data-column=\"{col}\"] .th-content').getBoundingClientRect().width")
+            for col in columns
+        }
+
+    initial_th_widths = get_th_widths()
+    initial_content_widths = get_content_widths()
+
+    # 3. Sort Device ID ascending -> becomes rank 1
+    page.locator('th[data-column="device_id"] .btn-sort-up').click()
+    page.wait_for_timeout(200)
+
+    # Verify rank 1 is visible
+    dev_th = page.locator('th[data-column="device_id"]')
+    expect(dev_th).to_have_attribute("data-sort-state", "up")
+    expect(dev_th.locator(".sort-priority")).to_have_text("1")
+    dev_vis = page.evaluate("() => window.getComputedStyle(document.querySelector('th[data-column=\"device_id\"] .sort-priority')).visibility")
+    assert dev_vis == "visible"
+
+    # Verify widths are completely unchanged (zero impact on width)
+    sorted_th_widths = get_th_widths()
+    sorted_content_widths = get_content_widths()
+    for col in columns:
+        assert abs(sorted_th_widths[col] - initial_th_widths[col]) < 0.1, f"TH width changed on {col}: {initial_th_widths[col]} -> {sorted_th_widths[col]}"
+        assert abs(sorted_content_widths[col] - initial_content_widths[col]) < 0.1, f"Content width changed on {col}: {initial_content_widths[col]} -> {sorted_content_widths[col]}"
+
+    # 4. Sort Registry descending -> becomes rank 1, Device ID becomes rank 2
+    page.locator('th[data-column="registry_id"] .btn-sort-down').click()
+    page.wait_for_timeout(200)
+
+    reg_th = page.locator('th[data-column="registry_id"]')
+    expect(reg_th.locator(".sort-priority")).to_have_text("1")
+    expect(dev_th.locator(".sort-priority")).to_have_text("2")
+
+    multi_th_widths = get_th_widths()
+    multi_content_widths = get_content_widths()
+    for col in columns:
+        assert abs(multi_th_widths[col] - initial_th_widths[col]) < 0.1, f"Multi TH width changed on {col}: {initial_th_widths[col]} -> {multi_th_widths[col]}"
+        assert abs(multi_content_widths[col] - initial_content_widths[col]) < 0.1, f"Multi content width changed on {col}: {initial_content_widths[col]} -> {multi_content_widths[col]}"
+
+    # 5. Toggle Registry to unsorted -> Registry becomes invisible placeholder, Device ID returns to rank 1
+    page.locator('th[data-column="registry_id"] .btn-sort-down').click()
+    page.wait_for_timeout(200)
+
+    expect(reg_th).to_have_attribute("data-sort-state", "unsorted")
+    reg_vis_after = page.evaluate("() => window.getComputedStyle(document.querySelector('th[data-column=\"registry_id\"] .sort-priority')).visibility")
+    assert reg_vis_after == "hidden"
+
+    unsorted_th_widths = get_th_widths()
+    unsorted_content_widths = get_content_widths()
+    for col in columns:
+        assert abs(unsorted_th_widths[col] - initial_th_widths[col]) < 0.1, f"After unsort TH width changed on {col}: {initial_th_widths[col]} -> {unsorted_th_widths[col]}"
+        assert abs(unsorted_content_widths[col] - initial_content_widths[col]) < 0.1, f"After unsort content width changed on {col}: {initial_content_widths[col]} -> {unsorted_content_widths[col]}"
+
+    # 6. Toggle Device ID to unsorted -> all columns unsorted
+    page.locator('th[data-column="device_id"] .th-label').click()  # up -> down
+    page.wait_for_timeout(100)
+    page.locator('th[data-column="device_id"] .th-label').click()  # down -> unsorted
+    page.wait_for_timeout(200)
+
+    expect(dev_th).to_have_attribute("data-sort-state", "unsorted")
+    final_th_widths = get_th_widths()
+    final_content_widths = get_content_widths()
+    for col in columns:
+        assert abs(final_th_widths[col] - initial_th_widths[col]) < 0.1, f"Final TH width changed on {col}: {initial_th_widths[col]} -> {final_th_widths[col]}"
+        assert abs(final_content_widths[col] - initial_content_widths[col]) < 0.1, f"Final content width changed on {col}: {initial_content_widths[col]} -> {final_content_widths[col]}"
+
+    assert len(page_errors) == 0, f"Errors: {page_errors}"
+    page.close()
+
+
+
 
