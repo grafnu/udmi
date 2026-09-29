@@ -9,6 +9,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+import uuid
 from typing import Any, Dict, List, Optional
 
 from config import AxoloctlConfig
@@ -166,28 +167,57 @@ class SessionManager:
           check=True,
       )
 
+  def get_conversation_id(self, tag: str) -> str:
+    session_root = os.path.join(self.sessions_dir, tag)
+    os.makedirs(session_root, exist_ok=True)
+    conv_file = os.path.join(session_root, "conversation_id.txt")
+    if os.path.exists(conv_file):
+      try:
+        with open(conv_file, "r", encoding="utf-8") as f:
+          cid = f.read().strip()
+        if cid:
+          return cid
+      except Exception:
+        pass
+    cid = str(uuid.uuid4())
+    with open(conv_file, "w", encoding="utf-8") as f:
+      f.write(cid)
+    return cid
+
   def _ensure_agent_window(
       self, tag: str, app_worktree_dir: str, shared_dir: str
   ) -> None:
     if self.is_agent_running(tag):
       return
     session_root = os.path.join(self.sessions_dir, tag)
+    conv_id = self.get_conversation_id(tag)
     venv_activate = os.path.join(self.udmi_root, "venv", "bin", "activate")
     agent_script = os.path.join(session_root, "runner_agent.sh")
     with open(agent_script, "w", encoding="utf-8") as f:
       f.write(
-          f"""#!/bin/bash -e
+          f"""#!/bin/bash
+trap ':' INT
 source "{venv_activate}"
+export PATH="$HOME/bin:$HOME/.gemini/jetski/bin:$PATH"
 export AXOLOCTL_CONFIG="{self.config.config_path}"
 export AXOLOCTL_TAG="{tag}"
+export AXOLOCTL_CONV_ID="{conv_id}"
 export AXOLOCTL_DATA_DIR="{shared_dir}"
 export AXOLOCTL_HOST_PORT="{self.config.host_port}"
 export AXOLOCTL_WEBMCP_PORT="{self.config.webmcp_port}"
 export AXOLOCTL_MCP_PROXY_URL="http://127.0.0.1:{self.config.host_port}"
 export MCP_CONFIG="{self.config.mcp_config_path}"
 cd "{app_worktree_dir}"
-echo "Axoloctl Dedicated Agent [{tag}] (worktree: {app_worktree_dir}, branch: axoloctl-{tag})"
+echo "Axoloctl Dedicated Agent [{tag}]"
+echo "  Worktree : {app_worktree_dir} (branch: axoloctl-{tag})"
+echo "  Conv ID  : {conv_id}"
+echo "  MCP Cfg  : {self.config.mcp_config_path}"
 export PS1="[axoloctl:{tag}] \\W $ "
+if [[ "${{AXOLOCTL_AUTO_JETSKI:-0}}" == "1" ]] && command -v jetski >/dev/null 2>&1; then
+  unset ANTIGRAVITY_AGENT ANTIGRAVITY_CONVERSATION_ID ANTIGRAVITY_LS_ADDRESS ANTIGRAVITY_SOURCE_METADATA ANTIGRAVITY_TRAJECTORY_ID
+  export ANTIGRAVITY_CSRF_TOKEN="axoloctl-{tag}"
+  jetski --repl_mode --csrf_token="axoloctl-{tag}" || true
+fi
 exec bash --norc -i
 """
       )

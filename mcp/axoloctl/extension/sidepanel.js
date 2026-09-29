@@ -23,6 +23,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     panelWindowId = null;
   }
 
+  function extractVhostTag(viewerUrl) {
+    if (!viewerUrl) return null;
+    try {
+      const parsed = new URL(viewerUrl);
+      if (parsed.pathname.startsWith('/ui/')) return null;
+      const host = (parsed.hostname || '').toLowerCase();
+      if (host.endsWith('.localhost')) {
+        const prefix = host.slice(0, -'.localhost'.length);
+        const tag = prefix.split('.')[0];
+        return tag || null;
+      }
+    } catch (_e) {
+      // Ignore invalid URL
+    }
+    return null;
+  }
+
   async function getHostUrl() {
     if (currentCorrelation && currentCorrelation.hostUrl) {
       return currentCorrelation.hostUrl;
@@ -38,6 +55,57 @@ document.addEventListener('DOMContentLoaded', async () => {
     return DEFAULT_HOST_URL;
   }
 
+  async function directTabCorrelationFallback(hostUrl) {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.tabs || !chrome.tabs.query) {
+        return null;
+      }
+      let tabs = [];
+      if (panelWindowId != null) {
+        tabs = await chrome.tabs.query({ active: true, windowId: panelWindowId });
+      }
+      if (!tabs || tabs.length === 0) {
+        tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true, windowType: 'normal' });
+      }
+      if (!tabs || tabs.length === 0) {
+        tabs = await chrome.tabs.query({ active: true, windowType: 'normal' });
+      }
+      const activeTab = tabs && tabs[0];
+      if (!activeTab || !activeTab.url) {
+        return null;
+      }
+      const vtag = extractVhostTag(activeTab.url);
+      if (!vtag) {
+        return null;
+      }
+      const statusResp = await fetch(`${hostUrl}/api/status`);
+      if (!statusResp.ok) {
+        return null;
+      }
+      const statusData = await statusResp.json();
+      const sessions = (statusData && statusData.sessions) || {};
+      const sInfo = sessions[vtag];
+      if (!sInfo) {
+        return null;
+      }
+      const nonces = Object.keys(sInfo.nonces || {});
+      const latestNonce = nonces.length > 0 ? nonces[nonces.length - 1] : `vhost:${vtag}`;
+      return {
+        correlated: true,
+        tabId: activeTab.id,
+        tag: vtag,
+        commit: sInfo.commit || '',
+        description: sInfo.description || '',
+        nonce: latestNonce,
+        viewerUrl: activeTab.url,
+        backendUrl: sInfo.url || '',
+        hostUrl,
+      };
+    } catch (_e) {
+      return null;
+    }
+  }
+
   function buildViewportUrl(baseUrl) {
     if (!baseUrl) return 'about:blank';
     try {
@@ -45,6 +113,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (currentCorrelation.correlated && currentCorrelation.tag) {
         urlObj.searchParams.set('tag', currentCorrelation.tag);
         urlObj.searchParams.set('nonce', currentCorrelation.nonce || '');
+      } else {
+        urlObj.searchParams.delete('tag');
+        urlObj.searchParams.delete('nonce');
       }
       return urlObj.toString();
     } catch (_e) {
@@ -68,12 +139,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     isUpdatingBadge = true;
     try {
-      const res = await chrome.runtime.sendMessage({
+      let res = await chrome.runtime.sendMessage({
         type: 'AXOLOCTL_GET_ACTIVE_CORRELATION',
         windowId: panelWindowId,
       });
-      const prevTag = currentCorrelation.tag;
-      if (res && res.correlated) {
+      if (!res || !res.correlated) {
+        const hostUrl = (res && res.hostUrl) || (await getHostUrl());
+        const fallback = await directTabCorrelationFallback(hostUrl);
+        if (fallback && fallback.correlated) {
+          res = fallback;
+        }
+      }
+      if (res && res.correlated && res.tag) {
         currentCorrelation = res;
         const shortCommit = (res.commit || '').slice(0, 8);
         correlationStatus.className = 'status-pill correlated';
@@ -90,7 +167,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         correlationStatus.textContent = 'No correlated viewer in active tab';
         correlationNonce.textContent = '';
       }
-      if (prevTag !== currentCorrelation.tag && uiSelector.value) {
+      if (uiSelector.value) {
         setViewportUrl(buildViewportUrl(uiSelector.value));
       }
     } catch (_err) {
@@ -114,6 +191,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (!resp.ok) throw new Error('UI fetch failed');
       const data = await resp.json();
 
+      const prevSelected = uiSelector.value;
       uiSelector.innerHTML = '';
 
       if (data.uis && data.uis.length > 0) {
@@ -121,7 +199,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           const opt = document.createElement('option');
           opt.value = ui.url;
           opt.textContent = ui.label;
-          if (ui.id === data.default_ui) {
+          if (prevSelected ? ui.url === prevSelected : ui.id === data.default_ui) {
             opt.selected = true;
           }
           uiSelector.appendChild(opt);
@@ -151,16 +229,36 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   refreshBtn.addEventListener('click', () => {
-    loadUIs(true);
+    window.location.reload();
   });
 
-  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
-    chrome.runtime.onMessage.addListener((msg) => {
-      if (msg && msg.type === 'AXOLOCTL_CORRELATION_UPDATED') {
+  if (typeof chrome !== 'undefined') {
+    if (chrome.runtime && chrome.runtime.onMessage) {
+      chrome.runtime.onMessage.addListener((msg) => {
+        if (msg && msg.type === 'AXOLOCTL_CORRELATION_UPDATED') {
+          updateCorrelationBadge();
+        }
+      });
+    }
+    if (chrome.tabs && chrome.tabs.onActivated) {
+      chrome.tabs.onActivated.addListener(() => {
         updateCorrelationBadge();
-      }
-    });
+      });
+    }
+    if (chrome.tabs && chrome.tabs.onUpdated) {
+      chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
+        if (changeInfo.status === 'complete' || changeInfo.url) {
+          updateCorrelationBadge();
+        }
+      });
+    }
+    if (chrome.windows && chrome.windows.onFocusChanged) {
+      chrome.windows.onFocusChanged.addListener(() => {
+        updateCorrelationBadge();
+      });
+    }
   }
 
   loadUIs();
+  setInterval(updateCorrelationBadge, 1500);
 });

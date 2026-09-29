@@ -53,7 +53,7 @@ echo "Checking UI Discovery & Host UI endpoints (:9290)..."
 curl -s -f --noproxy '*' http://127.0.0.1:9290/api/uis | jq -e '.default_ui == "cliView" and (.uis | length == 3)' >/dev/null
 curl -s -f --noproxy '*' http://127.0.0.1:9290/ui/cli | grep -q "CLI Console"
 curl -s -f --noproxy '*' http://127.0.0.1:9290/ui/hub | grep -q "Web Hub"
-curl -s -f --noproxy '*' http://127.0.0.1:9290/ui/api | grep -q "Custom Chat"
+curl -s -f --noproxy '*' http://127.0.0.1:9290/ui/api | grep -q "Agent Chat"
 
 echo "Checking Web MCP stdio handshake (initialize & tools/list)..."
 INIT_OUT=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | bin/mcp_axoloctl --config "$CONFIG_FILE" --tag gummi mcp)
@@ -77,6 +77,9 @@ if [[ "$WORKTREE_BRANCH" != "axoloctl-gummi" ]]; then
 fi
 tmux list-windows -t udmi_axoloctl_agent -F "#{window_name}" | grep -qx "gummi"
 curl -s -f --noproxy '*' "http://127.0.0.1:9290/ui/cli?tag=gummi" | grep -q "udmi_axoloctl_agent:gummi"
+curl -s -f --noproxy '*' "http://127.0.0.1:9290/api/cli?tag=gummi" | jq -e '.tag == "gummi" and .running == true and .window == "udmi_axoloctl_agent:gummi"' >/dev/null
+curl -s -f --noproxy '*' "http://127.0.0.1:9290/api/hub/status?tag=gummi" | jq -e '.tag == "gummi" and .hub_port == 5387' >/dev/null
+curl -s -f --noproxy '*' "http://127.0.0.1:9290/api/chat/messages?tag=gummi" | jq -e '.tag == "gummi" and .conversation_id != null and (.messages | type == "array")' >/dev/null
 
 echo "Probing deployed web server via virtual host http://gummi.localhost:9290/..."
 curl -s -f --noproxy '*' --resolve gummi.localhost:9290:127.0.0.1 http://gummi.localhost:9290/ >/dev/null

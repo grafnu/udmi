@@ -63,8 +63,8 @@
     };
   }
 
-  async function registerViewerBeacon(notifyBackground = false) {
-    if (viewerSession && viewerSession.axoloctl) {
+  async function registerViewerBeacon(notifyBackground = false, force = false) {
+    if (!force && viewerSession && viewerSession.axoloctl) {
       return viewerSession;
     }
     if (registrationPromise) {
@@ -83,7 +83,7 @@
           }),
         });
         if (!resp.ok) {
-          return { axoloctl: false };
+          return viewerSession || { axoloctl: false };
         }
         const data = await resp.json();
         if (!data || data.axoloctl !== true || !data.tag) {
@@ -118,7 +118,7 @@
 
         return viewerSession;
       } catch (_err) {
-        return { axoloctl: false };
+        return viewerSession || { axoloctl: false };
       } finally {
         registrationPromise = null;
       }
@@ -130,11 +130,12 @@
   if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'AXOLOCTL_QUERY_VIEWER') {
-        if (viewerSession && viewerSession.axoloctl) {
+        const force = Boolean(msg.force);
+        if (!force && viewerSession && viewerSession.axoloctl) {
           sendResponse({ ...viewerSession, href: window.location.href });
           return false;
         }
-        registerViewerBeacon(false).then((res) => sendResponse(res));
+        registerViewerBeacon(false, force).then((res) => sendResponse(res));
         return true;
       }
       return false;
@@ -143,9 +144,9 @@
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
-      registerViewerBeacon(true);
+      registerViewerBeacon(true, true);
     });
   } else {
-    registerViewerBeacon(true);
+    registerViewerBeacon(true, true);
   }
 })();

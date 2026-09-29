@@ -22,7 +22,7 @@
       },
       {
         "id": "apiView",
-        "label": "Custom Chat (Agent API)",
+        "label": "Agent Chat",
         "path": "/ui/api"
       }
     ]

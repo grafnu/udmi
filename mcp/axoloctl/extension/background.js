@@ -1,16 +1,34 @@
 // Axoloctl Background Service Worker
 // Correlates Web Viewer tabs (Path 1: /.axoloctl/beacon) with the Axoloctl
 // Control Plane (Path 2: /api/status & /api/resolve on HOST_URL) using
-// per-tab nonces, enabling port-forwarding-agnostic session identification
-// and automatic tab reloads when a session's deployed commit changes.
+// per-tab nonces or virtual-host (<tag>.localhost) matching, enabling
+// port-forwarding-agnostic session identification and automatic tab reloads
+// when a session's deployed commit changes.
 
 const DEFAULT_HOST_URL = 'http://localhost:9290';
 const POLL_INTERVAL = 2000;
 
-// tabId -> { nonce, tag, commit, description, href, verified }
+// tabId -> { nonce, tag, commit, description, href, backendUrl, verified }
 const tabBeacons = new Map();
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error);
+
+function extractVhostTag(viewerUrl) {
+  if (!viewerUrl) return null;
+  try {
+    const parsed = new URL(viewerUrl);
+    if (parsed.pathname.startsWith('/ui/')) return null;
+    const host = (parsed.hostname || '').toLowerCase();
+    if (host.endsWith('.localhost')) {
+      const prefix = host.slice(0, -'.localhost'.length);
+      const tag = prefix.split('.')[0];
+      return tag || null;
+    }
+  } catch (_e) {
+    // Ignore invalid URLs
+  }
+  return null;
+}
 
 function deriveHostUrlFromViewer(viewerUrl) {
   if (!viewerUrl) return null;
@@ -80,7 +98,11 @@ async function syncControlPlane() {
 
     let correlationChanged = false;
     for (const [tabId, entry] of tabBeacons.entries()) {
-      const matched = findSessionByNonce(sessions, entry.nonce);
+      const matched =
+        findSessionByNonce(sessions, entry.nonce) ||
+        (entry.tag && sessions[entry.tag]
+          ? { tag: entry.tag, info: sessions[entry.tag] }
+          : null);
       if (matched) {
         const { tag, info } = matched;
         const prevCommit = entry.commit;
@@ -107,6 +129,16 @@ async function syncControlPlane() {
       } else if (entry.verified && entry.tag && !sessions[entry.tag]) {
         entry.verified = false;
         correlationChanged = true;
+      }
+    }
+
+    if (Object.keys(sessions).length > 0 && tabBeacons.size === 0) {
+      const activeTab = await getActiveTab();
+      if (activeTab && activeTab.id != null) {
+        const vtag = extractVhostTag(activeTab.url || '');
+        if (vtag && sessions[vtag]) {
+          correlationChanged = true;
+        }
       }
     }
 
@@ -143,6 +175,17 @@ async function getActiveTab(windowId = null) {
   return null;
 }
 
+async function queryTabViewer(tabId, force = false) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, {
+      type: 'AXOLOCTL_QUERY_VIEWER',
+      force,
+    });
+  } catch (_err) {
+    return null;
+  }
+}
+
 async function resolveActiveTabCorrelation(windowId = null) {
   const activeTab = await getActiveTab(windowId);
   if (!activeTab || activeTab.id == null) {
@@ -150,25 +193,12 @@ async function resolveActiveTabCorrelation(windowId = null) {
     return { correlated: false, hostUrl };
   }
   const tabId = activeTab.id;
-  const hostUrl = await getHostUrl(activeTab.url || '');
+  const tabUrl = activeTab.url || '';
+  const hostUrl = await getHostUrl(tabUrl);
 
-  // Query content script in active tab (returns cached viewerSession if already registered)
-  let viewerResp = null;
-  try {
-    viewerResp = await chrome.tabs.sendMessage(tabId, { type: 'AXOLOCTL_QUERY_VIEWER' });
-  } catch (_err) {
-    viewerResp = null;
-  }
-
-  if (viewerResp && viewerResp.axoloctl === false) {
-    tabBeacons.delete(tabId);
-    return {
-      correlated: false,
-      tabId,
-      viewerUrl: activeTab.url || '',
-      hostUrl,
-    };
-  }
+  // 1. Query content script in active tab
+  let viewerResp = await queryTabViewer(tabId, false);
+  const urlVhostTag = extractVhostTag(tabUrl);
 
   if (viewerResp && viewerResp.axoloctl && viewerResp.nonce) {
     const existing = tabBeacons.get(tabId) || {};
@@ -178,72 +208,109 @@ async function resolveActiveTabCorrelation(windowId = null) {
       tag: viewerResp.tag || existing.tag || '',
       commit: viewerResp.commit_hash || existing.commit || '',
       description: viewerResp.description || existing.description || '',
-      href: viewerResp.href || activeTab.url || '',
+      href: viewerResp.href || tabUrl,
       backendUrl: existing.backendUrl || '',
       verified: sameNonce ? Boolean(existing.verified) : false,
     });
-  }
-
-  const entry = tabBeacons.get(tabId);
-  if (!entry || !entry.nonce) {
+  } else if (!urlVhostTag) {
+    // Active tab has neither a live Axoloctl content script nor a <tag>.localhost URL
+    tabBeacons.delete(tabId);
     return {
       correlated: false,
       tabId,
-      viewerUrl: activeTab.url || '',
+      viewerUrl: tabUrl,
       hostUrl,
     };
   }
 
-  if (entry.verified && entry.tag && entry.commit) {
-    return {
-      correlated: true,
-      tabId,
-      tag: entry.tag,
-      commit: entry.commit,
-      description: entry.description || '',
-      nonce: entry.nonce,
-      viewerUrl: activeTab.url || entry.href,
-      backendUrl: entry.backendUrl || '',
-      hostUrl,
-    };
-  }
+  let entry = tabBeacons.get(tabId);
 
-  // Verify nonce over Path-2 (Control Plane /api/resolve)
-  try {
-    const resp = await fetch(
-      `${hostUrl}/api/resolve?nonce=${encodeURIComponent(entry.nonce)}`
-    );
-    if (resp.ok) {
-      const resolved = await resp.json();
-      if (resolved && resolved.resolved) {
-        entry.verified = true;
-        entry.tag = resolved.tag;
-        entry.commit = resolved.commit;
-        entry.description = resolved.description || '';
-        entry.backendUrl = resolved.url || '';
-        return {
-          correlated: true,
-          tabId,
-          tag: resolved.tag,
-          commit: resolved.commit,
-          description: resolved.description || '',
-          nonce: entry.nonce,
-          viewerUrl: activeTab.url || entry.href,
-          backendUrl: resolved.url,
-          hostUrl,
-        };
+  // 2. Verify nonce over Path-2 (Control Plane /api/resolve), re-registering once if server state was wiped
+  if (entry && entry.nonce && !entry.nonce.startsWith('vhost:')) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const resp = await fetch(
+          `${hostUrl}/api/resolve?nonce=${encodeURIComponent(entry.nonce)}`
+        );
+        if (resp.ok) {
+          const resolved = await resp.json();
+          if (resolved && resolved.resolved) {
+            entry.verified = true;
+            entry.tag = resolved.tag;
+            entry.commit = resolved.commit;
+            entry.description = resolved.description || '';
+            entry.backendUrl = resolved.url || '';
+            return {
+              correlated: true,
+              tabId,
+              tag: resolved.tag,
+              commit: resolved.commit,
+              description: resolved.description || '',
+              nonce: entry.nonce,
+              viewerUrl: tabUrl || entry.href,
+              backendUrl: resolved.url,
+              hostUrl,
+            };
+          }
+        }
+      } catch (_err) {
+        break;
+      }
+      if (attempt === 0) {
+        const refreshed = await queryTabViewer(tabId, true);
+        if (refreshed && refreshed.axoloctl && refreshed.nonce) {
+          entry.nonce = refreshed.nonce;
+          entry.tag = refreshed.tag || entry.tag;
+          entry.commit = refreshed.commit_hash || entry.commit;
+        } else {
+          break;
+        }
       }
     }
-  } catch (_err) {
-    // Fall through to uncorrelated response
+  }
+
+  // 3. Direct virtual-host (<tag>.localhost) correlation against /api/status
+  const vhostTag = urlVhostTag || (entry && entry.tag) || null;
+  if (vhostTag) {
+    try {
+      const statusResp = await fetch(`${hostUrl}/api/status`);
+      if (statusResp.ok) {
+        const statusData = await statusResp.json();
+        const sessions = (statusData && statusData.sessions) || {};
+        const sInfo = sessions[vhostTag];
+        if (sInfo) {
+          const nonceVal = (entry && entry.nonce) || `vhost:${vhostTag}`;
+          tabBeacons.set(tabId, {
+            nonce: nonceVal,
+            tag: vhostTag,
+            commit: sInfo.commit || '',
+            description: sInfo.description || '',
+            href: tabUrl,
+            backendUrl: sInfo.url || '',
+            verified: true,
+          });
+          return {
+            correlated: true,
+            tabId,
+            tag: vhostTag,
+            commit: sInfo.commit || '',
+            description: sInfo.description || '',
+            nonce: nonceVal,
+            viewerUrl: tabUrl,
+            backendUrl: sInfo.url || '',
+            hostUrl,
+          };
+        }
+      }
+    } catch (_err) {
+      // Ignore network error
+    }
   }
 
   return {
     correlated: false,
     tabId,
-    unverifiedTag: entry.tag || null,
-    nonce: entry.nonce,
-    viewerUrl: activeTab.url || entry.href,
+    viewerUrl: tabUrl,
     hostUrl,
   };
 }
@@ -284,8 +351,11 @@ chrome.tabs.onActivated.addListener(() => {
   chrome.runtime.sendMessage({ type: 'AXOLOCTL_CORRELATION_UPDATED' }).catch(() => {});
 });
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.status === 'complete' && tabBeacons.has(tabId)) {
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.url && !extractVhostTag(changeInfo.url)) {
+    tabBeacons.delete(tabId);
+  }
+  if (changeInfo.status === 'complete' || changeInfo.url) {
     chrome.runtime.sendMessage({ type: 'AXOLOCTL_CORRELATION_UPDATED' }).catch(() => {});
   }
 });

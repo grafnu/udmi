@@ -416,3 +416,291 @@ def test_per_tag_agent_worktree_isolation(tmp_path):
     assert f.read() == "v1"
 
 
+def test_agent_bridge_three_techniques(tmp_path):
+  from http.server import ThreadingHTTPServer
+  import subprocess
+  import threading
+  import urllib.request
+  from session_proxy import allocate_ephemeral_port
+  from ui_host import JetskiAgentBridge, UIHostHandler
+
+  cfg = load_config(GUMMI_CONFIG_PATH, UDMI_ROOT)
+  sessions_dir = tmp_path / "sessions"
+  alpha_dir = sessions_dir / "alpha"
+  (alpha_dir / "workspace" / "gummi").mkdir(parents=True)
+  (sessions_dir / "ports.json").write_text(
+      json.dumps({"alpha": 9300}), encoding="utf-8"
+  )
+
+  bridge = JetskiAgentBridge(str(tmp_path), cfg, str(sessions_dir))
+  bridge.brain_root = str(tmp_path / "brain")
+  test_tmux_session = f"axoloctl_test_agent_{os.getpid()}"
+  bridge.session_agent = test_tmux_session
+
+  subprocess.run(
+      [
+          "tmux",
+          "new-session",
+          "-d",
+          "-s",
+          test_tmux_session,
+          "-n",
+          "alpha",
+          "bash --norc -i",
+      ],
+      check=True,
+  )
+
+  # Populate a realistic transcript.jsonl for Technique 3 (apiView)
+  cid = bridge.get_conversation_id("alpha")
+  log_dir = tmp_path / "brain" / cid / ".system_generated" / "logs"
+  log_dir.mkdir(parents=True)
+  transcript_lines = [
+      {
+          "step_index": 1,
+          "type": "USER_INPUT",
+          "status": "DONE",
+          "created_at": "2026-09-28T12:00:00Z",
+          "content": "<USER_REQUEST>[Axoloctl Session: alpha | Worktree: /tmp] Filter devices by site</USER_REQUEST>",
+      },
+      {
+          "step_index": 2,
+          "type": "PLANNER_RESPONSE",
+          "status": "DONE",
+          "created_at": "2026-09-28T12:00:02Z",
+          "content": "Filtered devices by site in the alpha worktree.",
+      },
+  ]
+  (log_dir / "transcript.jsonl").write_text(
+      "\n".join(json.dumps(x) for x in transcript_lines) + "\n",
+      encoding="utf-8",
+  )
+
+  class CustomUIHostHandler(UIHostHandler):
+    pass
+
+  CustomUIHostHandler.config = cfg
+  CustomUIHostHandler.sessions_dir = str(sessions_dir)
+  CustomUIHostHandler.agent_bridge = bridge
+
+  gateway_port = allocate_ephemeral_port()
+  gateway_srv = ThreadingHTTPServer(("127.0.0.1", gateway_port), CustomUIHostHandler)
+  threading.Thread(target=gateway_srv.serve_forever, daemon=True).start()
+  opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+  try:
+    # 1. Technique 1 (cliView): POST /api/cli sends command to tmux pane, GET /api/cli captures output
+    cli_post = urllib.request.Request(
+        f"http://127.0.0.1:{gateway_port}/api/cli",
+        data=json.dumps({
+            "tag": "alpha",
+            "text": "echo AXOLOCTL_CLI_MARKER_42",
+            "submit": True,
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with opener.open(cli_post, timeout=5) as resp:
+      cli_res = json.loads(resp.read().decode("utf-8"))
+      assert cli_res["ok"] is True
+      assert cli_res["running"] is True
+      assert "AXOLOCTL_CLI_MARKER_42" in cli_res["output"]
+
+    # 2. Technique 2 (hubView): GET /api/hub/status returns Hub status and bound worktree
+    with opener.open(
+        f"http://127.0.0.1:{gateway_port}/api/hub/status?tag=alpha", timeout=5
+    ) as resp:
+      hub_res = json.loads(resp.read().decode("utf-8"))
+      assert hub_res["tag"] == "alpha"
+      assert hub_res["hub_port"] == 5387
+      assert hub_res["workspace"].endswith("alpha/workspace/gummi")
+
+    # 3. Technique 3 (apiView): GET /api/chat/messages parses transcript.jsonl & POST /api/chat/new rotates conversation
+    with opener.open(
+        f"http://127.0.0.1:{gateway_port}/api/chat/messages?tag=alpha", timeout=5
+    ) as resp:
+      chat_res = json.loads(resp.read().decode("utf-8"))
+      assert chat_res["tag"] == "alpha"
+      assert chat_res["conversation_id"] == cid
+      assert len(chat_res["messages"]) == 2
+      assert chat_res["messages"][0]["role"] == "user"
+      assert chat_res["messages"][0]["content"] == "Filter devices by site"
+      assert chat_res["messages"][1]["role"] == "assistant"
+      assert (
+          chat_res["messages"][1]["content"]
+          == "Filtered devices by site in the alpha worktree."
+      )
+      assert chat_res["agent_state"]["status"] == "ready"
+      assert chat_res["agent_state"]["is_busy"] is False
+
+    new_req = urllib.request.Request(
+        f"http://127.0.0.1:{gateway_port}/api/chat/new",
+        data=json.dumps({"tag": "alpha"}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with opener.open(new_req, timeout=5) as resp:
+      new_res = json.loads(resp.read().decode("utf-8"))
+      assert new_res["ok"] is True
+      assert new_res["conversation_id"] != cid
+  finally:
+    gateway_srv.shutdown()
+    subprocess.run(
+        ["tmux", "kill-session", "-t", test_tmux_session],
+        check=False,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def test_chat_activity_preflush_and_background_tasks(tmp_path):
+  """Verifies continuous busy indicator across pre-flush gap, toolAction calls, and background tasks."""
+  import time
+  from ui_host import JetskiAgentBridge
+
+  cfg = load_config(GUMMI_CONFIG_PATH, UDMI_ROOT)
+  sessions_dir = tmp_path / "sessions"
+  (sessions_dir / "alpha" / "workspace" / "gummi").mkdir(parents=True)
+  (sessions_dir / "ports.json").write_text(
+      json.dumps({"alpha": 9300}), encoding="utf-8"
+  )
+
+  bridge = JetskiAgentBridge(str(tmp_path), cfg, str(sessions_dir))
+  bridge.brain_root = str(tmp_path / "brain")
+  cid = bridge.get_conversation_id("alpha")
+  log_dir = tmp_path / "brain" / cid / ".system_generated" / "logs"
+  log_dir.mkdir(parents=True)
+  tfile = log_dir / "transcript.jsonl"
+
+  # Initial completed turn (steps 1-2)
+  entries = [
+      {
+          "step_index": 1,
+          "type": "USER_INPUT",
+          "status": "DONE",
+          "created_at": "2026-09-28T12:00:00Z",
+          "content": "<USER_REQUEST>Initial prompt</USER_REQUEST>",
+      },
+      {
+          "step_index": 2,
+          "type": "PLANNER_RESPONSE",
+          "status": "DONE",
+          "created_at": "2026-09-28T12:00:02Z",
+          "content": "Initial response.",
+      },
+  ]
+  tfile.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+
+  # 1. Simulate pre-flush gap immediately after send_chat_prompt
+  bridge._pending_turns["alpha"] = {
+      "cid": cid,
+      "prompt": "Update theme to forest green",
+      "baseline_step": 2,
+      "sent_at": time.time() - 3.0,
+  }
+  state_preflush = bridge.get_chat_messages("alpha")["agent_state"]
+  assert state_preflush["is_busy"] is True
+  assert state_preflush["status"] == "thinking"
+  assert state_preflush["pending_prompt"] == "Update theme to forest green"
+  assert state_preflush["elapsed_s"] >= 2
+
+  # 2. Transcript flushes user SYSTEM_MESSAGE (step 3) + PLANNER_RESPONSE with toolAction (step 4)
+  entries.extend([
+      {
+          "step_index": 3,
+          "type": "SYSTEM_MESSAGE",
+          "status": "DONE",
+          "created_at": "2026-09-28T12:00:10Z",
+          "content": "[Message] timestamp=2026-09-28T12:00:05Z sender=system content=Update theme to forest green\n</SYSTEM_MESSAGE>",
+      },
+      {
+          "step_index": 4,
+          "type": "PLANNER_RESPONSE",
+          "status": "DONE",
+          "created_at": "2026-09-28T12:00:10Z",
+          "thinking": "Inspecting CSS variables in app.css first.",
+          "tool_calls": [
+              {
+                  "name": "run_command",
+                  "args": {
+                      "toolAction": '"Running Playwright E2E browser tests"',
+                      "toolSummary": '"Playwright E2E test run"',
+                  },
+              }
+          ],
+      },
+  ])
+  tfile.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+
+  state_tool = bridge.get_chat_messages("alpha")["agent_state"]
+  assert state_tool["is_busy"] is True
+  assert state_tool["status"] == "executing_tool"
+  assert state_tool["active_tool"] == "Running Playwright E2E browser tests"
+  assert state_tool["step_count"] == 1
+  assert "Inspecting CSS variables" in state_tool["thinking"]
+
+  # 3. Background task detaches (step 5 RUNNING) + intermediate PLANNER_RESPONSE without tool_calls (step 6)
+  entries.extend([
+      {
+          "step_index": 5,
+          "type": "GENERIC",
+          "status": "RUNNING",
+          "created_at": "2026-09-28T12:00:15Z",
+          "content": f"Tool is running as a background task with task id: {cid}/task-5\nTask Description: pytest",
+      },
+      {
+          "step_index": 6,
+          "type": "PLANNER_RESPONSE",
+          "status": "DONE",
+          "created_at": "2026-09-28T12:00:17Z",
+          "content": "Running Playwright browser test suite in the background...",
+      },
+  ])
+  tfile.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+
+  state_bg = bridge.get_chat_messages("alpha")["agent_state"]
+  assert state_bg["is_busy"] is True
+  assert state_bg["status"] == "executing_tool"
+  assert "Running Playwright E2E browser tests (background task)" == state_bg["active_tool"]
+
+  # 4. Background task finishes (step 7 SYSTEM_MESSAGE) -> still busy while model evaluates result
+  entries.append({
+      "step_index": 7,
+      "type": "SYSTEM_MESSAGE",
+      "status": "DONE",
+      "created_at": "2026-09-28T12:00:25Z",
+      "content": f"<SYSTEM_MESSAGE>\n[Message] timestamp=2026-09-28T12:00:24Z sender={cid}/task-5 content=Task finished\n</SYSTEM_MESSAGE>",
+  })
+  tfile.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+
+  state_eval = bridge.get_chat_messages("alpha")["agent_state"]
+  assert state_eval["is_busy"] is True
+  assert state_eval["status"] == "thinking"
+
+  # 5. Final PLANNER_RESPONSE (step 8) completes the turn -> transitions to ready
+  entries.append({
+      "step_index": 8,
+      "type": "PLANNER_RESPONSE",
+      "status": "DONE",
+      "created_at": "2026-09-28T12:00:28Z",
+      "content": "Theme updated and all Playwright tests passed.",
+  })
+  tfile.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+
+  state_done = bridge.get_chat_messages("alpha")["agent_state"]
+  assert state_done["is_busy"] is False
+  assert state_done["status"] == "ready"
+  assert "alpha" not in bridge._pending_turns
+
+  # 6. Uncorrelated tab (empty tag) never falls back to ports.json ('alpha')
+  from ui_host import _render_ui_page
+  uncorrelated_chat = bridge.get_chat_messages("")
+  assert uncorrelated_chat["tag"] == ""
+  assert uncorrelated_chat["conversation_id"] is None
+  assert uncorrelated_chat["messages"] == []
+
+  uncorrelated_html = _render_ui_page(cfg, "apiView", "Agent Chat", active_tag="").decode("utf-8")
+  assert "No correlated viewer in active tab" in uncorrelated_html
+  assert "udmi_axoloctl_agent:alpha" not in uncorrelated_html
+
+
+

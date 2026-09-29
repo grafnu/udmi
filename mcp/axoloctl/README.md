@@ -349,7 +349,7 @@ Because the Chrome Extension only hosts the control bar, the single `<iframe id=
        "uis": [
          { "id": "cliView", "label": "CLI Console", "url": "http://localhost:9290/ui/cli" },
          { "id": "hubView", "label": "Web Hub", "url": "http://localhost:9290/ui/hub" },
-         { "id": "apiView", "label": "Custom Chat (Agent API)", "url": "http://localhost:9290/ui/api" }
+         { "id": "apiView", "label": "Agent Chat", "url": "http://localhost:9290/ui/api" }
        ]
      }
      ```
