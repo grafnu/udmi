@@ -1096,10 +1096,15 @@ def test_web_hub_server_and_ui_refinements(tmp_path, monkeypatch):
           == "/exa.language_server_pb.LanguageServerService/GetServerConfiguration"
       )
 
-    # 5. Verify CLI Console removes xterm.js scrollbar and sets scrollback: 0
+    # 5. Verify CLI Console uses light theme, removes xterm.js scrollbar, and sets scrollback: 0
     cli_html = _render_ui_page(
         cfg, "cliView", "CLI Console", active_tag="alpha", hub_port=hub_port
     ).decode("utf-8")
+    assert '<body class="theme-light">' in cli_html
+    assert 'background: "#f8fafc"' in cli_html
+    assert 'foreground: "#0f172a"' in cli_html
+    assert "extendedAnsi" in cli_html
+    assert "minimumContrastRatio: 4.5" in cli_html
     assert ".xterm-wrapper .xterm-viewport" in cli_html
     assert "overflow: hidden !important;" in cli_html
     assert "scrollback: 0" in cli_html
@@ -1122,5 +1127,312 @@ def test_web_hub_server_and_ui_refinements(tmp_path, monkeypatch):
   finally:
     bridge.stop_hub()
     ls_srv.shutdown()
+
+
+def test_cli_websocket_full_duplex_and_ordered_keystrokes(tmp_path):
+  """Verifies RFC 6455 WebSocket CLI upgrade, attach, rapid ungarbled keystrokes, and PTY output streaming."""
+  import base64
+  import hashlib
+  from http.server import ThreadingHTTPServer
+  import socket
+  import struct
+  import subprocess
+  import threading
+  import time
+  from session_proxy import allocate_ephemeral_port
+  from ui_host import JetskiAgentBridge, UIHostHandler, WSConnection, WS_MAGIC_GUID
+
+  cfg = load_config(GUMMI_CONFIG_PATH, UDMI_ROOT)
+  sessions_dir = tmp_path / "sessions"
+  alpha_dir = sessions_dir / "alpha"
+  (alpha_dir / "workspace" / "gummi").mkdir(parents=True)
+  (sessions_dir / "ports.json").write_text(
+      json.dumps({"alpha": 9300}), encoding="utf-8"
+  )
+
+  bridge = JetskiAgentBridge(str(tmp_path), cfg, str(sessions_dir))
+  bridge.brain_root = str(tmp_path / "brain")
+  test_tmux_session = f"axoloctl_test_ws_{os.getpid()}"
+  bridge.session_agent = test_tmux_session
+
+  subprocess.run(
+      [
+          "tmux",
+          "new-session",
+          "-d",
+          "-s",
+          test_tmux_session,
+          "-n",
+          "alpha",
+          "bash --norc -i",
+      ],
+      check=True,
+  )
+
+  class CustomUIHostHandler(UIHostHandler):
+    pass
+
+  CustomUIHostHandler.config = cfg
+  CustomUIHostHandler.sessions_dir = str(sessions_dir)
+  CustomUIHostHandler.agent_bridge = bridge
+
+  gateway_port = allocate_ephemeral_port()
+  gateway_srv = ThreadingHTTPServer(("127.0.0.1", gateway_port), CustomUIHostHandler)
+  threading.Thread(target=gateway_srv.serve_forever, daemon=True).start()
+
+  def send_masked_client_json(sock: socket.socket, obj: dict) -> None:
+    payload = json.dumps(obj).encode("utf-8")
+    mask_key = b"\x37\xfa\x21\x3d"
+    masked_payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+    length = len(payload)
+    header = bytearray([0x81])
+    if length < 126:
+      header.append(0x80 | length)
+    elif length < 65536:
+      header.append(0x80 | 126)
+      header.extend(struct.pack(">H", length))
+    else:
+      header.append(0x80 | 127)
+      header.extend(struct.pack(">Q", length))
+    sock.sendall(bytes(header) + mask_key + masked_payload)
+
+  sock = socket.create_connection(("127.0.0.1", gateway_port), timeout=5.0)
+  try:
+    ws_key = base64.b64encode(b"axoloctl-ws-test").decode("ascii")
+    expected_accept = base64.b64encode(
+        hashlib.sha1((ws_key + WS_MAGIC_GUID).encode("utf-8")).digest()
+    ).decode("ascii")
+    upgrade_req = (
+        f"GET /ws?tag=alpha HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{gateway_port}\r\n"
+        f"Upgrade: websocket\r\n"
+        f"Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {ws_key}\r\n"
+        f"Sec-WebSocket-Version: 13\r\n\r\n"
+    ).encode("ascii")
+    sock.sendall(upgrade_req)
+
+    resp_buf = b""
+    while b"\r\n\r\n" not in resp_buf:
+      chunk = sock.recv(1024)
+      assert chunk
+      resp_buf += chunk
+    header_text = resp_buf.split(b"\r\n\r\n", 1)[0].decode("ascii")
+    assert "101 Switching Protocols" in header_text
+    assert f"Sec-WebSocket-Accept: {expected_accept}" in header_text
+
+    client_ws = WSConnection(sock)
+
+    # 1. Attach session and verify status frame arrives
+    send_masked_client_json(
+        sock,
+        {"type": "attach", "tag": "alpha", "cols": 96, "rows": 28, "offset": 0},
+    )
+    first_msg = client_ws.read_message()
+    assert first_msg is not None
+    assert first_msg["type"] == "status"
+    assert first_msg["running"] is True
+    assert first_msg["tag"] == "alpha"
+
+    # 2. Verify redundant resize with identical dimensions returns False without re-running resize-window
+    assert bridge.maybe_resize_cli_window("alpha", 96, 28) is False
+
+    # 3. Send 28 individual character frames back-to-back with zero delay to test strict ordering
+    target_cmd = "echo WS_SEQ_0123456789_OK\r"
+    for ch in target_cmd:
+      send_masked_client_json(
+          sock,
+          {
+              "type": "input",
+              "tag": "alpha",
+              "hexKeys": [f"{ord(ch):02x}"],
+          },
+      )
+
+    # 4. Read streamed output frames and verify the exact ungarbled string arrives
+    streamed_bytes = b""
+    deadline = time.time() + 4.0
+    while time.time() < deadline:
+      msg = client_ws.read_message()
+      assert msg is not None
+      if msg.get("type") in ("snapshot", "output") and msg.get("data"):
+        streamed_bytes += base64.b64decode(msg["data"])
+        if b"WS_SEQ_0123456789_OK" in streamed_bytes:
+          break
+    assert b"WS_SEQ_0123456789_OK" in streamed_bytes
+
+    # 5. Verify ping/pong
+    send_masked_client_json(sock, {"type": "ping"})
+    deadline = time.time() + 2.0
+    got_pong = False
+    while time.time() < deadline:
+      msg = client_ws.read_message()
+      if msg and msg.get("type") == "pong":
+        got_pong = True
+        break
+    assert got_pong is True
+  finally:
+    try:
+      sock.close()
+    except Exception:
+      pass
+    gateway_srv.shutdown()
+    subprocess.run(
+        ["tmux", "kill-session", "-t", test_tmux_session],
+        check=False,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def test_extension_sidepanel_per_tab_visibility():
+  """Verifies per-tab sidePanel hide/reveal behavior in background.js and content.js."""
+  import subprocess
+
+  bg_path = os.path.join(
+      UDMI_ROOT, "mcp", "axoloctl", "extension", "background.js"
+  )
+  content_path = os.path.join(
+      UDMI_ROOT, "mcp", "axoloctl", "extension", "content.js"
+  )
+
+  with open(content_path, "r", encoding="utf-8") as f:
+    content_js = f.read()
+  assert "AXOLOCTL_ENSURE_SIDEPANEL_OPEN" in content_js
+  assert "attachAutoOpenListeners" in content_js
+
+  node_script = f"""
+const fs = require('fs');
+const vm = require('vm');
+
+const setOptionsCalls = [];
+const openCalls = [];
+const panelBehaviorCalls = [];
+let onMessageListener = null;
+let onActivatedListener = null;
+let onUpdatedListener = null;
+let onClickedListener = null;
+
+const tabsMap = new Map([
+  [10, {{ id: 10, url: 'http://gummi.localhost:9290/' }}],
+  [20, {{ id: 20, url: 'https://www.google.com/' }}],
+]);
+
+const sandbox = {{
+  console,
+  URL,
+  Map,
+  Set,
+  Promise,
+  Date,
+  encodeURIComponent,
+  setInterval: () => 1,
+  clearInterval: () => {{}},
+  fetch: async () => ({{ ok: false }}),
+  chrome: {{
+    sidePanel: {{
+      setPanelBehavior: async (opts) => {{ panelBehaviorCalls.push(opts); }},
+      setOptions: async (opts) => {{ setOptionsCalls.push(opts); }},
+      open: async (opts) => {{ openCalls.push(opts); }},
+    }},
+    action: {{
+      onClicked: {{
+        addListener: (fn) => {{ onClickedListener = fn; }},
+      }},
+    }},
+    storage: {{
+      local: {{
+        get: async () => ({{}}),
+      }},
+    }},
+    runtime: {{
+      sendMessage: async () => ({{}}),
+      onMessage: {{
+        addListener: (fn) => {{ onMessageListener = fn; }},
+      }},
+    }},
+    tabs: {{
+      query: async () => Array.from(tabsMap.values()),
+      get: async (tabId) => tabsMap.get(tabId),
+      reload: () => {{}},
+      update: async () => ({{}}),
+      create: async () => ({{ id: 30 }}),
+      onActivated: {{
+        addListener: (fn) => {{ onActivatedListener = fn; }},
+      }},
+      onUpdated: {{
+        addListener: (fn) => {{ onUpdatedListener = fn; }},
+      }},
+      onRemoved: {{
+        addListener: () => {{}},
+      }},
+    }},
+  }},
+}};
+
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync({json.dumps(bg_path)}, 'utf8'), sandbox);
+
+(async () => {{
+  await new Promise((r) => setTimeout(r, 20));
+
+  // 1. Global default is disabled, tab 10 (gummi.localhost) is enabled, tab 20 (google.com) is disabled
+  const globalOpt = setOptionsCalls.find((c) => c.tabId === undefined);
+  const tab10Init = setOptionsCalls.find((c) => c.tabId === 10);
+  const tab20Init = setOptionsCalls.find((c) => c.tabId === 20);
+  if (!globalOpt || globalOpt.enabled !== false) throw new Error('Expected global enabled: false');
+  if (!tab10Init || tab10Init.enabled !== true) throw new Error('Expected tab 10 enabled: true');
+  if (!tab20Init || tab20Init.enabled !== false) throw new Error('Expected tab 20 enabled: false');
+
+  // 2. Navigating tab 10 away from gummi.localhost to example.com hides the side panel (enabled: false)
+  setOptionsCalls.length = 0;
+  tabsMap.set(10, {{ id: 10, url: 'https://example.com/' }});
+  onUpdatedListener(10, {{ url: 'https://example.com/' }}, tabsMap.get(10));
+  const tab10Nav = setOptionsCalls.find((c) => c.tabId === 10);
+  if (!tab10Nav || tab10Nav.enabled !== false) throw new Error('Expected tab 10 disabled after navigation');
+
+  // 3. Beacon registration on port-forwarded tab 20 enables its side panel (enabled: true)
+  setOptionsCalls.length = 0;
+  onMessageListener(
+    {{ type: 'AXOLOCTL_VIEWER_BEACON', nonce: 'n1', tag: 'gummi', href: 'http://localhost:9300/' }},
+    {{ tab: {{ id: 20, url: 'http://localhost:9300/' }} }},
+    () => {{}}
+  );
+  const tab20Beacon = setOptionsCalls.find((c) => c.tabId === 20);
+  if (!tab20Beacon || tab20Beacon.enabled !== true) throw new Error('Expected tab 20 enabled on beacon');
+
+  // 4. Clicking toolbar icon on uncorrelated tab 10 enables and opens the side panel
+  setOptionsCalls.length = 0;
+  openCalls.length = 0;
+  onClickedListener({{ id: 10, url: 'https://example.com/' }});
+  const tab10Click = setOptionsCalls.find((c) => c.tabId === 10);
+  if (!tab10Click || tab10Click.enabled !== true) throw new Error('Expected tab 10 enabled on action click');
+  if (openCalls.length !== 1 || openCalls[0].tabId !== 10) throw new Error('Expected sidePanel.open on tab 10');
+
+  // 5. AXOLOCTL_ENSURE_SIDEPANEL_OPEN from content script opens side panel for sender tab
+  openCalls.length = 0;
+  onMessageListener(
+    {{ type: 'AXOLOCTL_ENSURE_SIDEPANEL_OPEN', href: 'http://gummi.localhost:9290/' }},
+    {{ tab: {{ id: 10, url: 'http://gummi.localhost:9290/' }} }},
+    () => {{}}
+  );
+  if (openCalls.length !== 1 || openCalls[0].tabId !== 10) throw new Error('Expected sidePanel.open from content gesture');
+
+  console.log('SIDEPANEL_VISIBILITY_OK');
+}})().catch((err) => {{
+  console.error(err);
+  process.exit(1);
+}});
+"""
+  res = subprocess.run(
+      ["node", "-e", node_script],
+      stdout=subprocess.PIPE,
+      stderr=subprocess.PIPE,
+      text=True,
+      check=False,
+  )
+  assert res.returncode == 0, f"Node test failed: {res.stderr}"
+  assert "SIDEPANEL_VISIBILITY_OK" in res.stdout
+
+
 
 

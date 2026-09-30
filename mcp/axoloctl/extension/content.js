@@ -24,10 +24,45 @@
   let viewerSession = null;
   let registrationPromise = null;
   let telemetryAttached = false;
+  let autoOpenAttached = false;
 
   function isVhostViewerPage() {
     const host = (window.location.hostname || '').toLowerCase();
     return host.endsWith('.localhost');
+  }
+
+  function attachAutoOpenListeners() {
+    if (autoOpenAttached) {
+      return;
+    }
+    autoOpenAttached = true;
+
+    const triggerOpen = (event) => {
+      if (event && event.isTrusted === false) {
+        return;
+      }
+      window.removeEventListener('pointerdown', triggerOpen, true);
+      window.removeEventListener('keydown', triggerOpen, true);
+      if (
+        typeof chrome !== 'undefined' &&
+        chrome.runtime &&
+        chrome.runtime.sendMessage
+      ) {
+        chrome.runtime
+          .sendMessage({
+            type: 'AXOLOCTL_ENSURE_SIDEPANEL_OPEN',
+            href: window.location.href,
+          })
+          .catch(() => {});
+      }
+    };
+
+    window.addEventListener('pointerdown', triggerOpen, true);
+    window.addEventListener('keydown', triggerOpen, true);
+  }
+
+  if (isVhostViewerPage()) {
+    attachAutoOpenListeners();
   }
 
   function checkPageHealth() {
@@ -180,6 +215,7 @@
         };
 
         attachTelemetryListeners();
+        attachAutoOpenListeners();
         const health = checkPageHealth();
         const fullState = { ...viewerSession, ...health };
 

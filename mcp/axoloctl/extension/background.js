@@ -13,8 +13,79 @@ const MAX_RELOAD_ATTEMPTS = 8;
 
 // tabId -> { nonce, tag, commit, description, href, backendUrl, verified, pageLoadedOk, verifyingReload, lastReloadAt, reloadAttempts }
 const tabBeacons = new Map();
+// Tabs where the user explicitly clicked the toolbar icon to open the panel
+const manualPanelTabs = new Set();
 
-chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error);
+function isAxoloctlTab(tabId, tabUrl = '') {
+  if (tabId != null && (tabBeacons.has(tabId) || manualPanelTabs.has(tabId))) {
+    return true;
+  }
+  return Boolean(extractVhostTag(tabUrl));
+}
+
+function syncTabSidePanel(tabId, tabUrl = '') {
+  if (tabId == null || typeof chrome === 'undefined' || !chrome.sidePanel || !chrome.sidePanel.setOptions) {
+    return;
+  }
+  const enabled = isAxoloctlTab(tabId, tabUrl);
+  chrome.sidePanel
+    .setOptions({
+      tabId,
+      path: 'sidepanel.html',
+      enabled,
+    })
+    .catch(() => {});
+}
+
+function initializeSidePanelVisibility() {
+  if (typeof chrome === 'undefined' || !chrome.sidePanel) {
+    return;
+  }
+  // Handle toolbar icon clicks manually so clicking the icon on an uncorrelated
+  // tab enables and opens the side panel for that tab within the user gesture.
+  if (chrome.sidePanel.setPanelBehavior) {
+    chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => {});
+  }
+  // Disable the global side panel by default so non-Axoloctl tabs hide it.
+  if (chrome.sidePanel.setOptions) {
+    chrome.sidePanel
+      .setOptions({ path: 'sidepanel.html', enabled: false })
+      .catch(() => {});
+  }
+  if (chrome.tabs && chrome.tabs.query) {
+    chrome.tabs
+      .query({})
+      .then((tabs) => {
+        for (const tab of tabs || []) {
+          if (tab && tab.id != null) {
+            syncTabSidePanel(tab.id, tab.url || '');
+          }
+        }
+      })
+      .catch(() => {});
+  }
+}
+
+initializeSidePanelVisibility();
+
+if (typeof chrome !== 'undefined' && chrome.action && chrome.action.onClicked) {
+  chrome.action.onClicked.addListener((tab) => {
+    if (!tab || tab.id == null) {
+      return;
+    }
+    manualPanelTabs.add(tab.id);
+    chrome.sidePanel
+      .setOptions({
+        tabId: tab.id,
+        path: 'sidepanel.html',
+        enabled: true,
+      })
+      .catch(() => {});
+    if (chrome.sidePanel.open) {
+      chrome.sidePanel.open({ tabId: tab.id }).catch(() => {});
+    }
+  });
+}
 
 function extractVhostTag(viewerUrl) {
   if (!viewerUrl) return null;
@@ -150,6 +221,7 @@ async function syncControlPlane() {
           lastReloadAt: 0,
           reloadAttempts: 0,
         });
+        syncTabSidePanel(activeTab.id, activeTab.url || '');
       }
     }
 
@@ -274,8 +346,10 @@ async function resolveActiveTabCorrelation(windowId = null) {
       lastReloadAt: existing.lastReloadAt || 0,
       reloadAttempts: loadedOk ? 0 : existing.reloadAttempts || 0,
     });
+    syncTabSidePanel(tabId, tabUrl);
   } else if (!urlVhostTag) {
     tabBeacons.delete(tabId);
+    syncTabSidePanel(tabId, tabUrl);
     return {
       correlated: false,
       tabId,
@@ -301,6 +375,7 @@ async function resolveActiveTabCorrelation(windowId = null) {
             entry.commit = resolved.commit;
             entry.description = resolved.description || '';
             entry.backendUrl = resolved.url || '';
+            syncTabSidePanel(tabId, tabUrl);
             return {
               correlated: true,
               tabId,
@@ -363,6 +438,7 @@ async function resolveActiveTabCorrelation(windowId = null) {
             reloadAttempts: loadedOk ? 0 : (entry && entry.reloadAttempts) || 0,
           };
           tabBeacons.set(tabId, nextEntry);
+          syncTabSidePanel(tabId, tabUrl);
           if (!loadedOk) {
             syncControlPlane();
           }
@@ -386,6 +462,7 @@ async function resolveActiveTabCorrelation(windowId = null) {
     }
   }
 
+  syncTabSidePanel(tabId, tabUrl);
   return {
     correlated: false,
     tabId,
@@ -432,6 +509,7 @@ async function switchOrCreateSession(tag, windowId = null) {
       lastReloadAt: Date.now(),
       reloadAttempts: 0,
     });
+    syncTabSidePanel(targetTabId, targetUrl);
   }
 
   chrome.runtime.sendMessage({ type: 'AXOLOCTL_CORRELATION_UPDATED' }).catch(() => {});
@@ -456,17 +534,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
 
+  if (msg.type === 'AXOLOCTL_ENSURE_SIDEPANEL_OPEN' && sender.tab && sender.tab.id != null) {
+    const tabId = sender.tab.id;
+    const tabUrl = msg.href || sender.tab.url || '';
+    syncTabSidePanel(tabId, tabUrl);
+    if (chrome.sidePanel && chrome.sidePanel.open) {
+      chrome.sidePanel.open({ tabId }).catch(() => {});
+    }
+    sendResponse({ ok: true });
+    return false;
+  }
+
   if (msg.type === 'AXOLOCTL_VIEWER_BEACON' && sender.tab && sender.tab.id != null) {
     const tabId = sender.tab.id;
     const prev = tabBeacons.get(tabId);
     const sameNonce = Boolean(prev && prev.nonce === msg.nonce);
     const loadedOk = msg.pageLoadedOk !== false;
+    const tabUrl = msg.href || sender.tab.url || '';
     tabBeacons.set(tabId, {
       nonce: msg.nonce,
       tag: msg.tag,
       commit: msg.commit_hash || (prev && prev.commit) || '',
       description: msg.description || (prev && prev.description) || '',
-      href: msg.href || sender.tab.url || '',
+      href: tabUrl,
       backendUrl: (prev && prev.backendUrl) || '',
       verified: sameNonce ? Boolean(prev.verified) : false,
       pageLoadedOk: loadedOk,
@@ -474,6 +564,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       lastReloadAt: (prev && prev.lastReloadAt) || 0,
       reloadAttempts: loadedOk ? 0 : (prev && prev.reloadAttempts) || 0,
     });
+    syncTabSidePanel(tabId, tabUrl);
     syncControlPlane().then(() => {
       sendResponse({ ok: true });
     });
@@ -499,6 +590,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         lastReloadAt: prev.lastReloadAt || 0,
         reloadAttempts: prev.reloadAttempts || 0,
       });
+      syncTabSidePanel(tabId, tabUrl);
       syncControlPlane().then(() => {
         sendResponse({ ok: true });
       });
@@ -523,14 +615,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return false;
 });
 
-chrome.tabs.onActivated.addListener(() => {
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  if (activeInfo && activeInfo.tabId != null && chrome.tabs && chrome.tabs.get) {
+    chrome.tabs
+      .get(activeInfo.tabId)
+      .then((tab) => {
+        syncTabSidePanel(activeInfo.tabId, (tab && tab.url) || '');
+      })
+      .catch(() => {});
+  }
   chrome.runtime.sendMessage({ type: 'AXOLOCTL_CORRELATION_UPDATED' }).catch(() => {});
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url && !extractVhostTag(changeInfo.url)) {
     tabBeacons.delete(tabId);
+    manualPanelTabs.delete(tabId);
   }
+  const effectiveUrl = changeInfo.url || (tab && tab.url) || '';
+  syncTabSidePanel(tabId, effectiveUrl);
   if (changeInfo.status === 'complete' || changeInfo.url) {
     if (changeInfo.status === 'complete' && tabBeacons.has(tabId)) {
       syncControlPlane();
@@ -541,6 +644,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabBeacons.delete(tabId);
+  manualPanelTabs.delete(tabId);
 });
 
 setInterval(syncControlPlane, POLL_INTERVAL);

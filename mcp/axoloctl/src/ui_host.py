@@ -5,6 +5,7 @@ import argparse
 import base64
 from datetime import datetime
 import glob
+import hashlib
 import html
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,6 +16,7 @@ import os
 import re
 import select
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -56,6 +58,123 @@ ALLOWED_TMUX_KEYS = {
     "BSpace",
 }
 
+WS_MAGIC_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+class WSConnection:
+  """RFC 6455 WebSocket framing wrapper for full-duplex CLI Console streaming."""
+
+  def __init__(self, sock: socket.socket):
+    self.sock = sock
+    self.lock = threading.Lock()
+    self.closed = False
+    try:
+      self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+      pass
+
+  def _recv_exact(self, n: int) -> Optional[bytes]:
+    buf = bytearray()
+    while len(buf) < n:
+      try:
+        chunk = self.sock.recv(n - len(buf))
+        if not chunk:
+          return None
+        buf.extend(chunk)
+      except Exception:
+        return None
+    return bytes(buf)
+
+  def send_json(self, data: Dict[str, Any]) -> bool:
+    if self.closed:
+      return False
+    try:
+      payload = json.dumps(data).encode("utf-8")
+      length = len(payload)
+      header = bytearray([0x81])
+      if length < 126:
+        header.append(length)
+      elif length < 65536:
+        header.append(126)
+        header.extend(struct.pack(">H", length))
+      else:
+        header.append(127)
+        header.extend(struct.pack(">Q", length))
+      with self.lock:
+        self.sock.sendall(header + payload)
+      return True
+    except Exception:
+      self.closed = True
+      return False
+
+  def read_message(self) -> Optional[Dict[str, Any]]:
+    fragments: List[bytes] = []
+    while not self.closed:
+      hdr = self._recv_exact(2)
+      if not hdr:
+        self.closed = True
+        return None
+      b1, b2 = hdr[0], hdr[1]
+      fin = bool(b1 & 0x80)
+      opcode = b1 & 0x0F
+      masked = bool(b2 & 0x80)
+      length = b2 & 0x7F
+
+      if length == 126:
+        ext = self._recv_exact(2)
+        if not ext:
+          self.closed = True
+          return None
+        length = struct.unpack(">H", ext)[0]
+      elif length == 127:
+        ext = self._recv_exact(8)
+        if not ext:
+          self.closed = True
+          return None
+        length = struct.unpack(">Q", ext)[0]
+
+      mask_key = b""
+      if masked:
+        mask_key = self._recv_exact(4) or b""
+        if len(mask_key) < 4:
+          self.closed = True
+          return None
+
+      payload = self._recv_exact(length) if length > 0 else b""
+      if payload is None:
+        self.closed = True
+        return None
+      if masked and payload:
+        payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+
+      if opcode == 0x8:  # Close
+        self.closed = True
+        return None
+      if opcode == 0x9:  # Ping -> Pong
+        try:
+          pong = bytearray([0x8A, len(payload)]) + payload if len(payload) < 126 else bytearray([0x8A, 0x00])
+          with self.lock:
+            self.sock.sendall(pong)
+        except Exception:
+          self.closed = True
+          return None
+        continue
+      if opcode == 0xA:  # Pong
+        continue
+
+      if opcode in (0x0, 0x1):
+        fragments.append(payload)
+        if fin:
+          raw_bytes = b"".join(fragments)
+          fragments.clear()
+          try:
+            parsed = json.loads(raw_bytes.decode("utf-8"))
+            if isinstance(parsed, dict):
+              return parsed
+          except Exception:
+            continue
+    return None
+
 
 class JetskiAgentBridge:
   """Manages per-tag communication with the session's dedicated Jetski Agent."""
@@ -80,6 +199,16 @@ class JetskiAgentBridge:
     self._pending_turns: Dict[str, Dict[str, Any]] = {}
     self._piped_tags: set = set()
     self._running_cache: Dict[str, Tuple[bool, float]] = {}
+    self._tag_locks: Dict[str, threading.Lock] = {}
+    self._session_dims: Dict[str, Tuple[int, int]] = {}
+
+  def _get_tag_lock(self, tag: str) -> threading.Lock:
+    with self._lock:
+      lock = self._tag_locks.get(tag)
+      if lock is None:
+        lock = threading.Lock()
+        self._tag_locks[tag] = lock
+      return lock
 
   def _sanitize_tag(self, tag: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "", (tag or "").strip())
@@ -303,7 +432,7 @@ class JetskiAgentBridge:
             data_bytes += f"\033[{cy + 1};{cx + 1}H".encode("ascii")
           except ValueError:
             pass
-      new_offset = file_len
+      new_offset = os.path.getsize(log_file) if os.path.exists(log_file) else 0
     else:
       req_offset = max(0, int(offset))
       if file_len < req_offset:
@@ -377,6 +506,50 @@ class JetskiAgentBridge:
     flush_hex()
     return cmds
 
+  def maybe_resize_cli_window(self, tag: str, cols: int, rows: int) -> bool:
+    """Resizes the session's tmux window only when dimensions actually change."""
+    resolved_tag = self.resolve_default_tag(tag)
+    if not resolved_tag:
+      return False
+    c_val = max(20, min(500, int(cols)))
+    r_val = max(5, min(200, int(rows)))
+    window_target = f"{self.session_agent}:{resolved_tag}"
+    with self._get_tag_lock(resolved_tag):
+      if self._session_dims.get(resolved_tag) == (c_val, r_val):
+        return False
+      cur_res = subprocess.run(
+          [
+              "tmux",
+              "display-message",
+              "-p",
+              "-t",
+              window_target,
+              "#{window_width}x#{window_height}",
+          ],
+          stdout=subprocess.PIPE,
+          stderr=subprocess.DEVNULL,
+          text=True,
+          check=False,
+      )
+      if cur_res.returncode == 0 and cur_res.stdout.strip() == f"{c_val}x{r_val}":
+        self._session_dims[resolved_tag] = (c_val, r_val)
+        return False
+      subprocess.run(
+          [
+              "tmux",
+              "resize-window",
+              "-t",
+              window_target,
+              "-x",
+              str(c_val),
+              "-y",
+              str(r_val),
+          ],
+          check=False,
+      )
+      self._session_dims[resolved_tag] = (c_val, r_val)
+      return True
+
   def send_cli_input(
       self,
       tag: str,
@@ -391,29 +564,32 @@ class JetskiAgentBridge:
     resolved_tag = self.resolve_default_tag(tag)
     if not resolved_tag:
       raise ValueError("No active session tag specified for CLI input.")
-    if not self.is_agent_window_running(resolved_tag):
+    use_cached_running = bool(hex_keys) and not action and not text and not key
+    if not self.is_agent_window_running(resolved_tag, use_cache=use_cached_running):
       raise ValueError(
           f"Agent window '{self.session_agent}:{resolved_tag}' is not running."
       )
     window_target = f"{self.session_agent}:{resolved_tag}"
 
     if action == "restart":
-      log_file = self.term_log_path(resolved_tag)
-      if os.path.exists(log_file):
-        open(log_file, "w", encoding="utf-8").close()
-      runner_script = os.path.join(
-          self.sessions_dir, resolved_tag, "runner_agent.sh"
-      )
-      if os.path.exists(runner_script):
-        subprocess.run(
-            ["tmux", "respawn-pane", "-k", "-t", window_target, runner_script],
-            check=False,
+      with self._get_tag_lock(resolved_tag):
+        log_file = self.term_log_path(resolved_tag)
+        if os.path.exists(log_file):
+          open(log_file, "w", encoding="utf-8").close()
+        runner_script = os.path.join(
+            self.sessions_dir, resolved_tag, "runner_agent.sh"
         )
-      else:
-        subprocess.run(["tmux", "send-keys", "-t", window_target, "C-c"], check=False)
-      self._piped_tags.discard(resolved_tag)
-      self._ls_cache.pop(resolved_tag, None)
-      self._ensure_pipe_pane(resolved_tag)
+        if os.path.exists(runner_script):
+          subprocess.run(
+              ["tmux", "respawn-pane", "-k", "-t", window_target, runner_script],
+              check=False,
+          )
+        else:
+          subprocess.run(["tmux", "send-keys", "-t", window_target, "C-c"], check=False)
+        self._piped_tags.discard(resolved_tag)
+        self._ls_cache.pop(resolved_tag, None)
+        self._session_dims.pop(resolved_tag, None)
+        self._ensure_pipe_pane(resolved_tag)
       return {
           "ok": True,
           "tag": resolved_tag,
@@ -425,19 +601,7 @@ class JetskiAgentBridge:
     if cols is not None and rows is not None:
       c_val = max(20, min(500, int(cols)))
       r_val = max(5, min(200, int(rows)))
-      subprocess.run(
-          [
-              "tmux",
-              "resize-window",
-              "-t",
-              window_target,
-              "-x",
-              str(c_val),
-              "-y",
-              str(r_val),
-          ],
-          check=False,
-      )
+      self.maybe_resize_cli_window(resolved_tag, c_val, r_val)
       if not text and not key and not hex_keys:
         return {
             "ok": True,
@@ -449,8 +613,11 @@ class JetskiAgentBridge:
         }
 
     if hex_keys:
-      for cmd in self._build_tmux_key_commands(window_target, hex_keys):
-        subprocess.run(cmd, check=False)
+      with self._get_tag_lock(resolved_tag):
+        for cmd in self._build_tmux_key_commands(window_target, hex_keys):
+          res = subprocess.run(cmd, check=False)
+          if res.returncode != 0:
+            self._running_cache.pop(resolved_tag, None)
       return {
           "ok": True,
           "tag": resolved_tag,
@@ -458,29 +625,226 @@ class JetskiAgentBridge:
           "window": window_target,
       }
 
-    if text:
-      subprocess.run(
-          ["tmux", "send-keys", "-t", window_target, "-l", "--", text],
-          check=True,
-      )
-      if submit:
+    with self._get_tag_lock(resolved_tag):
+      if text:
         subprocess.run(
-            ["tmux", "send-keys", "-t", window_target, "Enter"],
+            ["tmux", "send-keys", "-t", window_target, "-l", "--", text],
             check=True,
         )
-    if key:
-      if key not in ALLOWED_TMUX_KEYS:
-        raise ValueError(
-            f"Unsupported terminal key '{key}'. Allowed: {sorted(ALLOWED_TMUX_KEYS)}"
+        if submit:
+          subprocess.run(
+              ["tmux", "send-keys", "-t", window_target, "Enter"],
+              check=True,
+          )
+      if key:
+        if key not in ALLOWED_TMUX_KEYS:
+          raise ValueError(
+              f"Unsupported terminal key '{key}'. Allowed: {sorted(ALLOWED_TMUX_KEYS)}"
+          )
+        subprocess.run(
+            ["tmux", "send-keys", "-t", window_target, key],
+            check=True,
         )
-      subprocess.run(
-          ["tmux", "send-keys", "-t", window_target, key],
-          check=True,
-      )
     time.sleep(0.15)
     state = self.capture_cli(resolved_tag)
     state["ok"] = True
     return state
+
+  def handle_cli_websocket(
+      self, sock: socket.socket, initial_tag: str = ""
+  ) -> None:
+    """Full-duplex WebSocket loop for ungarbled keystroke dispatch and 25ms PTY streaming."""
+    ws = WSConnection(sock)
+    active_tag = self.resolve_default_tag(initial_tag)
+    stream_stop: Optional[threading.Event] = None
+    stream_thread: Optional[threading.Thread] = None
+
+    def stop_current_stream() -> None:
+      nonlocal stream_stop, stream_thread
+      if stream_stop is not None:
+        stream_stop.set()
+      if stream_thread is not None and stream_thread.is_alive():
+        stream_thread.join(timeout=0.5)
+      stream_stop = None
+      stream_thread = None
+
+    def start_stream_for_tag(
+        tag_name: str,
+        req_offset: int = 0,
+        cols: Optional[int] = None,
+        rows: Optional[int] = None,
+    ) -> None:
+      nonlocal active_tag, stream_stop, stream_thread
+      resolved = self.resolve_default_tag(tag_name)
+      if not resolved:
+        return
+      stop_current_stream()
+      active_tag = resolved
+      stop_ev = threading.Event()
+      stream_stop = stop_ev
+
+      if (
+          cols is not None
+          and rows is not None
+          and self.is_agent_window_running(resolved, use_cache=True)
+      ):
+        resized = self.maybe_resize_cli_window(resolved, cols, rows)
+        if resized and req_offset == 0:
+          time.sleep(0.05)
+
+      def _stream_worker() -> None:
+        window_target = f"{self.session_agent}:{resolved}"
+        cur_offset = max(0, int(req_offset))
+        last_running: Optional[bool] = None
+        last_status_ts = 0.0
+
+        is_running = self.is_agent_window_running(resolved, use_cache=False)
+        last_running = is_running
+        last_status_ts = time.time()
+        if not ws.send_json({
+            "type": "status",
+            "tag": resolved,
+            "running": is_running,
+            "window": window_target,
+        }):
+          return
+
+        if is_running and cur_offset == 0:
+          snap = self.capture_cli(resolved, offset=0)
+          cur_offset = int(snap.get("offset") or 0)
+          if snap.get("data"):
+            if not ws.send_json({
+                "type": "snapshot",
+                "tag": resolved,
+                "data": snap["data"],
+                "offset": cur_offset,
+            }):
+              return
+
+        while not ws.closed and not stop_ev.is_set():
+          try:
+            now = time.time()
+            if now - last_status_ts >= 1.0:
+              is_running = self.is_agent_window_running(resolved, use_cache=False)
+              last_status_ts = now
+              if is_running != last_running:
+                last_running = is_running
+                if not ws.send_json({
+                    "type": "status",
+                    "tag": resolved,
+                    "running": is_running,
+                    "window": window_target,
+                }):
+                  break
+
+            if is_running:
+              log_file = self._ensure_pipe_pane(resolved)
+              file_size = (
+                  os.path.getsize(log_file) if os.path.exists(log_file) else 0
+              )
+              if file_size < cur_offset:
+                cur_offset = 0
+                if not ws.send_json({
+                    "type": "cleared",
+                    "tag": resolved,
+                    "offset": 0,
+                }):
+                  break
+              if file_size > cur_offset:
+                with open(log_file, "rb") as f:
+                  f.seek(cur_offset)
+                  chunk = f.read(min(65536, file_size - cur_offset))
+                if chunk:
+                  cur_offset += len(chunk)
+                  if not ws.send_json({
+                      "type": "output",
+                      "tag": resolved,
+                      "data": base64.b64encode(chunk).decode("ascii"),
+                      "offset": cur_offset,
+                  }):
+                    break
+          except Exception:
+            pass
+          stop_ev.wait(0.025)
+
+      thr = threading.Thread(target=_stream_worker, daemon=True)
+      stream_thread = thr
+      thr.start()
+
+    try:
+      while not ws.closed:
+        msg = ws.read_message()
+        if msg is None:
+          break
+        msg_type = str(msg.get("type") or "")
+        target_tag = (
+            self.resolve_default_tag(str(msg.get("tag") or "")) or active_tag
+        )
+
+        if msg_type in ("attach", "subscribe"):
+          cols_arg = (
+              int(msg["cols"])
+              if "cols" in msg and msg["cols"] is not None
+              else None
+          )
+          rows_arg = (
+              int(msg["rows"])
+              if "rows" in msg and msg["rows"] is not None
+              else None
+          )
+          offset_arg = int(msg.get("offset") or 0)
+          if target_tag:
+            start_stream_for_tag(
+                target_tag,
+                req_offset=offset_arg,
+                cols=cols_arg,
+                rows=rows_arg,
+            )
+
+        elif msg_type == "resize":
+          if (
+              target_tag
+              and msg.get("cols") is not None
+              and msg.get("rows") is not None
+          ):
+            self.maybe_resize_cli_window(
+                target_tag, int(msg["cols"]), int(msg["rows"])
+            )
+
+        elif msg_type == "input":
+          if not target_tag:
+            continue
+          raw_hex = msg.get("hexKeys")
+          hex_keys: Optional[List[str]] = (
+              [str(k) for k in raw_hex] if isinstance(raw_hex, list) else None
+          )
+          if hex_keys is None and isinstance(msg.get("data"), str) and msg["data"]:
+            hex_keys = [f"{b:02x}" for b in msg["data"].encode("utf-8")]
+          try:
+            self.send_cli_input(
+                tag=target_tag,
+                text=str(msg.get("text") or ""),
+                key=str(msg.get("key") or ""),
+                submit=bool(msg.get("submit", True)),
+                hex_keys=hex_keys,
+                action=str(msg.get("action") or ""),
+            )
+          except Exception as e:
+            ws.send_json({
+                "type": "error",
+                "tag": target_tag,
+                "error": str(e),
+            })
+
+        elif msg_type == "ping":
+          ws.send_json({"type": "pong"})
+    finally:
+      ws.closed = True
+      stop_current_stream()
+      try:
+        sock.close()
+      except Exception:
+        pass
 
   # ---------------------------------------------------------------------------
   # Technique 2: Jetski Web Hub Management (hubView)
@@ -1758,7 +2122,7 @@ def _render_ui_page(
             <div class="toolbar-title">CLI Console — <code id="bound-tag-label">None</code></div>
             <span id="cli-status-pill" class="pill">○ Uncorrelated</span>
           </div>
-          <pre class="terminal" id="cli-output" style="color:#94a3b8;">No correlated viewer in active tab.
+          <pre class="terminal" id="cli-output" style="color:#475569;">No correlated viewer in active tab.
 
 Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to attach its dedicated agent CLI console.</pre>
           <form id="cli-form" class="chat-form" style="display:none;">
@@ -1808,6 +2172,7 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
       if ui_id == "cliView"
       else ""
   )
+  body_class_attr = ' class="theme-light"' if ui_id == "cliView" else ""
 
   page_html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -1904,8 +2269,8 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
       flex: 1;
       min-height: 0;
       width: 100%;
-      background: #020617;
-      color: #4ade80;
+      background: #f8fafc;
+      color: #0f172a;
       padding: 8px;
       font-size: 11px;
       line-height: 1.35;
@@ -1919,7 +2284,7 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
       flex: 1;
       min-height: 0;
       width: 100%;
-      background: #020617;
+      background: #f8fafc;
       padding: 2px 4px;
       margin: 0;
       overflow: hidden;
@@ -1927,11 +2292,58 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
     .xterm-wrapper .xterm-viewport {{
       overflow: hidden !important;
       scrollbar-width: none !important;
+      background-color: #f8fafc !important;
     }}
     .xterm-wrapper .xterm-viewport::-webkit-scrollbar {{
       display: none !important;
       width: 0 !important;
       height: 0 !important;
+    }}
+    body.theme-light {{
+      background: #f8fafc;
+      color: #0f172a;
+    }}
+    body.theme-light .toolbar {{
+      background: #f1f5f9;
+      border-bottom: 1px solid #cbd5e1;
+    }}
+    body.theme-light .toolbar-title {{
+      color: #1e293b;
+    }}
+    body.theme-light code {{
+      background: #e2e8f0;
+      color: #0369a1;
+    }}
+    body.theme-light .pill {{
+      background: #ffffff;
+      border-color: #cbd5e1;
+      color: #0284c7;
+    }}
+    body.theme-light .pill.ok {{
+      background: #dcfce7;
+      border-color: #86efac;
+      color: #15803d;
+    }}
+    body.theme-light .key-bar {{
+      background: #f1f5f9;
+      border-top: 1px solid #cbd5e1;
+    }}
+    body.theme-light .key-btn {{
+      background: #ffffff;
+      color: #334155;
+      border-color: #cbd5e1;
+    }}
+    body.theme-light .key-btn:hover {{
+      background: #e2e8f0;
+      filter: none;
+    }}
+    body.theme-light .sessions-footer {{
+      background: #f1f5f9;
+      border-top: 1px solid #cbd5e1;
+      color: #475569;
+    }}
+    body.theme-light a {{
+      color: #0284c7;
     }}
     .key-bar {{
       display: flex;
@@ -2141,7 +2553,7 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
     }}
   </style>
 </head>
-<body>
+<body{body_class_attr}>
   {body_section}
   <div class="sessions-footer">
     <span>Sessions:</span>
@@ -2181,32 +2593,52 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
     }}
 
     // -------------------------------------------------------------------------
-    // Technique 1: cliView interactive xterm.js terminal & tmux pane bridge
+    // Technique 1: cliView interactive xterm.js terminal & WebSocket tmux bridge
     // -------------------------------------------------------------------------
     let cliTerm = null;
     let cliFitAddon = null;
     let cliOffset = 0;
-    let cliPolling = false;
-    let cliInputBuffer = [];
-    let cliFlushTimeout = null;
+    let cliWs = null;
+    let cliReconnectTimer = null;
+    let cliPingTimer = null;
+    let cliPendingFrames = [];
     let lastCols = 0;
     let lastRows = 0;
+    const cliTextEncoder = new TextEncoder();
 
-    async function flushCliHexKeys() {{
-      cliFlushTimeout = null;
-      if (!currentTag || cliInputBuffer.length === 0) return;
-      const keysToSend = cliInputBuffer;
-      cliInputBuffer = [];
-      try {{
-        await fetch("/api/cli", {{
-          method: "POST",
-          headers: {{ "Content-Type": "application/json" }},
-          body: JSON.stringify({{ tag: currentTag, hexKeys: keysToSend }}),
-        }});
-      }} catch (e) {{}}
+    function stripEraseScrollbackBytes(bytes) {{
+      if (!(bytes instanceof Uint8Array)) return bytes;
+      const out = [];
+      for (let i = 0; i < bytes.length; i++) {{
+        if (
+          i + 3 < bytes.length &&
+          bytes[i] === 0x1b &&
+          bytes[i + 1] === 0x5b &&
+          bytes[i + 2] === 0x33 &&
+          bytes[i + 3] === 0x4a
+        ) {{
+          i += 3;
+          continue;
+        }}
+        out.push(bytes[i]);
+      }}
+      return new Uint8Array(out);
     }}
 
-    async function syncCliSize() {{
+    function sendCliWsFrame(payloadObj) {{
+      if (!currentTag) return;
+      const raw = JSON.stringify(payloadObj);
+      if (cliWs && cliWs.readyState === WebSocket.OPEN) {{
+        cliWs.send(raw);
+      }} else {{
+        cliPendingFrames.push(raw);
+        if (!cliWs || cliWs.readyState === WebSocket.CLOSED || cliWs.readyState === WebSocket.CLOSING) {{
+          connectCliWebSocket();
+        }}
+      }}
+    }}
+
+    function syncCliSize() {{
       if (!currentTag || !cliTerm || !cliFitAddon) return;
       try {{
         cliFitAddon.fit();
@@ -2215,75 +2647,179 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
         if (cols && rows && (cols !== lastCols || rows !== lastRows)) {{
           lastCols = cols;
           lastRows = rows;
-          await fetch("/api/cli", {{
-            method: "POST",
-            headers: {{ "Content-Type": "application/json" }},
-            body: JSON.stringify({{ tag: currentTag, cols, rows }}),
-          }});
+          if (cliWs && cliWs.readyState === WebSocket.OPEN) {{
+            cliWs.send(JSON.stringify({{ type: "resize", tag: currentTag, cols, rows }}));
+          }}
         }}
       }} catch (e) {{}}
     }}
 
-    async function pollCliView() {{
-      if (!currentTag || cliPolling) return;
-      cliPolling = true;
+    function handleCliWsMessage(msg) {{
+      if (!msg) return;
       const pill = document.getElementById("cli-status-pill");
-      try {{
-        const qs = `?tag=${{encodeURIComponent(currentTag)}}&offset=${{cliOffset}}`;
-        const resp = await fetch(`/api/cli${{qs}}`);
-        const data = await resp.json();
+      if (msg.type === "status") {{
         if (pill) {{
-          pill.textContent = data.running ? "● Live" : "○ Stopped";
-          pill.title = data.window || "";
-          pill.className = data.running ? "pill ok" : "pill";
+          pill.textContent = msg.running ? "● Live" : "○ Stopped";
+          pill.title = msg.window || "";
+          pill.className = msg.running ? "pill ok" : "pill";
         }}
+      }} else if (msg.type === "cleared") {{
         if (cliTerm) {{
-          if (data.cleared) {{
+          cliTerm.reset();
+        }}
+        cliOffset = msg.offset || 0;
+      }} else if (msg.type === "snapshot" || msg.type === "output") {{
+        if (cliTerm && msg.data) {{
+          if (msg.type === "snapshot") {{
             cliTerm.clear();
           }}
-          if (data.data) {{
-            const binStr = atob(data.data);
-            const bytes = new Uint8Array(binStr.length);
-            for (let i = 0; i < binStr.length; i++) {{
-              bytes[i] = binStr.charCodeAt(i);
-            }}
-            cliTerm.write(bytes);
+          const binStr = window.atob(msg.data);
+          const bytes = new Uint8Array(binStr.length);
+          for (let i = 0; i < binStr.length; i++) {{
+            bytes[i] = binStr.charCodeAt(i);
           }}
-          if (typeof data.offset === "number") {{
-            cliOffset = data.offset;
-          }}
+          cliTerm.write(stripEraseScrollbackBytes(bytes));
         }}
-      }} catch (e) {{
-        if (pill) pill.textContent = "Disconnected";
-      }} finally {{
-        cliPolling = false;
+        if (typeof msg.offset === "number") {{
+          cliOffset = msg.offset;
+        }}
       }}
     }}
 
-    async function sendCliPayload(payload) {{
+    function connectCliWebSocket() {{
       if (!currentTag) return;
-      try {{
-        await fetch("/api/cli", {{
-          method: "POST",
-          headers: {{ "Content-Type": "application/json" }},
-          body: JSON.stringify({{ tag: currentTag, ...payload }}),
-        }});
-        if (cliTerm) cliTerm.focus();
-      }} catch (e) {{}}
+      if (cliWs && (cliWs.readyState === WebSocket.OPEN || cliWs.readyState === WebSocket.CONNECTING)) {{
+        return;
+      }}
+      if (cliReconnectTimer) {{
+        clearTimeout(cliReconnectTimer);
+        cliReconnectTimer = null;
+      }}
+      const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = `${{wsProto}}//${{window.location.host}}/ws?tag=${{encodeURIComponent(currentTag)}}`;
+      const ws = new WebSocket(wsUrl);
+      cliWs = ws;
+
+      ws.onopen = () => {{
+        if (cliTerm && cliFitAddon) {{
+          try {{
+            cliFitAddon.fit();
+            lastCols = cliTerm.cols;
+            lastRows = cliTerm.rows;
+          }} catch (e) {{}}
+        }}
+        ws.send(JSON.stringify({{
+          type: "attach",
+          tag: currentTag,
+          cols: lastCols || 80,
+          rows: lastRows || 24,
+          offset: cliOffset,
+        }}));
+        while (cliPendingFrames.length > 0 && ws.readyState === WebSocket.OPEN) {{
+          ws.send(cliPendingFrames.shift());
+        }}
+        if (cliPingTimer) clearInterval(cliPingTimer);
+        cliPingTimer = setInterval(() => {{
+          if (cliWs && cliWs.readyState === WebSocket.OPEN) {{
+            cliWs.send(JSON.stringify({{ type: "ping" }}));
+          }}
+        }}, 15000);
+      }};
+
+      ws.onmessage = (event) => {{
+        try {{
+          const msg = JSON.parse(event.data);
+          handleCliWsMessage(msg);
+        }} catch (e) {{}}
+      }};
+
+      ws.onclose = () => {{
+        if (cliPingTimer) {{
+          clearInterval(cliPingTimer);
+          cliPingTimer = null;
+        }}
+        const pill = document.getElementById("cli-status-pill");
+        if (pill) {{
+          pill.textContent = "Reconnecting...";
+          pill.className = "pill";
+        }}
+        cliReconnectTimer = setTimeout(connectCliWebSocket, 1000);
+      }};
+
+      ws.onerror = () => {{}};
+    }}
+
+    function sendCliPayload(payload) {{
+      if (!currentTag) return;
+      sendCliWsFrame({{ type: "input", tag: currentTag, ...payload }});
+      if (cliTerm) cliTerm.focus();
     }}
 
     if (UI_ID === "cliView" && currentTag) {{
       const xtermContainer = document.getElementById("cli-xterm-container");
       if (xtermContainer && window.Terminal && window.FitAddon) {{
+        const extendedAnsi = [];
+        const cubeLevels = [0, 95, 135, 175, 215, 255];
+        for (let r = 0; r < 6; r++) {{
+          for (let g = 0; g < 6; g++) {{
+            for (let b = 0; b < 6; b++) {{
+              extendedAnsi.push(
+                `#${{cubeLevels[r].toString(16).padStart(2, "0")}}${{cubeLevels[g].toString(16).padStart(2, "0")}}${{cubeLevels[b].toString(16).padStart(2, "0")}}`
+              );
+            }}
+          }}
+        }}
+        for (let i = 0; i < 24; i++) {{
+          const inv = 23 - i;
+          const v = Math.round(15 + (inv / 23) * 230);
+          const hex = v.toString(16).padStart(2, "0");
+          extendedAnsi.push(`#${{hex}}${{hex}}${{hex}}`);
+        }}
+        const lightOverrides = {{
+          39: "#0284c7",
+          109: "#0f766e",
+          111: "#0369a1",
+          114: "#15803d",
+          146: "#475569",
+          189: "#1e293b",
+          221: "#b45309",
+          236: "#e2e8f0",
+          238: "#cbd5e1",
+          240: "#94a3b8",
+        }};
+        for (const [idx, hex] of Object.entries(lightOverrides)) {{
+          extendedAnsi[Number(idx) - 16] = hex;
+        }}
+
         cliTerm = new window.Terminal({{
           cursorBlink: true,
           fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace',
           fontSize: 12,
+          minimumContrastRatio: 4.5,
           theme: {{
-            background: "#020617",
-            foreground: "#e2e8f0",
-            cursor: "#38bdf8",
-            selectionBackground: "rgba(56, 189, 248, 0.3)",
+            background: "#f8fafc",
+            foreground: "#0f172a",
+            cursor: "#0284c7",
+            cursorAccent: "#f8fafc",
+            selectionBackground: "rgba(2, 132, 199, 0.22)",
+            selectionForeground: "#0f172a",
+            black: "#0f172a",
+            red: "#dc2626",
+            green: "#16a34a",
+            yellow: "#b45309",
+            blue: "#0284c7",
+            magenta: "#9333ea",
+            cyan: "#0891b2",
+            white: "#475569",
+            brightBlack: "#64748b",
+            brightRed: "#ef4444",
+            brightGreen: "#22c55e",
+            brightYellow: "#d97706",
+            brightBlue: "#2563eb",
+            brightMagenta: "#a855f7",
+            brightCyan: "#06b6d4",
+            brightWhite: "#0f172a",
+            extendedAnsi,
           }},
           convertEol: false,
           scrollback: 0,
@@ -2293,15 +2829,9 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
         cliTerm.open(xtermContainer);
 
         cliTerm.onData((data) => {{
-          const encoder = new TextEncoder();
-          const bytes = encoder.encode(data);
-          const hexArray = Array.from(bytes).map((b) =>
-            b.toString(16).padStart(2, "0")
-          );
-          cliInputBuffer.push(...hexArray);
-          if (!cliFlushTimeout) {{
-            cliFlushTimeout = setTimeout(flushCliHexKeys, 15);
-          }}
+          const bytes = cliTextEncoder.encode(data);
+          const hexKeys = Array.from(bytes, (b) => b.toString(16).padStart(2, "0"));
+          sendCliWsFrame({{ type: "input", tag: currentTag, hexKeys }});
         }});
 
         let resizeTimer = null;
@@ -2311,35 +2841,26 @@ Switch to an active session tab (e.g. http://&lt;tag&gt;.localhost:9290) to atta
         }});
         ro.observe(xtermContainer);
 
-        (async () => {{
-          await syncCliSize();
-          await pollCliView();
-          setInterval(pollCliView, 200);
-          cliTerm.focus();
-        }})();
+        connectCliWebSocket();
+        cliTerm.focus();
       }}
 
       const cliForm = document.getElementById("cli-form");
       if (cliForm) {{
-        cliForm.addEventListener("submit", async (ev) => {{
+        cliForm.addEventListener("submit", (ev) => {{
           ev.preventDefault();
           const input = document.getElementById("cli-input");
           const text = input.value;
           input.value = "";
-          await sendCliPayload({{ text, submit: true }});
+          sendCliPayload({{ text, submit: true }});
         }});
       }}
       const restartBtn = document.getElementById("cli-restart-btn");
       if (restartBtn) {{
-        restartBtn.addEventListener("click", async () => {{
-          restartBtn.disabled = true;
-          try {{
-            if (cliTerm) cliTerm.clear();
-            cliOffset = 0;
-            await sendCliPayload({{ action: "restart" }});
-          }} finally {{
-            restartBtn.disabled = false;
-          }}
+        restartBtn.addEventListener("click", () => {{
+          if (cliTerm) cliTerm.reset();
+          cliOffset = 0;
+          sendCliPayload({{ action: "restart" }});
         }});
       }}
       document.querySelectorAll(".key-btn[data-key]").forEach((btn) => {{
@@ -2883,6 +3404,32 @@ class UIHostHandler(BaseHTTPRequestHandler):
     parsed_path = parsed.path
     query_params = parse_qs(parsed.query)
     tag_param = (query_params.get("tag") or [""])[0].strip()
+
+    if (
+        self.headers.get("Upgrade", "").lower() == "websocket"
+        or parsed_path in ("/ws", "/api/cli/ws")
+    ):
+      ws_key = (self.headers.get("Sec-WebSocket-Key") or "").strip()
+      if not ws_key:
+        self._send_json(400, {"error": "Missing Sec-WebSocket-Key header."})
+        return
+      accept = base64.b64encode(
+          hashlib.sha1((ws_key + WS_MAGIC_GUID).encode("utf-8")).digest()
+      ).decode("ascii")
+      handshake = (
+          b"HTTP/1.1 101 Switching Protocols\r\n"
+          b"Upgrade: websocket\r\n"
+          b"Connection: Upgrade\r\n"
+          b"Sec-WebSocket-Accept: "
+          + accept.encode("ascii")
+          + b"\r\n\r\n"
+      )
+      self.connection.sendall(handshake)
+      self.close_connection = True
+      self.get_bridge().handle_cli_websocket(
+          self.connection, initial_tag=tag_param
+      )
+      return
 
     if parsed_path in (
         "/vendor/xterm/xterm.js",
