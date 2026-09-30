@@ -310,6 +310,72 @@ MCP_TOOLS = [
             "required": ["rollout_id"],
         },
     },
+    {
+        "name": "get_discovery_devices",
+        "description": (
+            "List all devices in a registry that support discovery along with "
+            "which protocol families they support."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "registry_id": {
+                    "type": "string",
+                    "description": "The target device registry identifier (e.g. 'ZZ-TRI-FECTA')",
+                }
+            },
+            "required": ["registry_id"],
+        },
+    },
+    {
+        "name": "trigger_discovery_scan",
+        "description": (
+            "Trigger a sporadic discovery scan for a given device and protocol family."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "registry_id": {
+                    "type": "string",
+                    "description": "Target device registry identifier (e.g. 'ZZ-TRI-FECTA')",
+                },
+                "device_id": {
+                    "type": "string",
+                    "description": "Target device identifier (e.g. 'AHU-1')",
+                },
+                "family": {
+                    "type": "string",
+                    "description": "Protocol family to scan (e.g. 'bacnet', 'vendor')",
+                },
+                "depth": {
+                    "type": "string",
+                    "enum": ["entries", "system", "details"],
+                    "description": "Optional scan depth ('entries', 'system', 'details')",
+                },
+            },
+            "required": ["registry_id", "device_id", "family"],
+        },
+    },
+    {
+        "name": "get_discovery_state",
+        "description": (
+            "Track the per-family discovery state of any given device."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "registry_id": {
+                    "type": "string",
+                    "description": "Target device registry identifier (e.g. 'ZZ-TRI-FECTA')",
+                },
+                "device_id": {
+                    "type": "string",
+                    "description": "Target device identifier (e.g. 'AHU-1')",
+                },
+            },
+            "required": ["registry_id", "device_id"],
+        },
+    },
 ]
 
 
@@ -515,6 +581,26 @@ class ButlerMcpServer:
                 converged_devices=args.get("converged_devices"),
                 failed_devices=args.get("failed_devices"),
             )
+        if name == "get_discovery_devices":
+            return self.provider.get_discovery_devices(
+                registry_id=args["registry_id"],
+            )
+        if name == "trigger_discovery_scan":
+            if "generation" in args:
+                raise ValueError("trigger_discovery_scan does not accept a 'generation' parameter.")
+            return self.provider.trigger_discovery_scan(
+                registry_id=args["registry_id"],
+                device_id=args["device_id"],
+                family=args["family"],
+                depth=args.get("depth"),
+            )
+        if name == "get_discovery_state":
+            if "family" in args:
+                raise ValueError("get_discovery_state does not accept a 'family' parameter.")
+            return self.provider.get_discovery_state(
+                registry_id=args["registry_id"],
+                device_id=args["device_id"],
+            )
         raise ValueError(f"Unknown tool or method: {name}")
 
     def run_stdio(self) -> None:
@@ -642,6 +728,8 @@ def main() -> None:
     serve_parser.add_argument("--host", default="0.0.0.0", help="HTTP server listen host (default: 0.0.0.0)")
     serve_parser.add_argument("--pg-port", type=int, default=None, help="Target PostgreSQL port")
     serve_parser.add_argument("--influx-port", type=int, default=None, help="Target InfluxDB port")
+    serve_parser.add_argument("--project-spec", default=None, help="Target project specification")
+    serve_parser.add_argument("--site-model", default=None, help="Target site model directory")
 
     # CLI subcommands
     health_parser = subparsers.add_parser("health", help="Check Butler datastores health")
@@ -655,6 +743,26 @@ def main() -> None:
     devs_parser = subparsers.add_parser("discovered-devices", help="List discovered devices for registry")
     devs_parser.add_argument("registry_id", help="Registry ID")
     devs_parser.add_argument("--pg-port", type=int, default=None)
+
+    disc_devs_parser = subparsers.add_parser("discovery-devices", help="List devices that support discovery")
+    disc_devs_parser.add_argument("registry_id", help="Registry ID")
+    disc_devs_parser.add_argument("--pg-port", type=int, default=None)
+
+    trig_disc_parser = subparsers.add_parser("trigger-discovery", help="Trigger sporadic discovery scan for a device and family")
+    trig_disc_parser.add_argument("registry_id", help="Registry ID")
+    trig_disc_parser.add_argument("device_id", help="Device ID")
+    trig_disc_parser.add_argument("family", help="Protocol family (e.g. bacnet, vendor)")
+    trig_disc_parser.add_argument("--generation", default=None, help="Optional ISO 8601 generation timestamp")
+    trig_disc_parser.add_argument("--depth", default=None, help="Optional enumeration depth")
+    trig_disc_parser.add_argument("--pg-port", type=int, default=None)
+    trig_disc_parser.add_argument("--project-spec", default=None)
+    trig_disc_parser.add_argument("--site-model", default=None)
+
+    disc_state_parser = subparsers.add_parser("discovery-state", help="Get discovery state (active, pending, last_done) for a device")
+    disc_state_parser.add_argument("registry_id", help="Registry ID")
+    disc_state_parser.add_argument("device_id", help="Device ID")
+    disc_state_parser.add_argument("--family", default=None, help="Optional protocol family filter")
+    disc_state_parser.add_argument("--pg-port", type=int, default=None)
 
     msgs_parser = subparsers.add_parser("device-messages", help="List lifecycle messages for a device")
     msgs_parser.add_argument("registry_id", help="Registry ID")
@@ -671,8 +779,15 @@ def main() -> None:
 
     pg_port = getattr(args, "pg_port", None)
     influx_port = getattr(args, "influx_port", None)
+    project_spec = getattr(args, "project_spec", None)
+    site_model = getattr(args, "site_model", None)
 
-    provider = ButlerProvider(pg_port=pg_port, influx_port=influx_port)
+    provider = ButlerProvider(
+        pg_port=pg_port,
+        influx_port=influx_port,
+        project_spec=project_spec,
+        site_model=site_model,
+    )
     server_instance = ButlerMcpServer(provider)
 
     if args.command == "serve":
@@ -692,6 +807,31 @@ def main() -> None:
     if args.command == "discovered-devices":
         devs = provider.get_discovered_devices(args.registry_id)
         print(json.dumps(devs, indent=2))
+        return
+
+    if args.command == "discovery-devices":
+        devs = provider.get_discovery_devices(registry_id=args.registry_id)
+        print(json.dumps(devs, indent=2))
+        return
+
+    if args.command == "trigger-discovery":
+        res = provider.trigger_discovery_scan(
+            registry_id=args.registry_id,
+            device_id=args.device_id,
+            family=args.family,
+            generation=args.generation,
+            depth=args.depth,
+        )
+        print(json.dumps(res, indent=2))
+        return
+
+    if args.command == "discovery-state":
+        res = provider.get_discovery_state(
+            registry_id=args.registry_id,
+            device_id=args.device_id,
+            family=args.family,
+        )
+        print(json.dumps(res, indent=2))
         return
 
     if args.command == "device-messages":

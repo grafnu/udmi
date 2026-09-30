@@ -46,6 +46,9 @@
       <button class="nav-tab" data-tab="explorer">
         <span class="tab-icon">🗄️</span> ETCD Explorer
       </button>
+      <button class="nav-tab" data-tab="discovery">
+        <span class="tab-icon">📡</span> Discovery Manager
+      </button>
       <button class="nav-tab" data-tab="config">
         <span class="tab-icon">📝</span> Configuration Manager
       </button>
@@ -388,7 +391,98 @@
         </div>
       </section>
 
-      <!-- 5. Configuration Manager Pane -->
+      <!-- 5. Discovery Manager Pane (Butler MCP Interface) -->
+      <section id="pane-discovery" class="tab-pane">
+        <div class="section-header">
+          <div class="title-with-breadcrumb">
+            <h2>Discovery Manager</h2>
+            <span id="discovery-registry-badge" class="badge badge-neutral">Registry: ZZ-TRI-FECTA</span>
+          </div>
+          <div class="header-actions" style="display:flex; align-items:center; gap:0.75rem;">
+            <label style="font-size:0.85rem; color:var(--text-secondary); display:flex; align-items:center; gap:0.35rem; cursor:pointer;">
+              <input type="checkbox" id="discovery-auto-refresh" checked>
+              Auto-track active scans
+            </label>
+            <button id="btn-refresh-discovery" class="btn btn-secondary btn-sm">🔄 Refresh State</button>
+          </div>
+        </div>
+
+        <!-- Discovery Controls Bar -->
+        <div class="filter-card">
+          <div class="filter-row">
+            <div class="filter-group flex-1">
+              <label for="discovery-registry-input">Target Registry</label>
+              <input type="text" id="discovery-registry-input" value="ZZ-TRI-FECTA" placeholder="e.g. ZZ-TRI-FECTA">
+            </div>
+            <div class="filter-group flex-1">
+              <label for="discovery-depth-select">Default Scan Depth</label>
+              <select id="discovery-depth-select">
+                <option value="entries">entries — Enumerate entries</option>
+                <option value="system">system — System &amp; basic info</option>
+                <option value="details">details — Full point details</option>
+              </select>
+            </div>
+            <div class="filter-group btn-align">
+              <button id="btn-load-discovery-nodes" class="btn btn-primary">Load Discovery Nodes</button>
+              <span id="discovery-status-msg" class="status-inline"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Discovery Metric Counter Cards -->
+        <div class="metrics-grid">
+          <div class="metric-card">
+            <span class="metric-label">Discovery Nodes</span>
+            <span id="metric-discovery-nodes" class="metric-value">0</span>
+            <span class="metric-sub">Discovery-capable devices</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Protocol Families</span>
+            <span id="metric-discovery-families" class="metric-value">0</span>
+            <span class="metric-sub">Supported scan targets</span>
+          </div>
+          <div class="metric-card card-warning">
+            <span class="metric-label">Active / Pending Scans</span>
+            <span id="metric-discovery-active" class="metric-value">0</span>
+            <span class="metric-sub">Scans in progress</span>
+          </div>
+          <div class="metric-card card-success">
+            <span class="metric-label">Completed Scans</span>
+            <span id="metric-discovery-completed" class="metric-value">0</span>
+            <span class="metric-sub">With recorded last_done</span>
+          </div>
+        </div>
+
+        <!-- Discovery Nodes & Protocol Families Table -->
+        <div class="panel">
+          <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center;">
+            <h3>📡 Discovery Nodes &amp; Protocol Family States</h3>
+          </div>
+          <div class="panel-body">
+            <div class="table-container">
+              <table class="data-table" id="discovery-nodes-table">
+                <thead>
+                  <tr>
+                    <th>Device ID</th>
+                    <th>Protocol Family</th>
+                    <th>Phase</th>
+                    <th>Generation</th>
+                    <th>Last Done</th>
+                    <th>Active Count</th>
+                    <th>Scan Depth</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="discovery-table-body">
+                  <tr><td colspan="8" class="empty-state">Loading discovery nodes from Butler MCP...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 6. Configuration Manager Pane -->
       <section id="pane-config" class="tab-pane">
         <div class="section-header">
           <h2>Configuration Manager</h2>

@@ -11,7 +11,14 @@ source "$UDMI_ROOT/etc/shell_common.sh"
 echo "=========================================================================="
 echo "Running Butler Unit Tests..."
 echo "=========================================================================="
-PYTHONPATH=common/src/main/python:gencode/python:butler:. venv/bin/python3 -m unittest discover -s butler/tests
+VENV_PYTHON="venv/bin/python3"
+if [[ ! -x "$VENV_PYTHON" ]]; then
+    GIT_COMMON=$(git rev-parse --git-common-dir 2>/dev/null || true)
+    if [[ -n "$GIT_COMMON" && -x "$(dirname "$GIT_COMMON")/venv/bin/python3" ]]; then
+        VENV_PYTHON="$(dirname "$GIT_COMMON")/venv/bin/python3"
+    fi
+fi
+PYTHONPATH=common/src/main/python:gencode/python:butler:. "$VENV_PYTHON" -m unittest discover -s butler/tests
 
 echo ""
 echo "=========================================================================="

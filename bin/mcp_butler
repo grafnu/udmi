@@ -4,6 +4,13 @@
 UDMI_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 export PYTHONPATH="$UDMI_ROOT:$UDMI_ROOT/common/src/main/python:$UDMI_ROOT/butler:${PYTHONPATH:-}"
 
-source "$UDMI_ROOT/venv/bin/activate"
+VENV_DIR="$UDMI_ROOT/venv"
+if [[ ! -d "$VENV_DIR" ]]; then
+    GIT_COMMON=$(git -C "$UDMI_ROOT" rev-parse --git-common-dir 2>/dev/null || true)
+    if [[ -n "$GIT_COMMON" && -d "$(dirname "$GIT_COMMON")/venv" ]]; then
+        VENV_DIR="$(dirname "$GIT_COMMON")/venv"
+    fi
+fi
+source "$VENV_DIR/bin/activate"
 
 exec python3 "$UDMI_ROOT/mcp/butler/server.py" "$@"

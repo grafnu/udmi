@@ -225,10 +225,37 @@ class ButlerConnection:
                 else f"/{self.actual_registry}/butler_{client_uuid}"
             )
 
+            ca_candidates = []
             if self.site_model:
-                ca_cert = os.path.join(self.site_model, "reflector", "ca.crt")
-                if os.path.exists(ca_cert):
-                    self.is_tls = True
+                ca_candidates.extend([
+                    os.path.join(self.site_model, "reflector", "ca.crt"),
+                    os.path.join(self.site_model, "ca.crt"),
+                ])
+            repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+            self.roots = [repo_root]
+            git_file = os.path.join(repo_root, ".git")
+            if os.path.isfile(git_file):
+                try:
+                    with open(git_file, "r", encoding="utf-8") as gf:
+                        gitdir_line = gf.read().strip()
+                    if gitdir_line.startswith("gitdir:") and "/.git/" in gitdir_line:
+                        main_root = gitdir_line.split("gitdir:", 1)[1].strip().split("/.git/", 1)[0]
+                        if main_root and os.path.isdir(main_root):
+                            self.roots.append(main_root)
+                except Exception:
+                    pass
+            for r in self.roots:
+                ca_candidates.extend([
+                    os.path.join(r, "var", "mosquitto", "certs", "ca.crt"),
+                    os.path.join(r, "sites", "udmi_site_model", "reflector", "ca.crt"),
+                ])
+            ca_candidates.extend([
+                "/var/mosquitto/certs/ca.crt",
+                "/etc/mosquitto/certs/ca.crt",
+            ])
+            self.ca_cert = next((c for c in ca_candidates if os.path.exists(c)), None)
+            if self.ca_cert:
+                self.is_tls = True
 
             env_user = os.environ.get("MQTT_USER")
             env_pass = os.environ.get("MQTT_PASS")
@@ -240,6 +267,9 @@ class ButlerConnection:
                 ns_prefix = f"{self.prefix}~" if self.prefix else ""
                 self.username = f"/r/{ns_prefix}UDMI-REFLECT/d/{self.actual_registry}"
                 self.password = derived_pass
+            else:
+                self.username = "rocket"
+                self.password = "monkey"
 
     def get_discovery_topics(self, device_id):
         """Returns list of topics to publish discovery config for target device."""
@@ -302,7 +332,9 @@ class ButlerConnection:
             client.username_pw_set(self.username, self.password)
 
         if self.is_tls:
-            ca_cert = os.path.join(self.site_model, "reflector", "ca.crt") if self.site_model else None
+            ca_cert = getattr(self, "ca_cert", None) or (
+                os.path.join(self.site_model, "reflector", "ca.crt") if self.site_model else None
+            )
             cert_candidates = []
             if self.site_model:
                 if self.device_id:
@@ -314,6 +346,15 @@ class ButlerConnection:
                     (os.path.join(self.site_model, "reflector", "rsa_private.crt"), os.path.join(self.site_model, "reflector", "rsa_private.pem")),
                     (os.path.join(self.site_model, "reflector", "server.crt"), os.path.join(self.site_model, "reflector", "server.key")),
                 ])
+            for r in getattr(self, "roots", []):
+                cert_candidates.extend([
+                    (os.path.join(r, "var", "mosquitto", "certs", "rsa_private.crt"), os.path.join(r, "var", "mosquitto", "certs", "rsa_private.pem")),
+                    (os.path.join(r, "sites", "udmi_site_model", "reflector", "rsa_private.crt"), os.path.join(r, "sites", "udmi_site_model", "reflector", "rsa_private.pem")),
+                ])
+            cert_candidates.extend([
+                ("/var/mosquitto/certs/rsa_private.crt", "/var/mosquitto/certs/rsa_private.pem"),
+                ("/etc/mosquitto/certs/rsa_private.crt", "/etc/mosquitto/certs/rsa_private.pem"),
+            ])
 
             client_cert = None
             client_key = None
@@ -347,7 +388,7 @@ class ButlerConnection:
             for topic, msg in topic_message_pairs:
                 print(f"Publishing message to {topic}: {msg}", file=sys.stderr)
                 inf = client.publish(topic, json.dumps(msg), qos=1)
-                inf.wait_for_publish(timeout=10)
+                inf.wait_for_publish(timeout=5)
         finally:
             client.loop_stop()
             client.disconnect()

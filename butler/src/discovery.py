@@ -10,21 +10,34 @@ except (ImportError, ModuleNotFoundError):
     from butler.src.connection import ButlerConnection
 
 
-def run_discovery(conn_spec, registry_id, device_id, target_families, site_model=None):
+def run_discovery(
+    conn_spec,
+    registry_id,
+    device_id,
+    target_families,
+    site_model=None,
+    all_families=None,
+    generation=None,
+    depth="entries",
+):
     """Dispatches discovery configuration message over the configured project spec / broker."""
     connection = ButlerConnection(conn_spec, registry_id, site_model, device_id)
     actual_registry = connection.actual_registry
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = generation or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    enum_depth = depth or "entries"
     families_dict = {}
+    if all_families:
+        for f in all_families:
+            families_dict[f] = {}
     if target_families:
         for f in target_families:
-            families_dict[f] = {"generation": now}
-    else:
+            families_dict[f] = {"generation": now, "depth": enum_depth}
+    elif not families_dict:
         families_dict = {
-            "vendor": {"generation": now},
-            "bacnet": {"generation": now},
-            "ipv4": {"generation": now},
+            "vendor": {"generation": now, "depth": enum_depth},
+            "bacnet": {"generation": now, "depth": enum_depth},
+            "ipv4": {"generation": now, "depth": enum_depth},
         }
 
     tx_id = f"TXN-{uuid.uuid4().hex[:8]}"
@@ -34,7 +47,11 @@ def run_discovery(conn_spec, registry_id, device_id, target_families, site_model
         "timestamp": now,
         "generation": now,
         "families": families_dict,
-        "enumerations": {"families": "entries", "points": "entries", "features": "entries"},
+        "enumerations": {
+            "families": enum_depth,
+            "points": enum_depth,
+            "features": enum_depth,
+        },
     }
     msg = {
         "subType": "config",
@@ -52,3 +69,4 @@ def run_discovery(conn_spec, registry_id, device_id, target_families, site_model
     topics = connection.get_discovery_topics(device_id)
     topic_message_pairs = [(t, msg) for t in topics]
     connection.publish_messages(topic_message_pairs)
+    return msg

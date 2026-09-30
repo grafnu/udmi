@@ -7,6 +7,7 @@ depending on internal relational or time-series datastore implementation details
 
 import itertools
 import json
+import os
 from typing import Any, Dict, List, Optional
 import urllib.error
 import urllib.request
@@ -21,6 +22,14 @@ class ButlerClient:
         port: Optional[int] = None,
         timeout: float = 10.0,
     ):
+        for proxy_var in ("NO_PROXY", "no_proxy"):
+            cur = os.environ.get(proxy_var, "")
+            entries = [e.strip() for e in cur.split(",") if e.strip()]
+            for host in ("127.0.0.1", "localhost"):
+                if host not in entries:
+                    entries.append(host)
+            os.environ[proxy_var] = ",".join(entries)
+
         if port is not None:
             self.endpoint = f"http://127.0.0.1:{port}/rpc"
         elif endpoint:
@@ -252,6 +261,41 @@ class ButlerClient:
         if failed_devices is not None:
             params["failed_devices"] = failed_devices
         return self.call_rpc("update_rollout", params)
+
+    def get_discovery_devices(self, registry_id: str) -> Dict[str, Dict[str, Any]]:
+        """List all devices in a registry that support discovery along with their supported protocol families."""
+        return self.call_rpc("get_discovery_devices", {"registry_id": registry_id})
+
+    def trigger_discovery_scan(
+        self,
+        registry_id: str,
+        device_id: str,
+        family: str,
+        depth: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Trigger a sporadic discovery scan for a given device and protocol family."""
+        params: Dict[str, Any] = {
+            "registry_id": registry_id,
+            "device_id": device_id,
+            "family": family,
+        }
+        if depth is not None:
+            params["depth"] = depth
+        return self.call_rpc("trigger_discovery_scan", params)
+
+    def get_discovery_state(
+        self,
+        registry_id: str,
+        device_id: str,
+    ) -> Dict[str, Any]:
+        """Track the per-family discovery state of a given device."""
+        return self.call_rpc(
+            "get_discovery_state",
+            {
+                "registry_id": registry_id,
+                "device_id": device_id,
+            },
+        )
 
     def tools_list(self) -> List[Dict[str, Any]]:
         """List all available MCP tools."""

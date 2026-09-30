@@ -43,6 +43,8 @@ class GummiDB:
             self._mock_messages = self._generate_mock_messages()
             self._mock_rollouts = self._generate_mock_rollouts()
             self._mock_rollout_id_counter = len(self._mock_rollouts) + 1
+            self._mock_discovery_devices = self._generate_mock_discovery_devices()
+            self._mock_discovery_state = self._generate_mock_discovery_state()
         else:
             self.butler = butler_client or ButlerClient(
                 endpoint=self.butler_endpoint,
@@ -60,6 +62,8 @@ class GummiDB:
             self._mock_messages = {}
             self._mock_rollouts = {}
             self._mock_rollout_id_counter = 1
+            self._mock_discovery_devices = {}
+            self._mock_discovery_state = {}
 
     # --------------------------------------------------------------------------
     # Health & Connectivity
@@ -1257,3 +1261,166 @@ class GummiDB:
                 "transaction_id": "TXN-base",
             }
         ]
+
+    # --------------------------------------------------------------------------
+    # Discovery Manager Operations (Delegated Exclusively to Butler MCP)
+    # --------------------------------------------------------------------------
+
+    def get_discovery_devices(self, registry_id: str) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        """Lists all devices in a registry that support discovery along with their supported protocol families via Butler MCP."""
+        if not registry_id or not str(registry_id).strip():
+            raise ValueError("registry_id is required")
+        reg_id = str(registry_id).strip()
+
+        if self.mock_mode:
+            return dict(self._mock_discovery_devices.get(reg_id, {}))
+
+        if not self.butler:
+            raise ConnectionError("Butler MCP client is not configured or unavailable")
+        try:
+            return self.butler.get_discovery_devices(registry_id=reg_id)
+        except Exception as e:
+            raise ConnectionError(f"Butler MCP request failed: {e}") from e
+
+    def get_discovery_state(self, registry_id: str, device_id: str) -> Dict[str, Any]:
+        """Returns the current per-family discovery state for a given device via Butler MCP."""
+        if not registry_id or not str(registry_id).strip():
+            raise ValueError("registry_id is required")
+        if not device_id or not str(device_id).strip():
+            raise ValueError("device_id is required")
+        reg_id = str(registry_id).strip()
+        dev_id = str(device_id).strip()
+
+        if self.mock_mode:
+            key = (reg_id, dev_id)
+            if key in self._mock_discovery_state:
+                return {"families": json.loads(json.dumps(self._mock_discovery_state[key]))}
+            dev_fams = self._mock_discovery_devices.get(reg_id, {}).get(dev_id, {})
+            families_out: Dict[str, Any] = {}
+            for fam in sorted(dev_fams.keys()):
+                families_out[fam] = {
+                    "phase": "stopped",
+                    "generation": None,
+                    "last_done": None,
+                    "active_count": None,
+                }
+            return {"families": families_out}
+
+        if not self.butler:
+            raise ConnectionError("Butler MCP client is not configured or unavailable")
+        try:
+            return self.butler.get_discovery_state(registry_id=reg_id, device_id=dev_id)
+        except Exception as e:
+            raise ConnectionError(f"Butler MCP request failed: {e}") from e
+
+    def trigger_discovery_scan(
+        self,
+        registry_id: str,
+        device_id: str,
+        family: str,
+        depth: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Triggers a sporadic discovery scan for a given device and protocol family via Butler MCP."""
+        if not registry_id or not str(registry_id).strip():
+            raise ValueError("registry_id is required")
+        if not device_id or not str(device_id).strip():
+            raise ValueError("device_id is required")
+        if not family or not str(family).strip():
+            raise ValueError("family is required")
+        if depth is not None and depth not in ("entries", "system", "details"):
+            raise ValueError(f"Invalid depth '{depth}'. Allowed values are: entries, system, details")
+
+        reg_id = str(registry_id).strip()
+        dev_id = str(device_id).strip()
+        fam = str(family).strip()
+
+        if self.mock_mode:
+            gen = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            key = (reg_id, dev_id)
+            if key not in self._mock_discovery_state:
+                self._mock_discovery_state[key] = {}
+            self._mock_discovery_state[key][fam] = {
+                "phase": "active",
+                "generation": gen,
+                "last_done": None,
+                "active_count": 3,
+            }
+            if reg_id not in self._mock_discovery_devices:
+                self._mock_discovery_devices[reg_id] = {}
+            if dev_id not in self._mock_discovery_devices[reg_id]:
+                self._mock_discovery_devices[reg_id][dev_id] = {}
+            self._mock_discovery_devices[reg_id][dev_id][fam] = {}
+            return {"generation": gen}
+
+        if not self.butler:
+            raise ConnectionError("Butler MCP client is not configured or unavailable")
+        try:
+            return self.butler.trigger_discovery_scan(
+                registry_id=reg_id,
+                device_id=dev_id,
+                family=fam,
+                depth=depth,
+            )
+        except Exception as e:
+            raise ConnectionError(f"Butler MCP request failed: {e}") from e
+
+    def _generate_mock_discovery_devices(self) -> Dict[str, Dict[str, Dict[str, Dict[str, Any]]]]:
+        """Generates mock discovery-capable devices and protocol families per registry."""
+        return {
+            "ZZ-TRI-FECTA": {
+                "ACME-2301": {"bacnet": {}, "vendor": {}},
+                "AHU-1": {"bacnet": {}, "vendor": {}},
+                "GAT-123": {"bacnet": {}, "vendor": {}},
+            }
+        }
+
+    def _generate_mock_discovery_state(self) -> Dict[Tuple[str, str], Dict[str, Dict[str, Any]]]:
+        """Generates initial mock per-family discovery states."""
+        now = datetime.now(timezone.utc)
+        gen_prev = (now - timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        done_prev = (now - timedelta(minutes=14, seconds=50)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return {
+            ("ZZ-TRI-FECTA", "ACME-2301"): {
+                "bacnet": {
+                    "phase": "stopped",
+                    "generation": None,
+                    "last_done": None,
+                    "active_count": None,
+                },
+                "vendor": {
+                    "phase": "stopped",
+                    "generation": None,
+                    "last_done": None,
+                    "active_count": None,
+                },
+            },
+            ("ZZ-TRI-FECTA", "AHU-1"): {
+                "bacnet": {
+                    "phase": "stopped",
+                    "generation": None,
+                    "last_done": None,
+                    "active_count": None,
+                },
+                "vendor": {
+                    "phase": "stopped",
+                    "generation": None,
+                    "last_done": None,
+                    "active_count": None,
+                },
+            },
+            ("ZZ-TRI-FECTA", "GAT-123"): {
+                "bacnet": {
+                    "phase": "stopped",
+                    "generation": None,
+                    "last_done": None,
+                    "active_count": None,
+                },
+                "vendor": {
+                    "phase": "stopped",
+                    "generation": gen_prev,
+                    "last_done": done_prev,
+                    "active_count": 3,
+                },
+            },
+        }
+

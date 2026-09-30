@@ -44,7 +44,10 @@ def _format_iso(val: Any) -> Optional[str]:
 from udmi.common.db.postgres import PostgresManager
 from udmi.common.db.influx import InfluxManager
 from udmi.common.project_spec import parse_project_spec
+from butler.src.discovery import run_discovery
 from butler.src.rollout import RolloutManager
+
+
 class ButlerProvider:
     """Encapsulates Butler datastore access for mapping and telemetry reconciliation."""
 
@@ -55,19 +58,22 @@ class ButlerProvider:
         project_spec: Optional[str] = None,
         pg_port: Optional[Union[str, int]] = None,
         influx_port: Optional[Union[str, int]] = None,
+        site_model: Optional[str] = None,
+        discovery_runner: Optional[Any] = None,
     ):
         """Initializes ButlerProvider with relational and timeseries managers."""
+        resolved_port = pg_port
+        if not resolved_port and project_spec and parse_project_spec:
+            spec_info = parse_project_spec(project_spec)
+            p = spec_info.get("port")
+            if p and str(p) != "8883":
+                resolved_port = str(int(p) + 3)
+        if not resolved_port:
+            resolved_port = os.environ.get("POSTGRES_PORT", "5432")
+
         if pg_manager is not None:
             self.pg_manager = pg_manager
         elif PostgresManager is not None:
-            resolved_port = pg_port
-            if not resolved_port and project_spec and parse_project_spec:
-                spec_info = parse_project_spec(project_spec)
-                p = spec_info.get("port")
-                if p and str(p) != "8883":
-                    resolved_port = str(int(p) + 3)
-            if not resolved_port:
-                resolved_port = os.environ.get("POSTGRES_PORT", "5432")
             self.pg_manager = PostgresManager(port=resolved_port)
         else:
             self.pg_manager = None
@@ -88,6 +94,29 @@ class ButlerProvider:
             self.influx_manager = InfluxManager(url=url)
         else:
             self.influx_manager = None
+
+        if project_spec:
+            self.project_spec = project_spec
+        elif os.environ.get("TARGET_PROJECT"):
+            self.project_spec = os.environ["TARGET_PROJECT"]
+        else:
+            env_mqtt_port = os.environ.get("MQTT_PORT")
+            if env_mqtt_port:
+                mqtt_port = int(env_mqtt_port)
+            elif resolved_port and str(resolved_port) != "5432" and int(resolved_port) > 10000:
+                mqtt_port = int(resolved_port) - 3
+            else:
+                mqtt_port = 8883
+            self.project_spec = f"//mqtt/localhost:{mqtt_port}"
+
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+        default_site_model = os.path.join(repo_root, "sites", "udmi_site_model")
+        self.site_model = (
+            site_model
+            or os.environ.get("SITE_MODEL")
+            or (default_site_model if os.path.exists(default_site_model) else None)
+        )
+        self.discovery_runner = discovery_runner or run_discovery
 
         # Persistent rollout state management in Butler proper (PostgreSQL)
         self.rollout_manager = RolloutManager(postgres_manager=self.pg_manager)
@@ -920,4 +949,440 @@ class ButlerProvider:
             converged_devices=converged_devices,
             failed_devices=failed_devices,
         )
+
+    def get_discovery_devices(
+        self,
+        registry_id: str,
+    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        """Lists all devices in a registry that support discovery along with their protocol families.
+
+        Args:
+            registry_id: Target device registry identifier (e.g. 'ZZ-TRI-FECTA').
+
+        Returns:
+            Map of device_id -> {family: {}}.
+        """
+        if not registry_id or not str(registry_id).strip():
+            raise ValueError("registry_id is required to list discovery devices.")
+        if not self.pg_manager:
+            raise RuntimeError("Butler relational datastore is unavailable.")
+
+        reg_id = str(registry_id).strip()
+        devices_map: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+        conn = self.pg_manager.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (device_id)
+                        device_id,
+                        metadata->'discovery'->'families' AS families
+                    FROM udmi_metadata
+                    WHERE device_registry_id = %s
+                      AND device_id IS NOT NULL
+                      AND device_id NOT IN ('empty', 'null')
+                      AND jsonb_typeof(metadata->'discovery'->'families') = 'object'
+                      AND metadata->'discovery'->'families' != '{}'::jsonb
+                    ORDER BY device_id, id DESC;
+                    """,
+                    (reg_id,),
+                )
+                meta_rows = cur.fetchall()
+
+                for row in meta_rows:
+                    dev_id, fams = row
+                    if isinstance(fams, str):
+                        try:
+                            fams = json.loads(fams)
+                        except Exception:
+                            fams = {}
+                    if not isinstance(fams, dict) or not fams:
+                        continue
+                    dev_entry = devices_map.setdefault(dev_id, {})
+                    for fam_name in fams.keys():
+                        dev_entry[fam_name] = {}
+
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (device_id)
+                        device_id,
+                        sub_folder,
+                        payload
+                    FROM udmi_messages
+                    WHERE registry_id = %s
+                      AND device_id IS NOT NULL
+                      AND device_id NOT IN ('empty', 'null')
+                      AND sub_type = 'model'
+                      AND (
+                          (sub_folder = 'update' AND jsonb_typeof(payload->'discovery'->'families') = 'object' AND payload->'discovery'->'families' != '{}'::jsonb)
+                          OR (sub_folder = 'discovery' AND jsonb_typeof(payload->'families') = 'object' AND payload->'families' != '{}'::jsonb)
+                      )
+                    ORDER BY device_id, id DESC;
+                    """,
+                    (reg_id,),
+                )
+                msg_rows = cur.fetchall()
+
+                for row in msg_rows:
+                    dev_id, sub_folder, payload = row
+                    if isinstance(payload, str):
+                        try:
+                            payload = json.loads(payload)
+                        except Exception:
+                            payload = {}
+                    if not isinstance(payload, dict):
+                        continue
+                    if "payload" in payload and isinstance(payload.get("payload"), dict):
+                        payload = payload["payload"]
+
+                    disc = (
+                        payload.get("discovery")
+                        if sub_folder == "update" and isinstance(payload.get("discovery"), dict)
+                        else payload
+                    )
+                    if not isinstance(disc, dict):
+                        continue
+
+                    fams = disc.get("families")
+                    if isinstance(fams, dict) and fams:
+                        dev_entry = devices_map.setdefault(dev_id, {})
+                        for fam_name in fams.keys():
+                            dev_entry[fam_name] = {}
+        finally:
+            conn.close()
+
+        return {
+            dev_id: {
+                fam_name: {}
+                for fam_name in sorted(devices_map[dev_id].keys())
+            }
+            for dev_id in sorted(devices_map.keys())
+        }
+
+    def trigger_discovery_scan(
+        self,
+        registry_id: str,
+        device_id: str,
+        family: str,
+        depth: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Triggers a sporadic discovery scan for a given device and protocol family.
+
+        Args:
+            registry_id: Target device registry identifier (e.g. 'ZZ-TRI-FECTA').
+            device_id: Target device identifier (e.g. 'AHU-1').
+            family: Protocol family to scan (e.g. 'bacnet', 'vendor').
+            depth: Optional scan depth ('entries', 'system', 'details').
+
+        Returns:
+            Dict describing the dispatched discovery scan configuration and initial pending state.
+        """
+        if not registry_id or not str(registry_id).strip():
+            raise ValueError("registry_id is required to trigger a discovery scan.")
+        if not device_id or not str(device_id).strip():
+            raise ValueError("device_id is required to trigger a discovery scan.")
+        if not family or not str(family).strip():
+            raise ValueError("family is required to trigger a discovery scan.")
+
+        reg_id = str(registry_id).strip()
+        dev_id = str(device_id).strip()
+        target_family = str(family).strip()
+
+        if depth is not None and depth not in ("entries", "system", "details"):
+            raise ValueError(
+                f"Invalid scan depth '{depth}'. Must be one of: entries, system, details."
+            )
+        enum_depth = depth or "entries"
+
+        discovery_devices = self.get_discovery_devices(registry_id=reg_id)
+        dev_families = discovery_devices.get(dev_id)
+        if not dev_families:
+            raise ValueError(
+                f"Device '{dev_id}' in registry '{reg_id}' does not support discovery."
+            )
+
+        supported_families = sorted(dev_families.keys())
+        if target_family not in supported_families:
+            raise ValueError(
+                f"Device '{dev_id}' in registry '{reg_id}' does not support discovery family "
+                f"'{target_family}' (supported families: {supported_families})."
+            )
+
+        gen_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        dispatched_msg = self.discovery_runner(
+            self.project_spec,
+            reg_id,
+            dev_id,
+            [target_family],
+            site_model=self.site_model,
+            all_families=supported_families,
+            generation=gen_ts,
+            depth=enum_depth,
+        )
+
+        payload = (
+            dispatched_msg.get("payload")
+            if isinstance(dispatched_msg, dict) and isinstance(dispatched_msg.get("payload"), dict)
+            else {
+                "version": "1.5.2",
+                "timestamp": gen_ts,
+                "generation": gen_ts,
+                "families": {
+                    **{f: {} for f in supported_families},
+                    target_family: {"generation": gen_ts, "depth": enum_depth},
+                },
+                "enumerations": {
+                    "families": enum_depth,
+                    "points": enum_depth,
+                    "features": enum_depth,
+                },
+            }
+        )
+
+        self.record_message(
+            registry_id=reg_id,
+            device_id=dev_id,
+            sub_type="config",
+            sub_folder="discovery",
+            payload=payload,
+            project_id=dispatched_msg.get("projectId") if isinstance(dispatched_msg, dict) else None,
+            timestamp=gen_ts,
+        )
+
+        return {
+            "generation": gen_ts,
+        }
+
+    def get_discovery_state(
+        self,
+        registry_id: str,
+        device_id: str,
+    ) -> Dict[str, Any]:
+        """Tracks and returns the per-family discovery state of a device.
+
+        Args:
+            registry_id: Target device registry identifier (e.g. 'ZZ-TRI-FECTA').
+            device_id: Target device identifier (e.g. 'AHU-1').
+
+        Returns:
+            Dict containing per-family discovery state (phase, generation, last_done, active_count).
+        """
+        if not registry_id or not str(registry_id).strip():
+            raise ValueError("registry_id is required to query discovery state.")
+        if not device_id or not str(device_id).strip():
+            raise ValueError("device_id is required to query discovery state.")
+        if not self.pg_manager:
+            raise RuntimeError("Butler relational datastore is unavailable.")
+
+        reg_id = str(registry_id).strip()
+        dev_id = str(device_id).strip()
+
+        discovery_devices = self.get_discovery_devices(registry_id=reg_id)
+        dev_families = discovery_devices.get(dev_id)
+        supported_families: List[str] = sorted(dev_families.keys()) if dev_families else []
+
+        def _make_tracker() -> Dict[str, Any]:
+            return {
+                "phase": "stopped",
+                "generation": None,
+                "config_generation": None,
+                "state_generation": None,
+                "last_done": None,
+                "active_count": None,
+                "completed_generations": set(),
+            }
+
+        trackers: Dict[str, Dict[str, Any]] = {
+            f: _make_tracker() for f in supported_families
+        }
+
+        conn = self.pg_manager.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, sub_type, sub_folder, payload, publish_time
+                    FROM udmi_messages
+                    WHERE registry_id = %s
+                      AND device_id = %s
+                      AND (
+                          sub_folder = 'discovery'
+                          OR (sub_folder = 'update' AND sub_type IN ('state', 'config') AND payload ? 'discovery')
+                      )
+                    ORDER BY id ASC;
+                    """,
+                    (reg_id, dev_id),
+                )
+                msg_rows = cur.fetchall()
+
+                for row in msg_rows:
+                    _, sub_type, sub_folder, payload, pub_time = row
+                    if isinstance(payload, str):
+                        try:
+                            payload = json.loads(payload)
+                        except Exception:
+                            payload = {}
+                    if not isinstance(payload, dict):
+                        continue
+                    if "payload" in payload and isinstance(payload.get("payload"), dict):
+                        payload = payload["payload"]
+
+                    if sub_folder == "update" and isinstance(payload.get("discovery"), dict):
+                        disc_payload = payload["discovery"]
+                    else:
+                        disc_payload = payload
+
+                    if not isinstance(disc_payload, dict):
+                        continue
+
+                    msg_ts = _format_iso(pub_time) or _format_iso(disc_payload.get("timestamp"))
+
+                    if sub_type == "config":
+                        families_cfg = disc_payload.get("families")
+                        if isinstance(families_cfg, dict) and families_cfg:
+                            for fam_name, fam_cfg in families_cfg.items():
+                                if fam_name not in trackers:
+                                    trackers[fam_name] = _make_tracker()
+                                t = trackers[fam_name]
+                                cfg_gen = (
+                                    _format_iso(fam_cfg.get("generation"))
+                                    if isinstance(fam_cfg, dict)
+                                    else None
+                                )
+                                if cfg_gen:
+                                    if cfg_gen != t["config_generation"]:
+                                        t["config_generation"] = cfg_gen
+                                        t["generation"] = cfg_gen
+                                        if (
+                                            cfg_gen not in t["completed_generations"]
+                                            and t["state_generation"] != cfg_gen
+                                        ):
+                                            t["phase"] = "pending"
+                                            t["active_count"] = None
+                        else:
+                            for t in trackers.values():
+                                t["config_generation"] = None
+                                if t["phase"] in ("pending", "active"):
+                                    t["phase"] = "stopped"
+
+                    elif sub_type == "state":
+                        families_st = disc_payload.get("families")
+                        if isinstance(families_st, dict) and families_st:
+                            for fam_name, fam_st in families_st.items():
+                                if not isinstance(fam_st, dict):
+                                    continue
+                                if fam_name not in trackers:
+                                    trackers[fam_name] = _make_tracker()
+                                t = trackers[fam_name]
+                                raw_phase = str(fam_st.get("phase") or "").strip().lower()
+                                st_gen = _format_iso(fam_st.get("generation"))
+                                act_cnt = fam_st.get("active_count")
+
+                                if (
+                                    t["phase"] == "pending"
+                                    and t["config_generation"]
+                                    and st_gen != t["config_generation"]
+                                    and (st_gen is None or st_gen in t["completed_generations"])
+                                ):
+                                    continue
+
+                                if st_gen:
+                                    t["state_generation"] = st_gen
+                                    t["generation"] = st_gen
+                                if act_cnt is not None:
+                                    try:
+                                        t["active_count"] = int(act_cnt)
+                                    except (ValueError, TypeError):
+                                        pass
+
+                                if raw_phase == "active":
+                                    t["phase"] = "active"
+                                elif raw_phase == "pending":
+                                    t["phase"] = "pending"
+                                elif raw_phase in ("stopped", "done"):
+                                    gen_key = st_gen or t["generation"]
+                                    if t["phase"] in ("active", "pending") or (
+                                        gen_key and gen_key not in t["completed_generations"]
+                                    ):
+                                        t["last_done"] = msg_ts
+                                        if gen_key:
+                                            t["completed_generations"].add(gen_key)
+                                    t["phase"] = "stopped"
+                        else:
+                            for t in trackers.values():
+                                if t["config_generation"] is None:
+                                    if t["phase"] == "active":
+                                        t["last_done"] = msg_ts
+                                    t["phase"] = "stopped"
+
+                    elif sub_type == "events" and sub_folder == "discovery":
+                        fam_name = disc_payload.get("family")
+                        if isinstance(fam_name, str) and fam_name.strip():
+                            fam_name = fam_name.strip()
+                            if fam_name not in trackers:
+                                trackers[fam_name] = _make_tracker()
+                            t = trackers[fam_name]
+                            ev_gen = _format_iso(disc_payload.get("generation"))
+                            event_no = disc_payload.get("event_no")
+                            if ev_gen:
+                                t["generation"] = ev_gen
+                            if isinstance(event_no, int):
+                                gen_key = ev_gen or t["generation"]
+                                if event_no < 0:
+                                    if t["phase"] in ("active", "pending") or (
+                                        gen_key and gen_key not in t["completed_generations"]
+                                    ):
+                                        t["last_done"] = msg_ts
+                                        if gen_key:
+                                            t["completed_generations"].add(gen_key)
+                                    t["phase"] = "stopped"
+                                    if t["active_count"] is None:
+                                        t["active_count"] = abs(event_no) - 1
+                                else:
+                                    if not (gen_key and gen_key in t["completed_generations"]):
+                                        t["phase"] = "active"
+
+                cur.execute(
+                    """
+                    SELECT scan_family, MAX(generation), MAX(timestamp), COUNT(*)
+                    FROM udmi_discovery
+                    WHERE device_registry_id = %s AND device_id = %s AND scan_family IS NOT NULL
+                    GROUP BY scan_family;
+                    """,
+                    (reg_id, dev_id),
+                )
+                disc_summary_rows = cur.fetchall()
+                for s_row in disc_summary_rows:
+                    s_fam, max_gen, max_ts, cnt = s_row
+                    if not s_fam:
+                        continue
+                    if s_fam not in trackers:
+                        trackers[s_fam] = _make_tracker()
+                    t = trackers[s_fam]
+                    if t["last_done"] is None and t["phase"] == "stopped":
+                        t["last_done"] = _format_iso(max_ts) or _format_iso(max_gen)
+                        if t["generation"] is None:
+                            t["generation"] = _format_iso(max_gen)
+                        if t["active_count"] is None and cnt:
+                            t["active_count"] = int(cnt)
+        finally:
+            conn.close()
+
+        all_known_families = sorted(set(supported_families) | set(trackers.keys()))
+
+        families_out: Dict[str, Dict[str, Any]] = {}
+        for fam_name in all_known_families:
+            t = trackers.get(fam_name) or _make_tracker()
+            families_out[fam_name] = {
+                "phase": t["phase"],
+                "generation": t["generation"],
+                "last_done": t["last_done"],
+                "active_count": t["active_count"],
+            }
+
+        return {
+            "families": families_out,
+        }
 

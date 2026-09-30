@@ -84,6 +84,7 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
                     "device_explorer",
                     "device_detail",
                     "etcd_explorer",
+                    "discovery_manager",
                     "config_management",
                     "managed_rollout",
                     "bridgehead_admin",
@@ -188,19 +189,41 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
                 properties = self.db.get_device_etcd_properties(reg_id, dev_id)
                 return self._send_json(properties)
 
-            # 7. Legacy etcd_explorer URL redirect / compatibility
+            # 7. Discovery Manager APIs (Delegated Exclusively to Butler MCP)
+            if path == "/api/discovery/devices":
+                reg_id = query.get("registry_id", [None])[0]
+                if not reg_id or not str(reg_id).strip():
+                    return self._send_json(
+                        {"error": "Bad request", "message": "registry_id query parameter is required"},
+                        status_code=400,
+                    )
+                disc_devices = self.db.get_discovery_devices(str(reg_id).strip())
+                return self._send_json(disc_devices)
+
+            if path == "/api/discovery/state":
+                reg_id = query.get("registry_id", [None])[0]
+                dev_id = query.get("device_id", [None])[0]
+                if not reg_id or not str(reg_id).strip() or not dev_id or not str(dev_id).strip():
+                    return self._send_json(
+                        {"error": "Bad request", "message": "registry_id and device_id query parameters are required"},
+                        status_code=400,
+                    )
+                disc_state = self.db.get_discovery_state(str(reg_id).strip(), str(dev_id).strip())
+                return self._send_json(disc_state)
+
+            # 8. Legacy etcd_explorer URL redirect / compatibility
             if path in ("/etcd_explorer", "/etcd_explorer/", "/barbican_explorer", "/barbican_explorer/"):
                 self.send_response(302)
                 self.send_header("Location", "/#explorer")
                 self.end_headers()
                 return
 
-            # 8. Managed Rollouts
+            # 9. Managed Rollouts
             if path == "/api/rollouts":
                 rollouts = self.db.list_rollouts()
                 return self._send_json(rollouts)
 
-            # 7. Real-Time Event Stream (Server-Sent Events)
+            # 10. Real-Time Event Stream (Server-Sent Events)
             if path == "/api/stream/events":
                 return self._handle_sse()
 
@@ -211,6 +234,8 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
                     "status": "ok",
                 })
 
+        except ValueError as e:
+            return self._send_json({"error": "Bad request", "message": str(e)}, status_code=400)
         except ConnectionError as e:
             return self._send_json({"error": "Service unavailable", "message": str(e)}, status_code=503)
         except Exception as e:
@@ -281,9 +306,29 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
                 result = self.db.populate_mapping_scenario(reg_id)
                 return self._send_json(result, status_code=200)
 
+            # 5. Discovery Scan Trigger (/api/discovery/scan)
+            if path == "/api/discovery/scan":
+                reg_id = body.get("registry_id")
+                dev_id = body.get("device_id")
+                family = body.get("family")
+                depth = body.get("depth")
+                if not reg_id or not dev_id or not family:
+                    return self._send_json(
+                        {"error": "Bad request", "message": "registry_id, device_id, and family are required"},
+                        status_code=400,
+                    )
+                res = self.db.trigger_discovery_scan(
+                    registry_id=str(reg_id).strip(),
+                    device_id=str(dev_id).strip(),
+                    family=str(family).strip(),
+                    depth=str(depth).strip() if depth else None,
+                )
+                return self._send_json(res, status_code=200)
 
             return self._send_json({"error": "Not Found"}, status_code=404)
 
+        except ValueError as e:
+            return self._send_json({"error": "Bad request", "message": str(e)}, status_code=400)
         except ConnectionError as e:
             return self._send_json({"error": "Service unavailable", "message": str(e)}, status_code=503)
         except RuntimeError as e:

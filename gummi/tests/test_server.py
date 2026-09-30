@@ -79,6 +79,7 @@ class TestGummiServer:
             assert "GUMMI" in content
             assert "Portfolio Overview" in content
             assert "Devices Explorer" in content
+            assert "Discovery Manager" in content
             assert "Configuration Manager" in content
             assert "Managed Rollout" not in content
             assert "Bridgehead Admin" in content
@@ -100,6 +101,7 @@ class TestGummiServer:
         assert "mapping_seed" not in data.get("features", [])
         assert "portfolio" in data.get("features", [])
         assert "device_explorer" in data.get("features", [])
+        assert "discovery_manager" in data.get("features", [])
         assert "managed_rollout" in data.get("features", [])
         assert "etcd_explorer" in data.get("features", [])
 
@@ -487,3 +489,96 @@ class TestGummiServer:
             except urllib.error.HTTPError as e:
                 assert e.code == 302
                 assert e.headers.get("Location") == "/#explorer"
+
+    def test_api_discovery_manager_endpoints(self, gummi_server):
+        # 1. GET /api/discovery/devices
+        devices = http_get_json(f"{gummi_server}/api/discovery/devices?registry_id=ZZ-TRI-FECTA")
+        assert "GAT-123" in devices
+        assert "AHU-1" in devices
+        assert devices["GAT-123"] == {"bacnet": {}, "vendor": {}}
+
+        # Missing registry_id returns 400
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            http_get_json(f"{gummi_server}/api/discovery/devices")
+        assert exc_info.value.code == 400
+
+        # 2. GET /api/discovery/state
+        state = http_get_json(f"{gummi_server}/api/discovery/state?registry_id=ZZ-TRI-FECTA&device_id=GAT-123")
+        assert list(state.keys()) == ["families"]
+        assert "bacnet" in state["families"]
+        assert "vendor" in state["families"]
+        assert state["families"]["vendor"]["phase"] == "stopped"
+        assert state["families"]["vendor"]["active_count"] == 3
+
+        # 3. POST /api/discovery/scan
+        scan_res = http_post_json(
+            f"{gummi_server}/api/discovery/scan",
+            {
+                "registry_id": "ZZ-TRI-FECTA",
+                "device_id": "GAT-123",
+                "family": "bacnet",
+                "depth": "system",
+            },
+        )
+        assert list(scan_res.keys()) == ["generation"]
+        gen = scan_res["generation"]
+        assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", gen)
+
+        # Verify state reflects triggered scan
+        state_after = http_get_json(f"{gummi_server}/api/discovery/state?registry_id=ZZ-TRI-FECTA&device_id=GAT-123")
+        assert state_after["families"]["bacnet"]["generation"] == gen
+        assert state_after["families"]["bacnet"]["phase"] == "active"
+
+        # Invalid depth returns 400
+        with pytest.raises(urllib.error.HTTPError) as exc_info_depth:
+            http_post_json(
+                f"{gummi_server}/api/discovery/scan",
+                {
+                    "registry_id": "ZZ-TRI-FECTA",
+                    "device_id": "GAT-123",
+                    "family": "bacnet",
+                    "depth": "invalid_depth",
+                },
+            )
+        assert exc_info_depth.value.code == 400
+
+    def test_discovery_butler_mcp_delegation(self):
+        """Verifies GummiDB discovery operations delegate exclusively to ButlerClient in live mode."""
+        from unittest.mock import MagicMock
+        mock_butler = MagicMock()
+        mock_butler.get_discovery_devices.return_value = {
+            "GAT-123": {"bacnet": {}, "vendor": {}}
+        }
+        mock_butler.get_discovery_state.return_value = {
+            "families": {
+                "vendor": {
+                    "phase": "active",
+                    "generation": "2026-09-30T20:00:00Z",
+                    "last_done": None,
+                    "active_count": 2,
+                }
+            }
+        }
+        mock_butler.trigger_discovery_scan.return_value = {
+            "generation": "2026-09-30T20:05:00Z"
+        }
+
+        db = GummiDB(butler_client=mock_butler, mock_mode=False)
+
+        devs = db.get_discovery_devices("ZZ-TRI-FECTA")
+        assert devs == {"GAT-123": {"bacnet": {}, "vendor": {}}}
+        mock_butler.get_discovery_devices.assert_called_once_with(registry_id="ZZ-TRI-FECTA")
+
+        st = db.get_discovery_state("ZZ-TRI-FECTA", "GAT-123")
+        assert st["families"]["vendor"]["phase"] == "active"
+        mock_butler.get_discovery_state.assert_called_once_with(registry_id="ZZ-TRI-FECTA", device_id="GAT-123")
+
+        scan = db.trigger_discovery_scan("ZZ-TRI-FECTA", "GAT-123", "vendor", depth="details")
+        assert scan == {"generation": "2026-09-30T20:05:00Z"}
+        mock_butler.trigger_discovery_scan.assert_called_once_with(
+            registry_id="ZZ-TRI-FECTA",
+            device_id="GAT-123",
+            family="vendor",
+            depth="details",
+        )
+

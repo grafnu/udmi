@@ -61,7 +61,7 @@ case "$TMUX_ACTION" in
 
         # 4. Butler Data MCP HTTP Server (:8088)
         if tmux_should_run_service "butler_mcp"; then
-            tmux_init_or_add_window "$SESSION_NAME" "butler_mcp" "bin/mcp_butler serve --port ${BUTLER_MCP_PORT:-8088} --pg-port \${POSTGRES_PORT:-5432} --influx-port \${INFLUX_PORT:-8086}"
+            tmux_init_or_add_window "$SESSION_NAME" "butler_mcp" "bin/mcp_butler serve --port ${BUTLER_MCP_PORT:-8088} --pg-port \${POSTGRES_PORT:-5432} --influx-port \${INFLUX_PORT:-8086} --project-spec '$TMUX_PROJECT_SPEC' --site-model '$TMUX_SITE_MODEL'"
         fi
 
         echo "MCP Server session '$SESSION_NAME' initialized."

@@ -1048,3 +1048,29 @@ body.tab-explorer .main-content,
   font-size: 0.75rem;
   line-height: 1.2;
 }
+
+.badge-primary {
+  background-color: rgba(59, 130, 246, 0.2);
+  color: var(--primary-color);
+}
+
+.badge-warning {
+  background-color: rgba(251, 191, 36, 0.15);
+  color: var(--warning);
+}
+
+.discovery-row-depth {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-size: 0.8rem;
+  background-color: #091024;
+  color: var(--text-main);
+  outline: none;
+}
+
+.discovery-row-depth:focus {
+  border-color: var(--primary-color);
+}
+
+

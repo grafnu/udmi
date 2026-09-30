@@ -385,7 +385,7 @@ def test_gummi_top_rows_fixed_width_and_scoped_vertical_scroll(gummi_server_url:
     assert main_overflow_y == "auto"
 
     # 3. Verify top rows (header and nav-bar) width does NOT change across different tabs
-    tab_names = ["portfolio", "devices", "config", "admin", "explorer"]
+    tab_names = ["portfolio", "devices", "discovery", "config", "admin", "explorer"]
     header_widths = {}
     nav_widths = {}
 
@@ -529,5 +529,51 @@ def test_gummi_sort_rank_placeholder_preserves_item_width(gummi_server_url: str,
     page.close()
 
 
+def test_gummi_discovery_manager_workflow(gummi_server_url: str, browser_context: Browser):
+    """Verifies the Discovery Manager tab lists discovery nodes/families, tracks state, and triggers sporadic scans."""
+    page: Page = browser_context.new_page()
+    page_errors: List[str] = []
+    page.on("pageerror", lambda err: page_errors.append(str(err)))
 
+    page.goto(gummi_server_url)
+    page.wait_for_load_state("domcontentloaded")
 
+    # 1. Navigate to Discovery Manager tab
+    disc_tab = page.locator('.nav-tab[data-tab="discovery"]')
+    expect(disc_tab).to_contain_text("Discovery Manager")
+    disc_tab.click()
+
+    expect(page.locator("#pane-discovery")).to_have_class("tab-pane active")
+    expect(page.locator("#discovery-registry-badge")).to_have_text("Registry: ZZ-TRI-FECTA")
+
+    # 2. Wait for discovery rows to populate (ACME-2301, AHU-1, GAT-123 x 2 families = 6 rows)
+    page.wait_for_function('document.querySelectorAll("#discovery-table-body tr[data-device]").length >= 6')
+    rows = page.locator("#discovery-table-body tr[data-device]")
+    assert rows.count() == 6
+
+    expect(page.locator("#metric-discovery-nodes")).to_have_text("3")
+    expect(page.locator("#metric-discovery-families")).to_have_text("6")
+
+    # 3. Verify GAT-123 / vendor row shows initial stopped state with active_count 3
+    gat_vendor_row = page.locator('#discovery-table-body tr[data-device="GAT-123"][data-family="vendor"]')
+    expect(gat_vendor_row).to_be_visible()
+    expect(gat_vendor_row.locator(".discovery-phase-badge")).to_have_text("stopped")
+    expect(gat_vendor_row.locator(".discovery-active-count")).to_have_text("3")
+
+    # 4. Select depth 'details' for GAT-123 / bacnet and trigger a sporadic scan
+    gat_bacnet_row = page.locator('#discovery-table-body tr[data-device="GAT-123"][data-family="bacnet"]')
+    expect(gat_bacnet_row.locator(".discovery-phase-badge")).to_have_text("stopped")
+
+    depth_select = gat_bacnet_row.locator(".discovery-row-depth")
+    depth_select.select_option("details")
+
+    trigger_btn = gat_bacnet_row.locator(".btn-trigger-scan")
+    trigger_btn.click()
+
+    # 5. Verify status message shows triggered generation and row phase transitions to 'active'
+    expect(page.locator("#discovery-status-msg")).to_contain_text("Triggered bacnet scan (details) on GAT-123")
+    expect(gat_bacnet_row.locator(".discovery-phase-badge")).to_have_text("active")
+    expect(gat_bacnet_row.locator(".discovery-generation")).to_have_text(re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"))
+
+    assert len(page_errors) == 0, f"JavaScript errors during Discovery Manager workflow: {page_errors}"
+    page.close()

@@ -33,6 +33,14 @@ const state = {
     activeProperty: null,
     lastSetHash: null,
   },
+  discovery: {
+    registryId: "ZZ-TRI-FECTA",
+    defaultDepth: "entries",
+    devices: {},
+    states: {},
+    rowDepths: {},
+    pollTimer: null,
+  },
 };
 
 // -----------------------------------------------------------------------------
@@ -53,6 +61,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadDevices();
   loadRollouts();
   loadExplorerRegistries();
+  loadDiscoveryManager();
 });
 
 function setupNavigation() {
@@ -100,6 +109,7 @@ function switchTab(tabId, updateHash = true) {
   if (tabId === "devices") loadDevices();
   if (tabId === "admin") loadBridgeheadStatus();
   if (tabId === "explorer") loadExplorerRegistries();
+  if (tabId === "discovery") loadDiscoveryManager();
 }
 
 // -----------------------------------------------------------------------------
@@ -750,6 +760,52 @@ function setupEventHandlers() {
       loadRollouts();
     });
   }
+
+  // Discovery Manager Controls
+  const btnRefreshDiscovery = document.getElementById("btn-refresh-discovery");
+  if (btnRefreshDiscovery) {
+    btnRefreshDiscovery.addEventListener("click", () => {
+      refreshDiscoveryStates();
+    });
+  }
+
+  const btnLoadDiscoveryNodes = document.getElementById("btn-load-discovery-nodes");
+  if (btnLoadDiscoveryNodes) {
+    btnLoadDiscoveryNodes.addEventListener("click", () => {
+      const regInput = document.getElementById("discovery-registry-input");
+      if (regInput && regInput.value.trim()) {
+        state.discovery.registryId = regInput.value.trim();
+      }
+      loadDiscoveryManager();
+    });
+  }
+
+  const regDiscoveryInput = document.getElementById("discovery-registry-input");
+  if (regDiscoveryInput) {
+    regDiscoveryInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        if (regDiscoveryInput.value.trim()) {
+          state.discovery.registryId = regDiscoveryInput.value.trim();
+        }
+        loadDiscoveryManager();
+      }
+    });
+  }
+
+  const depthDiscoverySelect = document.getElementById("discovery-depth-select");
+  if (depthDiscoverySelect) {
+    depthDiscoverySelect.addEventListener("change", (e) => {
+      state.discovery.defaultDepth = e.target.value;
+      renderDiscoveryTable();
+    });
+  }
+
+  const autoRefreshDiscovery = document.getElementById("discovery-auto-refresh");
+  if (autoRefreshDiscovery) {
+    autoRefreshDiscovery.addEventListener("change", () => {
+      scheduleDiscoveryPoll();
+    });
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -931,7 +987,7 @@ function parseHash() {
   }
 
   // Check if hash points to another GUMMI tab
-  const knownTabs = ["portfolio", "devices", "device-detail", "config", "admin"];
+  const knownTabs = ["portfolio", "devices", "device-detail", "discovery", "config", "admin"];
   if (knownTabs.includes(first)) {
     switchTab(first, false);
     if (first === "device-detail" && parts[1] && parts[2]) {
@@ -940,6 +996,14 @@ function parseHash() {
     if (first === "devices") {
       updateSortIndicators();
       loadDevices();
+    }
+    if (first === "discovery") {
+      if (parts[1]) {
+        state.discovery.registryId = parts[1];
+        const regInput = document.getElementById("discovery-registry-input");
+        if (regInput) regInput.value = parts[1];
+      }
+      loadDiscoveryManager();
     }
     return;
   }
@@ -1361,3 +1425,280 @@ window.navigateToExplorer = function (registryId, deviceId, propertyKey = null) 
     });
   }
 };
+
+// -----------------------------------------------------------------------------
+// Discovery Manager Logic (Butler MCP Interface)
+// -----------------------------------------------------------------------------
+
+async function loadDiscoveryManager() {
+  const regInput = document.getElementById("discovery-registry-input");
+  const regId = (regInput && regInput.value.trim()) || state.discovery.registryId || "ZZ-TRI-FECTA";
+  state.discovery.registryId = regId;
+
+  const badge = document.getElementById("discovery-registry-badge");
+  if (badge) badge.textContent = `Registry: ${regId}`;
+
+  const tbody = document.getElementById("discovery-table-body");
+  if (!tbody) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/discovery/devices?registry_id=${encodeURIComponent(regId)}`);
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.message || errData.error || `HTTP ${res.status}`);
+    }
+    const devicesMap = await res.json();
+    state.discovery.devices = devicesMap || {};
+    state.discovery.states = {};
+
+    await refreshDiscoveryStates();
+  } catch (err) {
+    console.warn("Failed to load discovery devices:", err);
+    tbody.innerHTML = `<tr><td colspan="8" class="empty-state">Failed to load discovery nodes: ${escapeHtml(err.message)}</td></tr>`;
+    updateDiscoveryMetrics();
+  }
+}
+
+async function refreshDiscoveryStates(specificDeviceId = null) {
+  const regId = state.discovery.registryId || "ZZ-TRI-FECTA";
+  const deviceIds = specificDeviceId
+    ? [specificDeviceId]
+    : Object.keys(state.discovery.devices || {}).sort(naturalCompare);
+
+  await Promise.all(
+    deviceIds.map(async (devId) => {
+      try {
+        const res = await fetch(
+          `${API_BASE}/api/discovery/state?registry_id=${encodeURIComponent(regId)}&device_id=${encodeURIComponent(devId)}`
+        );
+        if (res.ok) {
+          const data = await res.json();
+          state.discovery.states[devId] = (data && data.families) || {};
+        }
+      } catch (err) {
+        console.warn(`Failed to load discovery state for ${devId}:`, err);
+      }
+    })
+  );
+
+  renderDiscoveryTable();
+  updateDiscoveryMetrics();
+  scheduleDiscoveryPoll();
+}
+
+function renderDiscoveryTable() {
+  const tbody = document.getElementById("discovery-table-body");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+
+  const deviceIds = Object.keys(state.discovery.devices || {}).sort(naturalCompare);
+  if (deviceIds.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No discovery-capable devices found in this registry</td></tr>';
+    return;
+  }
+
+  deviceIds.forEach((devId) => {
+    const devFams = state.discovery.devices[devId] || {};
+    const stateFams = state.discovery.states[devId] || {};
+    const allFamilies = Array.from(new Set([...Object.keys(devFams), ...Object.keys(stateFams)])).sort(naturalCompare);
+
+    allFamilies.forEach((fam, idx) => {
+      const famState = stateFams[fam] || {
+        phase: "stopped",
+        generation: null,
+        last_done: null,
+        active_count: null,
+      };
+      const phase = (famState.phase || "stopped").toLowerCase();
+      let phaseBadgeClass = "badge-neutral";
+      if (phase === "active") {
+        phaseBadgeClass = "badge-primary";
+      } else if (phase === "pending") {
+        phaseBadgeClass = "badge-warning";
+      } else if (famState.last_done) {
+        phaseBadgeClass = "badge-success";
+      }
+
+      const rowKey = `${devId}:${fam}`;
+      const selectedDepth = state.discovery.rowDepths[rowKey] || state.discovery.defaultDepth || "entries";
+      const activeCountText =
+        famState.active_count !== null && famState.active_count !== undefined
+          ? String(famState.active_count)
+          : "—";
+
+      const tr = document.createElement("tr");
+      tr.dataset.device = devId;
+      tr.dataset.family = fam;
+      tr.innerHTML = `
+        <td>
+          <strong>${escapeHtml(devId)}</strong>
+          ${idx === 0 ? `<span style="font-size:0.75rem; color:var(--text-secondary); margin-left:0.35rem;">(${allFamilies.length} ${allFamilies.length === 1 ? "family" : "families"})</span>` : ""}
+        </td>
+        <td><code>${escapeHtml(fam)}</code></td>
+        <td><span class="badge ${phaseBadgeClass} discovery-phase-badge" data-phase="${escapeHtml(phase)}">${escapeHtml(phase)}</span></td>
+        <td><code class="discovery-generation">${formatIso(famState.generation)}</code></td>
+        <td><code class="discovery-last-done">${formatIso(famState.last_done)}</code></td>
+        <td class="discovery-active-count">${escapeHtml(activeCountText)}</td>
+        <td>
+          <select class="discovery-row-depth" data-device="${escapeHtml(devId)}" data-family="${escapeHtml(fam)}" aria-label="Scan depth for ${escapeHtml(devId)} ${escapeHtml(fam)}">
+            <option value="entries" ${selectedDepth === "entries" ? "selected" : ""}>entries</option>
+            <option value="system" ${selectedDepth === "system" ? "selected" : ""}>system</option>
+            <option value="details" ${selectedDepth === "details" ? "selected" : ""}>details</option>
+          </select>
+        </td>
+        <td>
+          <button
+            type="button"
+            class="btn btn-primary btn-sm btn-trigger-scan"
+            data-device="${escapeHtml(devId)}"
+            data-family="${escapeHtml(fam)}"
+            onclick="triggerDiscoveryScan('${escapeHtml(devId)}', '${escapeHtml(fam)}')"
+          >
+            ▶ Trigger Scan
+          </button>
+          <button
+            type="button"
+            class="btn btn-secondary btn-sm btn-refresh-device-discovery"
+            data-device="${escapeHtml(devId)}"
+            title="Refresh discovery state for ${escapeHtml(devId)}"
+            onclick="refreshDeviceDiscoveryState('${escapeHtml(devId)}')"
+          >
+            🔄
+          </button>
+        </td>
+      `;
+
+      const selectEl = tr.querySelector(".discovery-row-depth");
+      if (selectEl) {
+        selectEl.addEventListener("change", (e) => {
+          state.discovery.rowDepths[rowKey] = e.target.value;
+        });
+      }
+
+      tbody.appendChild(tr);
+    });
+  });
+}
+
+function updateDiscoveryMetrics() {
+  const deviceIds = Object.keys(state.discovery.devices || {});
+  let totalFamilies = 0;
+  let activeOrPending = 0;
+  let completed = 0;
+
+  deviceIds.forEach((devId) => {
+    const devFams = state.discovery.devices[devId] || {};
+    const stateFams = state.discovery.states[devId] || {};
+    const allFamilies = Array.from(new Set([...Object.keys(devFams), ...Object.keys(stateFams)]));
+    totalFamilies += allFamilies.length;
+
+    allFamilies.forEach((fam) => {
+      const st = stateFams[fam] || {};
+      const phase = (st.phase || "stopped").toLowerCase();
+      if (phase === "active" || phase === "pending") {
+        activeOrPending += 1;
+      }
+      if (st.last_done) {
+        completed += 1;
+      }
+    });
+  });
+
+  const nodesEl = document.getElementById("metric-discovery-nodes");
+  const famsEl = document.getElementById("metric-discovery-families");
+  const activeEl = document.getElementById("metric-discovery-active");
+  const compEl = document.getElementById("metric-discovery-completed");
+
+  if (nodesEl) nodesEl.textContent = String(deviceIds.length);
+  if (famsEl) famsEl.textContent = String(totalFamilies);
+  if (activeEl) activeEl.textContent = String(activeOrPending);
+  if (compEl) compEl.textContent = String(completed);
+}
+
+function scheduleDiscoveryPoll() {
+  if (state.discovery.pollTimer) {
+    clearTimeout(state.discovery.pollTimer);
+    state.discovery.pollTimer = null;
+  }
+
+  const autoCheckbox = document.getElementById("discovery-auto-refresh");
+  if (!autoCheckbox || !autoCheckbox.checked || state.activeTab !== "discovery") {
+    return;
+  }
+
+  // Check if any family is currently pending or active
+  let hasActiveOrPending = false;
+  Object.values(state.discovery.states || {}).forEach((famMap) => {
+    Object.values(famMap || {}).forEach((st) => {
+      if (st && (st.phase === "active" || st.phase === "pending")) {
+        hasActiveOrPending = true;
+      }
+    });
+  });
+
+  if (hasActiveOrPending) {
+    state.discovery.pollTimer = setTimeout(() => {
+      refreshDiscoveryStates();
+    }, 2000);
+  }
+}
+
+window.refreshDeviceDiscoveryState = async function (deviceId) {
+  await refreshDiscoveryStates(deviceId);
+};
+
+window.triggerDiscoveryScan = async function (deviceId, family) {
+  const regId = state.discovery.registryId || "ZZ-TRI-FECTA";
+  const rowKey = `${deviceId}:${family}`;
+  const selectEl = document.querySelector(
+    `.discovery-row-depth[data-device="${CSS.escape(deviceId)}"][data-family="${CSS.escape(family)}"]`
+  );
+  const depth = (selectEl && selectEl.value) || state.discovery.rowDepths[rowKey] || state.discovery.defaultDepth || "entries";
+  state.discovery.rowDepths[rowKey] = depth;
+
+  const statusMsg = document.getElementById("discovery-status-msg");
+  const btnEl = document.querySelector(
+    `.btn-trigger-scan[data-device="${CSS.escape(deviceId)}"][data-family="${CSS.escape(family)}"]`
+  );
+  if (btnEl) btnEl.disabled = true;
+
+  if (statusMsg) {
+    statusMsg.style.color = "var(--primary-color)";
+    statusMsg.textContent = `Triggering ${family} scan (${depth}) on ${deviceId}...`;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/api/discovery/scan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        registry_id: regId,
+        device_id: deviceId,
+        family,
+        depth,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.message || data.error || `HTTP ${res.status}`);
+    }
+
+    const gen = data.generation;
+    if (statusMsg) {
+      statusMsg.style.color = "var(--success)";
+      statusMsg.textContent = `✓ Triggered ${family} scan (${depth}) on ${deviceId} — generation: ${gen}`;
+    }
+    showToast(`Discovery scan triggered: ${deviceId} / ${family} (${gen})`);
+
+    await refreshDiscoveryStates(deviceId);
+  } catch (err) {
+    if (statusMsg) {
+      statusMsg.style.color = "var(--danger)";
+      statusMsg.textContent = `Failed to trigger scan: ${err.message}`;
+    }
+    showToast(`Scan failed: ${err.message}`);
+  } finally {
+    if (btnEl) btnEl.disabled = false;
+  }
+};
+

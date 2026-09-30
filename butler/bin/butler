@@ -10,6 +10,19 @@ import sys
 script_dir = os.path.dirname(os.path.realpath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(script_dir, "../.."))
 venv_dir = os.path.join(REPO_ROOT, "venv")
+if not os.path.exists(venv_dir):
+    git_file = os.path.join(REPO_ROOT, ".git")
+    if os.path.isfile(git_file):
+        try:
+            with open(git_file, "r", encoding="utf-8") as gf:
+                gitdir_line = gf.read().strip()
+            if gitdir_line.startswith("gitdir:") and "/.git/" in gitdir_line:
+                main_root = gitdir_line.split("gitdir:", 1)[1].strip().split("/.git/", 1)[0]
+                cand_venv = os.path.join(main_root, "venv")
+                if os.path.exists(cand_venv):
+                    venv_dir = cand_venv
+        except Exception:
+            pass
 venv_python = os.path.join(venv_dir, "bin", "python3")
 if sys.prefix != venv_dir and os.path.exists(venv_python):
     os.environ["VIRTUAL_ENV"] = venv_dir
