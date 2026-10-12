@@ -2,7 +2,7 @@
 
 # Notifs
 
-The `notifs` block defines notification configurations, states, models, and event streams for discrete device notifications and state transitions (such as BACnet alarm transitions).
+The `notifs` block defines notification configurations, states, models, and event streams for discrete device notifications and state transitions (such as BACnet alarm transitions). See the [Notifications Specification](../specs/notifs.md) for the underlying architectural rationale and lifecycle design.
 
 ## Metadata
 

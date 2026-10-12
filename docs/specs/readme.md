@@ -22,6 +22,7 @@
 - [Blob Updates](blob_updates.md)
 - [Categories](categories.md)
 - [Log/Status Entries](entries.md)
+- [Notifications](notifs.md)
 - [System Mode](system_mode.md)
 
 ## System Modeling
