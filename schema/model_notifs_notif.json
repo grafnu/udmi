@@ -1,29 +1,29 @@
 {
   "$udmi_version": "1.5.7",
-  "title": "Alarm Alarmset Model",
-  "description": "Information about a specific alarm name of the device.",
+  "title": "Notif Notifs Model",
+  "description": "Information about a specific notification target of the device.",
   "type": "object",
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "properties": {
     "units": {
-      "description": "Expected unit configuration for the alarm",
+      "description": "Expected unit configuration for the notification target",
       "type": "string"
     },
     "type": {
-      "description": "Expected data type for the alarm",
+      "description": "Expected data type for the notification target",
       "enum": ["string", "boolean", "number"]
     },
     "description": {
-      "description": "Detailed description of this alarm",
+      "description": "Detailed description of this notification target",
       "type": "string"
     },
     "writable": {
-      "description": "Indicates if this alarm is writable (else read-only)",
+      "description": "Indicates if this notification target is writable (else read-only)",
       "type": "boolean"
     },
     "baseline_value": {
-      "description": "Represents the expected baseline value of the alarm",
+      "description": "Represents the expected baseline value of the notification target",
       "examples": [22]
     },
     "baseline_tolerance": {
@@ -32,7 +32,7 @@
       "examples": [2]
     },
     "baseline_state": {
-      "description": "Expected state when `baseline_value` is set as the `set_value` for this alarm the config message",
+      "description": "Expected state when `baseline_value` is set as the `set_value` in the config message",
       "enum": [
         "applied",
         "updating",
@@ -42,17 +42,17 @@
       ]
     },
     "range_min": {
-      "description": "Represents the lower bound of the error threshold for a alarm",
+      "description": "Represents the lower bound of the error threshold",
       "type": "number",
       "examples": [0]
     },
     "range_max": {
-      "description": "Represents the upper bound of the error threshold for a alarm",
+      "description": "Represents the upper bound of the error threshold",
       "type": "number",
       "examples": [100]
     },
     "unchanged_limit_sec": {
-      "description": "Represents the limit in seconds that a alarm can be unchanged for",
+      "description": "Represents the limit in seconds that the target can be unchanged for",
       "type": "integer",
       "examples": [3600]
     },
@@ -62,7 +62,7 @@
       "type": "number"
     },
     "ref": {
-      "description": "Mapping for the alarm to an internal resource (e.g. BACnet object reference)",
+      "description": "Mapping for the notification target to an internal resource (e.g. BACnet object reference)",
       "type": "string",
       "examples": ["AI3", "400070"]
     },
@@ -77,7 +77,7 @@
       }
     },
     "tags":{
-      "description": "Tags assosciated with the alarm",
+      "description": "Tags associated with the notification target",
       "type": "array",
       "uniqueItems": true,
       "items": {
@@ -86,7 +86,7 @@
       "examples": [["lighting"], ["energy", "hvac"]]
     },
     "structure": {
-      "description": "Collection of family alarm information",
+      "description": "Collection of family notification information",
       "additionalProperties": false,
       "existingJavaType": "java.util.Map<String, RefDiscovery>",
       "patternProperties": {

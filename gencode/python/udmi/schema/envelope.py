@@ -27,6 +27,7 @@ class SubFolder(Enum):
     blobset = 'blobset'
     monitoring = 'monitoring'
     streams = 'streams'
+    notifs = 'notifs'
 
 
 class SubType(Enum):

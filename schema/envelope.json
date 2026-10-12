@@ -69,7 +69,8 @@
         "validation",
         "blobset",
         "monitoring",
-        "streams"
+        "streams",
+        "notifs"
       ]
     },
     "subType": {

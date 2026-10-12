@@ -5,7 +5,6 @@ APDU
 APIs
 ARP
 Agentic
-Alarmset
 Auth
 BACnet
 BACnetEngineeringUnits
@@ -81,6 +80,8 @@ Mod10k
 Mosquitto
 NPDU
 Nonces
+Notif
+Notifs
 OEM
 OIDC
 OOM
@@ -143,7 +144,6 @@ Writeback
 Zanzara
 acked
 addr
-alarmset
 anagement
 analytics
 api
@@ -270,6 +270,8 @@ niversal
 nmap
 nonce
 nonces
+notif
+notifs
 npm
 ns
 nterface

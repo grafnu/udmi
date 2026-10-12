@@ -11,7 +11,7 @@ Each message has an associated sub block (sometimes called a _subFolder_) that i
 scoping of the message or block:
 
 - [pointset](pointset.md) messages deal with data point telemetry (e.g. temperature reading)
-- [alarmset](alarmset.md) messages deal with alarm point telemetry
+- [notifs](notifs.md) messages deal with notification and state transition events
 - [system](system.md) messages handle system events such as rebooting, config processing, firmware, etc...
 
 ## Message Types
@@ -52,7 +52,7 @@ See the individual block folder documentation to learn more about those aspects.
 - [state](state.md) ([_🧬schema_](../../gencode/docs/config.html))
 - [event](event.md)
   - [Pointset (telemetry)](pointset.md#telemetry) ([_🧬schema_](../../gencode/docs/events_pointset.html))
-  - [Alarmset (telemetry)](alarmset.md#telemetry) ([_🧬schema_](../../gencode/docs/events_alarmset.html))
+  - [Notifs (notifications)](notifs.md#telemetry) ([_🧬schema_](../../gencode/docs/events_notifs.html))
   - [System (logging, etc)](system.md) ([_🧬schema_](../../gencode/docs/events_system.html))
   - [Discovery](../specs/discovery.md) ([_🧬schema_](../../gencode/docs/events_discovery.html))
 - [envelope](envelope.md)

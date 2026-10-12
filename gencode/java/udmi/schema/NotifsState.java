@@ -10,13 +10,13 @@ import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 
 
 /**
- * Alarmset State
+ * Notifs State
  * <p>
- * A set of alarms reporting telemetry data.
+ * State block reporting status of configured notifications.
  * 
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
-public class AlarmsetState {
+public class NotifsState {
 
     /**
      * Not included in messages published by devices. Part of message subblocks within cloud pipeline. RFC 3339 Timestamp the payload was generated
@@ -48,13 +48,13 @@ public class AlarmsetState {
     @JsonProperty("status")
     public Entry status;
     /**
-     * Collection of alarm names, defining the representative alarm set for this device.
+     * Map of notification entries keyed by notification identifier for this device.
      * (Required)
      * 
      */
-    @JsonProperty("alarms")
-    @JsonPropertyDescription("Collection of alarm names, defining the representative alarm set for this device.")
-    public HashMap<String, AlarmAlarmsetState> alarms;
+    @JsonProperty("notif_id")
+    @JsonPropertyDescription("Map of notification entries keyed by notification identifier for this device.")
+    public HashMap<String, NotifNotifsState> notif_id;
     /**
      * Original version of schema pre-upgrade
      * 
@@ -68,10 +68,10 @@ public class AlarmsetState {
         int result = 1;
         result = ((result* 31)+((this.upgraded_from == null)? 0 :this.upgraded_from.hashCode()));
         result = ((result* 31)+((this.state_etag == null)? 0 :this.state_etag.hashCode()));
+        result = ((result* 31)+((this.notif_id == null)? 0 :this.notif_id.hashCode()));
         result = ((result* 31)+((this.version == null)? 0 :this.version.hashCode()));
         result = ((result* 31)+((this.timestamp == null)? 0 :this.timestamp.hashCode()));
         result = ((result* 31)+((this.status == null)? 0 :this.status.hashCode()));
-        result = ((result* 31)+((this.alarms == null)? 0 :this.alarms.hashCode()));
         return result;
     }
 
@@ -80,11 +80,11 @@ public class AlarmsetState {
         if (other == this) {
             return true;
         }
-        if ((other instanceof AlarmsetState) == false) {
+        if ((other instanceof NotifsState) == false) {
             return false;
         }
-        AlarmsetState rhs = ((AlarmsetState) other);
-        return (((((((this.upgraded_from == rhs.upgraded_from)||((this.upgraded_from!= null)&&this.upgraded_from.equals(rhs.upgraded_from)))&&((this.state_etag == rhs.state_etag)||((this.state_etag!= null)&&this.state_etag.equals(rhs.state_etag))))&&((this.version == rhs.version)||((this.version!= null)&&this.version.equals(rhs.version))))&&((this.timestamp == rhs.timestamp)||((this.timestamp!= null)&&this.timestamp.equals(rhs.timestamp))))&&((this.status == rhs.status)||((this.status!= null)&&this.status.equals(rhs.status))))&&((this.alarms == rhs.alarms)||((this.alarms!= null)&&this.alarms.equals(rhs.alarms))));
+        NotifsState rhs = ((NotifsState) other);
+        return (((((((this.upgraded_from == rhs.upgraded_from)||((this.upgraded_from!= null)&&this.upgraded_from.equals(rhs.upgraded_from)))&&((this.state_etag == rhs.state_etag)||((this.state_etag!= null)&&this.state_etag.equals(rhs.state_etag))))&&((this.notif_id == rhs.notif_id)||((this.notif_id!= null)&&this.notif_id.equals(rhs.notif_id))))&&((this.version == rhs.version)||((this.version!= null)&&this.version.equals(rhs.version))))&&((this.timestamp == rhs.timestamp)||((this.timestamp!= null)&&this.timestamp.equals(rhs.timestamp))))&&((this.status == rhs.status)||((this.status!= null)&&this.status.equals(rhs.status))));
     }
 
 }

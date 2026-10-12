@@ -1,7 +1,7 @@
 {
   "$udmi_version": "1.5.7",
-  "title": "Alarmset State",
-  "description": "A set of alarms reporting telemetry data.",
+  "title": "Notifs State",
+  "description": "State block reporting status of configured notifications.",
   "type": "object",
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
@@ -22,17 +22,17 @@
       "maxLength": 32
     },
     "status": {
-      "description": "Optional status information about alarmset",
+      "description": "Optional status information about notifs",
       "$ref": "file:entry.json"
     },
-    "alarms": {
-      "description": "Collection of alarm names, defining the representative alarm set for this device.",
+    "notif_id": {
+      "description": "Map of notification entries keyed by notification identifier for this device.",
       "additionalProperties": false,
-      "existingJavaType": "java.util.HashMap<String, AlarmAlarmsetState>",
+      "existingJavaType": "java.util.HashMap<String, NotifNotifsState>",
       "patternProperties": {
         "^[a-z][a-z0-9]*(_[a-z0-9]+)*$": {
-          "description": "Object representation for for a single alarm",
-          "$ref": "file:state_alarmset_alarm.json#"
+          "description": "Object representation for a single notification state",
+          "$ref": "file:state_notifs_notif.json#"
         }
       }
     },
@@ -42,6 +42,6 @@
     }
   },
   "required": [
-    "alarms"
+    "notif_id"
   ]
 }

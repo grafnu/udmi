@@ -8,6 +8,7 @@ from typing import Optional
 
 from ._base import DataModel
 from .events_discovery import DiscoveryEvents
+from .events_notifs import NotifsEvents
 from .events_pointset import PointsetEvents
 from .events_streams import StreamsEvents
 from .events_system import SystemEvents
@@ -23,3 +24,4 @@ class Events(DataModel):
     pointset: Optional[PointsetEvents] = None
     discovery: Optional[DiscoveryEvents] = None
     streams: Optional[StreamsEvents] = None
+    notifs: Optional[NotifsEvents] = None

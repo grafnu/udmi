@@ -1,0 +1,32 @@
+{
+  "$udmi_version": "1.5.7",
+  "title": "Notif Notifs Events",
+  "description": "Object representation for a single notification event",
+  "type": "object",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "point": {
+      "description": "Target point or entity name associated with the notification",
+      "type": "string"
+    },
+    "current": {
+      "description": "Current state value entered as a result of the transition",
+      "type": "string"
+    },
+    "previous": {
+      "description": "Previous state value immediately prior to the transition",
+      "type": "string"
+    },
+    "timestamp": {
+      "description": "RFC 3339 UTC timestamp when the transition occurred",
+      "type": "string",
+      "format": "date-time",
+      "examples": ["2019-01-17T14:02:28.100Z"]
+    },
+    "transition": {
+      "description": "Identifier classifying the transition type or trigger",
+      "type": "string"
+    }
+  }
+}

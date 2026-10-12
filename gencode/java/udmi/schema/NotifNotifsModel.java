@@ -14,48 +14,48 @@ import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 
 
 /**
- * Alarm Alarmset Model
+ * Notif Notifs Model
  * <p>
- * Information about a specific alarm name of the device.
+ * Information about a specific notification target of the device.
  * 
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
-public class AlarmAlarmsetModel {
+public class NotifNotifsModel {
 
     /**
-     * Expected unit configuration for the alarm
+     * Expected unit configuration for the notification target
      * 
      */
     @JsonProperty("units")
-    @JsonPropertyDescription("Expected unit configuration for the alarm")
+    @JsonPropertyDescription("Expected unit configuration for the notification target")
     public java.lang.String units;
     /**
-     * Expected data type for the alarm
+     * Expected data type for the notification target
      * 
      */
     @JsonProperty("type")
-    @JsonPropertyDescription("Expected data type for the alarm")
-    public AlarmAlarmsetModel.Type type;
+    @JsonPropertyDescription("Expected data type for the notification target")
+    public NotifNotifsModel.Type type;
     /**
-     * Detailed description of this alarm
+     * Detailed description of this notification target
      * 
      */
     @JsonProperty("description")
-    @JsonPropertyDescription("Detailed description of this alarm")
+    @JsonPropertyDescription("Detailed description of this notification target")
     public java.lang.String description;
     /**
-     * Indicates if this alarm is writable (else read-only)
+     * Indicates if this notification target is writable (else read-only)
      * 
      */
     @JsonProperty("writable")
-    @JsonPropertyDescription("Indicates if this alarm is writable (else read-only)")
+    @JsonPropertyDescription("Indicates if this notification target is writable (else read-only)")
     public Boolean writable;
     /**
-     * Represents the expected baseline value of the alarm
+     * Represents the expected baseline value of the notification target
      * 
      */
     @JsonProperty("baseline_value")
-    @JsonPropertyDescription("Represents the expected baseline value of the alarm")
+    @JsonPropertyDescription("Represents the expected baseline value of the notification target")
     public Object baseline_value;
     /**
      * Maximum deviation from `baseline_value`
@@ -65,32 +65,32 @@ public class AlarmAlarmsetModel {
     @JsonPropertyDescription("Maximum deviation from `baseline_value`")
     public Double baseline_tolerance;
     /**
-     * Expected state when `baseline_value` is set as the `set_value` for this alarm the config message
+     * Expected state when `baseline_value` is set as the `set_value` in the config message
      * 
      */
     @JsonProperty("baseline_state")
-    @JsonPropertyDescription("Expected state when `baseline_value` is set as the `set_value` for this alarm the config message")
-    public AlarmAlarmsetModel.Baseline_state baseline_state;
+    @JsonPropertyDescription("Expected state when `baseline_value` is set as the `set_value` in the config message")
+    public NotifNotifsModel.Baseline_state baseline_state;
     /**
-     * Represents the lower bound of the error threshold for a alarm
+     * Represents the lower bound of the error threshold
      * 
      */
     @JsonProperty("range_min")
-    @JsonPropertyDescription("Represents the lower bound of the error threshold for a alarm")
+    @JsonPropertyDescription("Represents the lower bound of the error threshold")
     public Double range_min;
     /**
-     * Represents the upper bound of the error threshold for a alarm
+     * Represents the upper bound of the error threshold
      * 
      */
     @JsonProperty("range_max")
-    @JsonPropertyDescription("Represents the upper bound of the error threshold for a alarm")
+    @JsonPropertyDescription("Represents the upper bound of the error threshold")
     public Double range_max;
     /**
-     * Represents the limit in seconds that a alarm can be unchanged for
+     * Represents the limit in seconds that the target can be unchanged for
      * 
      */
     @JsonProperty("unchanged_limit_sec")
-    @JsonPropertyDescription("Represents the limit in seconds that a alarm can be unchanged for")
+    @JsonPropertyDescription("Represents the limit in seconds that the target can be unchanged for")
     public Integer unchanged_limit_sec;
     /**
      * Triggering threshold for partial cov update publishing
@@ -100,28 +100,28 @@ public class AlarmAlarmsetModel {
     @JsonPropertyDescription("Triggering threshold for partial cov update publishing")
     public Double cov_increment;
     /**
-     * Mapping for the alarm to an internal resource (e.g. BACnet object reference)
+     * Mapping for the notification target to an internal resource (e.g. BACnet object reference)
      * 
      */
     @JsonProperty("ref")
-    @JsonPropertyDescription("Mapping for the alarm to an internal resource (e.g. BACnet object reference)")
+    @JsonPropertyDescription("Mapping for the notification target to an internal resource (e.g. BACnet object reference)")
     public java.lang.String ref;
     @JsonProperty("adjunct")
     public Map<String, String> adjunct;
     /**
-     * Tags assosciated with the alarm
+     * Tags associated with the notification target
      * 
      */
     @JsonProperty("tags")
     @JsonDeserialize(as = java.util.LinkedHashSet.class)
-    @JsonPropertyDescription("Tags assosciated with the alarm")
+    @JsonPropertyDescription("Tags associated with the notification target")
     public Set<Object> tags;
     /**
-     * Collection of family alarm information
+     * Collection of family notification information
      * 
      */
     @JsonProperty("structure")
-    @JsonPropertyDescription("Collection of family alarm information")
+    @JsonPropertyDescription("Collection of family notification information")
     public Map<String, RefDiscovery> structure;
 
     @Override
@@ -150,16 +150,16 @@ public class AlarmAlarmsetModel {
         if (other == this) {
             return true;
         }
-        if ((other instanceof AlarmAlarmsetModel) == false) {
+        if ((other instanceof NotifNotifsModel) == false) {
             return false;
         }
-        AlarmAlarmsetModel rhs = ((AlarmAlarmsetModel) other);
+        NotifNotifsModel rhs = ((NotifNotifsModel) other);
         return ((((((((((((((((this.baseline_state == rhs.baseline_state)||((this.baseline_state!= null)&&this.baseline_state.equals(rhs.baseline_state)))&&((this.range_min == rhs.range_min)||((this.range_min!= null)&&this.range_min.equals(rhs.range_min))))&&((this.description == rhs.description)||((this.description!= null)&&this.description.equals(rhs.description))))&&((this.units == rhs.units)||((this.units!= null)&&this.units.equals(rhs.units))))&&((this.type == rhs.type)||((this.type!= null)&&this.type.equals(rhs.type))))&&((this.baseline_tolerance == rhs.baseline_tolerance)||((this.baseline_tolerance!= null)&&this.baseline_tolerance.equals(rhs.baseline_tolerance))))&&((this.structure == rhs.structure)||((this.structure!= null)&&this.structure.equals(rhs.structure))))&&((this.writable == rhs.writable)||((this.writable!= null)&&this.writable.equals(rhs.writable))))&&((this.tags == rhs.tags)||((this.tags!= null)&&this.tags.equals(rhs.tags))))&&((this.ref == rhs.ref)||((this.ref!= null)&&this.ref.equals(rhs.ref))))&&((this.baseline_value == rhs.baseline_value)||((this.baseline_value!= null)&&this.baseline_value.equals(rhs.baseline_value))))&&((this.range_max == rhs.range_max)||((this.range_max!= null)&&this.range_max.equals(rhs.range_max))))&&((this.unchanged_limit_sec == rhs.unchanged_limit_sec)||((this.unchanged_limit_sec!= null)&&this.unchanged_limit_sec.equals(rhs.unchanged_limit_sec))))&&((this.adjunct == rhs.adjunct)||((this.adjunct!= null)&&this.adjunct.equals(rhs.adjunct))))&&((this.cov_increment == rhs.cov_increment)||((this.cov_increment!= null)&&this.cov_increment.equals(rhs.cov_increment))));
     }
 
 
     /**
-     * Expected state when `baseline_value` is set as the `set_value` for this alarm the config message
+     * Expected state when `baseline_value` is set as the `set_value` in the config message
      * 
      */
     public enum Baseline_state {
@@ -170,10 +170,10 @@ public class AlarmAlarmsetModel {
         INVALID("invalid"),
         FAILURE("failure");
         private final java.lang.String value;
-        private final static Map<java.lang.String, AlarmAlarmsetModel.Baseline_state> CONSTANTS = new HashMap<java.lang.String, AlarmAlarmsetModel.Baseline_state>();
+        private final static Map<java.lang.String, NotifNotifsModel.Baseline_state> CONSTANTS = new HashMap<java.lang.String, NotifNotifsModel.Baseline_state>();
 
         static {
-            for (AlarmAlarmsetModel.Baseline_state c: values()) {
+            for (NotifNotifsModel.Baseline_state c: values()) {
                 CONSTANTS.put(c.value, c);
             }
         }
@@ -193,8 +193,8 @@ public class AlarmAlarmsetModel {
         }
 
         @JsonCreator
-        public static AlarmAlarmsetModel.Baseline_state fromValue(java.lang.String value) {
-            AlarmAlarmsetModel.Baseline_state constant = CONSTANTS.get(value);
+        public static NotifNotifsModel.Baseline_state fromValue(java.lang.String value) {
+            NotifNotifsModel.Baseline_state constant = CONSTANTS.get(value);
             if (constant == null) {
                 throw new IllegalArgumentException(value);
             } else {
@@ -206,7 +206,7 @@ public class AlarmAlarmsetModel {
 
 
     /**
-     * Expected data type for the alarm
+     * Expected data type for the notification target
      * 
      */
     public enum Type {
@@ -215,10 +215,10 @@ public class AlarmAlarmsetModel {
         BOOLEAN("boolean"),
         NUMBER("number");
         private final java.lang.String value;
-        private final static Map<java.lang.String, AlarmAlarmsetModel.Type> CONSTANTS = new HashMap<java.lang.String, AlarmAlarmsetModel.Type>();
+        private final static Map<java.lang.String, NotifNotifsModel.Type> CONSTANTS = new HashMap<java.lang.String, NotifNotifsModel.Type>();
 
         static {
-            for (AlarmAlarmsetModel.Type c: values()) {
+            for (NotifNotifsModel.Type c: values()) {
                 CONSTANTS.put(c.value, c);
             }
         }
@@ -238,8 +238,8 @@ public class AlarmAlarmsetModel {
         }
 
         @JsonCreator
-        public static AlarmAlarmsetModel.Type fromValue(java.lang.String value) {
-            AlarmAlarmsetModel.Type constant = CONSTANTS.get(value);
+        public static NotifNotifsModel.Type fromValue(java.lang.String value) {
+            NotifNotifsModel.Type constant = CONSTANTS.get(value);
             if (constant == null) {
                 throw new IllegalArgumentException(value);
             } else {
