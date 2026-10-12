@@ -19,7 +19,7 @@ class AlarmsHandler(BaseHandler):
     """Processes alarm messages and saves rows into PostgreSQL udmi_alarms table."""
 
     def can_handle(self, sub_folder: Optional[str], sub_type: Optional[str], payload: Dict[str, Any]) -> bool:
-        return sub_folder in ("alarms", "alarmset") or "alarm_type" in payload or "in_alarm" in payload
+        return sub_folder in ("alarms", "notifs") or "alarm_type" in payload or "in_alarm" in payload
 
     def process_message(
         self,

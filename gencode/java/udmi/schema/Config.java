@@ -85,14 +85,14 @@ public class Config {
     @JsonProperty("blobset")
     public BlobsetConfig blobset;
     /**
-     * Alarmset Config
+     * Notifs Config
      * <p>
-     * [Alarmset Config Documentation](../docs/messages/alarmset.md#config)
+     * [Notifs Config Documentation](../docs/messages/notifs.md#config)
      * 
      */
-    @JsonProperty("alarmset")
-    @JsonPropertyDescription("[Alarmset Config Documentation](../docs/messages/alarmset.md#config)")
-    public AlarmsetConfig alarmset;
+    @JsonProperty("notifs")
+    @JsonPropertyDescription("[Notifs Config Documentation](../docs/messages/notifs.md#config)")
+    public NotifsConfig notifs;
     /**
      * Pointset Config
      * <p>
@@ -107,7 +107,7 @@ public class Config {
     public int hashCode() {
         int result = 1;
         result = ((result* 31)+((this.system == null)? 0 :this.system.hashCode()));
-        result = ((result* 31)+((this.alarmset == null)? 0 :this.alarmset.hashCode()));
+        result = ((result* 31)+((this.notifs == null)? 0 :this.notifs.hashCode()));
         result = ((result* 31)+((this.discovery == null)? 0 :this.discovery.hashCode()));
         result = ((result* 31)+((this.downgraded_from == null)? 0 :this.downgraded_from.hashCode()));
         result = ((result* 31)+((this.pointset == null)? 0 :this.pointset.hashCode()));
@@ -128,7 +128,7 @@ public class Config {
             return false;
         }
         Config rhs = ((Config) other);
-        return (((((((((((this.system == rhs.system)||((this.system!= null)&&this.system.equals(rhs.system)))&&((this.alarmset == rhs.alarmset)||((this.alarmset!= null)&&this.alarmset.equals(rhs.alarmset))))&&((this.discovery == rhs.discovery)||((this.discovery!= null)&&this.discovery.equals(rhs.discovery))))&&((this.downgraded_from == rhs.downgraded_from)||((this.downgraded_from!= null)&&this.downgraded_from.equals(rhs.downgraded_from))))&&((this.pointset == rhs.pointset)||((this.pointset!= null)&&this.pointset.equals(rhs.pointset))))&&((this.version == rhs.version)||((this.version!= null)&&this.version.equals(rhs.version))))&&((this.blobset == rhs.blobset)||((this.blobset!= null)&&this.blobset.equals(rhs.blobset))))&&((this.gateway == rhs.gateway)||((this.gateway!= null)&&this.gateway.equals(rhs.gateway))))&&((this.localnet == rhs.localnet)||((this.localnet!= null)&&this.localnet.equals(rhs.localnet))))&&((this.timestamp == rhs.timestamp)||((this.timestamp!= null)&&this.timestamp.equals(rhs.timestamp))));
+        return (((((((((((this.system == rhs.system)||((this.system!= null)&&this.system.equals(rhs.system)))&&((this.notifs == rhs.notifs)||((this.notifs!= null)&&this.notifs.equals(rhs.notifs))))&&((this.discovery == rhs.discovery)||((this.discovery!= null)&&this.discovery.equals(rhs.discovery))))&&((this.downgraded_from == rhs.downgraded_from)||((this.downgraded_from!= null)&&this.downgraded_from.equals(rhs.downgraded_from))))&&((this.pointset == rhs.pointset)||((this.pointset!= null)&&this.pointset.equals(rhs.pointset))))&&((this.version == rhs.version)||((this.version!= null)&&this.version.equals(rhs.version))))&&((this.blobset == rhs.blobset)||((this.blobset!= null)&&this.blobset.equals(rhs.blobset))))&&((this.gateway == rhs.gateway)||((this.gateway!= null)&&this.gateway.equals(rhs.gateway))))&&((this.localnet == rhs.localnet)||((this.localnet!= null)&&this.localnet.equals(rhs.localnet))))&&((this.timestamp == rhs.timestamp)||((this.timestamp!= null)&&this.timestamp.equals(rhs.timestamp))));
     }
 
 }

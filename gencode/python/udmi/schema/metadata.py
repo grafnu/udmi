@@ -9,13 +9,13 @@ from typing import Dict, Optional
 from ._base import DataModel
 from .common import Operation
 from .events_discovery import DiscoveryEvents
-from .model_alarmset import AlarmsetModel
 from .model_cloud import CloudModel
 from .model_discovery import DiscoveryModel
 from .model_externals import ExternalsModel
 from .model_features import TestingModel as TestingModel_1
 from .model_gateway import GatewayModel
 from .model_localnet import LocalnetModel
+from .model_notifs import NotifsModel
 from .model_pointset import PointsetModel
 from .model_policy import PolicyModel
 from .model_relationships import EntityRelationships
@@ -43,7 +43,7 @@ class Metadata(DataModel):
     localnet: Optional[LocalnetModel] = None
     testing: Optional[TestingModel] = None
     features: Optional[TestingModel_1] = None
-    alarmset: Optional[AlarmsetModel] = None
+    notifs: Optional[NotifsModel] = None
     pointset: Optional[PointsetModel] = None
     structure: Optional[Dict[str, DiscoveryEvents]] = None
     policy: Optional[PolicyModel] = None

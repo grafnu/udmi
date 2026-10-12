@@ -41,8 +41,8 @@
     "blobset": {
       "$ref": "file:state_blobset.json#"
     },
-    "alarmset": {
-      "$ref": "file:state_alarmset.json#"
+    "notifs": {
+      "$ref": "state_notifs.json"
     },
     "pointset": {
       "$ref": "file:state_pointset.json#"

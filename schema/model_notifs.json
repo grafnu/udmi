@@ -1,26 +1,26 @@
 {
   "$udmi_version": "1.5.7",
-  "title": "Alarmset Model",
-  "description": "Alarmset representing the abstract system expectation for what the device should be doing, and how it should be configured and operated. This block specifies the expected alarms that a device holds",
+  "title": "Notifs Model",
+  "description": "Notifications block representing the abstract system expectation for device notification configuration and operation.",
   "type": "object",
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$defaultPresentation": "alarmset",
+  "$defaultPresentation": "notifs",
   "additionalProperties": false,
   "properties": {
-    "alarms": {
-      "description": "Information about a specific alarm name of the device.",
+    "notifs": {
+      "description": "Information about a specific notification name of the device.",
       "additionalProperties": false,
       "maxProperties": 150,
-      "existingJavaType": "java.util.HashMap<String, AlarmAlarmsetModel>",
+      "existingJavaType": "java.util.HashMap<String, NotifNotifsModel>",
       "patternProperties": {
         "^[a-z][a-z0-9]*(_[a-z0-9]+)*$": {
-          "$ref": "file:model_alarmset_alarm.json#"
+          "$ref": "file:model_notifs_notif.json#"
         }
       },
       "$presentation": {
         "presentationProperties": {
-          "alarms_template_name": {
-            "$ref": "file:model_alarmset_alarm.json#"
+          "notifs_template_name": {
+            "$ref": "file:model_notifs_notif.json#"
           }
         }
       }
@@ -32,7 +32,7 @@
         "style": "bold"
       }
     },
-    "exclude_alarms_from_config": {
+    "exclude_notifs_from_config": {
       "type": "boolean",
       "$presentation": {
         "display": "show",
@@ -61,6 +61,6 @@
     }
   },
   "required": [
-    "alarms"
+    "notifs"
   ]
 }

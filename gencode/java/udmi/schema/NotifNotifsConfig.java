@@ -9,20 +9,20 @@ import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 
 
 /**
- * Alarm Alarmset Config
+ * Notif Notifs Config
  * <p>
  * 
  * 
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
-public class AlarmAlarmsetConfig {
+public class NotifNotifsConfig {
 
     /**
-     * Mapping for the alarm to an internal resource (e.g. BACnet object reference)
+     * Mapping for the notification target to an internal resource (e.g. BACnet object reference)
      * 
      */
     @JsonProperty("ref")
-    @JsonPropertyDescription("Mapping for the alarm to an internal resource (e.g. BACnet object reference)")
+    @JsonPropertyDescription("Mapping for the notification target to an internal resource (e.g. BACnet object reference)")
     public String ref;
     /**
      * If specified, indicates the units the device should report the data in.
@@ -32,25 +32,25 @@ public class AlarmAlarmsetConfig {
     @JsonPropertyDescription("If specified, indicates the units the device should report the data in.")
     public String units;
     /**
-     * Used for cloud writeback functionality, this field specifies the value for a given alarm in the device's current units. If the value is numeric, then the type must be integer or number.  If the value is an integer, it should be represented as type integer
+     * Used for cloud writeback functionality, this field specifies the value for a given notification target in the device's current units. If the value is numeric, then the type must be integer or number.  If the value is an integer, it should be represented as type integer
      * 
      */
     @JsonProperty("set_value")
-    @JsonPropertyDescription("Used for cloud writeback functionality, this field specifies the value for a given alarm in the device's current units. If the value is numeric, then the type must be integer or number.  If the value is an integer, it should be represented as type integer")
+    @JsonPropertyDescription("Used for cloud writeback functionality, this field specifies the value for a given notification target in the device's current units. If the value is numeric, then the type must be integer or number.  If the value is an integer, it should be represented as type integer")
     public Object set_value;
     /**
-     * RFC 3339 timestamp for the specified alarm write easing to stop
+     * RFC 3339 timestamp for the specified write easing to stop
      * 
      */
     @JsonProperty("stop_time")
-    @JsonPropertyDescription("RFC 3339 timestamp for the specified alarm write easing to stop")
+    @JsonPropertyDescription("RFC 3339 timestamp for the specified write easing to stop")
     public Date stop_time;
     /**
-     * The CoV (change of value) increment, which when set, enables CoV on the alarm and defines the minimum change in present value of the respective alarm before an update is published
+     * The CoV (change of value) increment, which when set, enables CoV on the notification target and defines the minimum change before an update is published
      * 
      */
     @JsonProperty("cov_increment")
-    @JsonPropertyDescription("The CoV (change of value) increment, which when set, enables CoV on the alarm and defines the minimum change in present value of the respective alarm before an update is published")
+    @JsonPropertyDescription("The CoV (change of value) increment, which when set, enables CoV on the notification target and defines the minimum change before an update is published")
     public Double cov_increment;
 
     @Override
@@ -69,10 +69,10 @@ public class AlarmAlarmsetConfig {
         if (other == this) {
             return true;
         }
-        if ((other instanceof AlarmAlarmsetConfig) == false) {
+        if ((other instanceof NotifNotifsConfig) == false) {
             return false;
         }
-        AlarmAlarmsetConfig rhs = ((AlarmAlarmsetConfig) other);
+        NotifNotifsConfig rhs = ((NotifNotifsConfig) other);
         return ((((((this.ref == rhs.ref)||((this.ref!= null)&&this.ref.equals(rhs.ref)))&&((this.units == rhs.units)||((this.units!= null)&&this.units.equals(rhs.units))))&&((this.stop_time == rhs.stop_time)||((this.stop_time!= null)&&this.stop_time.equals(rhs.stop_time))))&&((this.set_value == rhs.set_value)||((this.set_value!= null)&&this.set_value.equals(rhs.set_value))))&&((this.cov_increment == rhs.cov_increment)||((this.cov_increment!= null)&&this.cov_increment.equals(rhs.cov_increment))));
     }
 

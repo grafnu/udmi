@@ -74,10 +74,10 @@
     "features": {
       "$ref": "file:model_features.json#"
     },
-    "alarmset": {
-      "$ref": "file:model_alarmset.json#",
+    "notifs": {
+      "$ref": "model_notifs.json",
       "$presentation": {
-        "section": "alarmset"
+        "section": "notifs"
       }
     },
     "pointset": {

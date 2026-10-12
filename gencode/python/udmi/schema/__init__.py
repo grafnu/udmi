@@ -8,8 +8,6 @@ from .category import *
 from .commands_discovery import *
 from .common import *
 from .config import *
-from .config_alarmset import *
-from .config_alarmset_alarm import *
 from .config_blobset import *
 from .config_blobset_blob import *
 from .config_discovery import *
@@ -18,6 +16,8 @@ from .config_discovery_trace import *
 from .config_gateway import *
 from .config_localnet import *
 from .config_localnet_family import *
+from .config_notifs import *
+from .config_notifs_notif import *
 from .config_pointset import *
 from .config_pointset_point import *
 from .config_system import *
@@ -38,9 +38,9 @@ from .entry import *
 from .envelope import *
 from .equipment_translation import *
 from .events import *
-from .events_alarmset import *
-from .events_alarmset_alarm import *
 from .events_discovery import *
+from .events_notifs import *
+from .events_notifs_notif import *
 from .events_pointset import *
 from .events_pointset_point import *
 from .events_streams import *
@@ -50,8 +50,6 @@ from .events_validation import *
 from .events_validation_device import *
 from .level import *
 from .metadata import *
-from .model_alarmset import *
-from .model_alarmset_alarm import *
 from .model_cloud import *
 from .model_cloud_config import *
 from .model_discovery import *
@@ -62,6 +60,8 @@ from .model_features import *
 from .model_gateway import *
 from .model_localnet import *
 from .model_localnet_family import *
+from .model_notifs import *
+from .model_notifs_notif import *
 from .model_pointset import *
 from .model_pointset_point import *
 from .model_policy import *
@@ -81,8 +81,6 @@ from .query_cloud import *
 from .site_externals_link import *
 from .site_metadata import *
 from .state import *
-from .state_alarmset import *
-from .state_alarmset_alarm import *
 from .state_blobset import *
 from .state_blobset_blob import *
 from .state_discovery import *
@@ -90,6 +88,8 @@ from .state_discovery_family import *
 from .state_gateway import *
 from .state_localnet import *
 from .state_localnet_family import *
+from .state_notifs import *
+from .state_notifs_notif import *
 from .state_pointset import *
 from .state_pointset_point import *
 from .state_system import *

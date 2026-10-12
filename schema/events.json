@@ -17,6 +17,9 @@
     },
     "streams": {
       "$ref": "file:events_streams.json#"
+    },
+    "notifs": {
+      "$ref": "events_notifs.json"
     }
   }
 }

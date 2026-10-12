@@ -1,0 +1,44 @@
+[**UDMI**](../../) / [**Docs**](../) / [**Messages**](./) / [Notifs](#)
+
+# Notifs
+
+The `notifs` block defines notification configurations, states, models, and event streams for discrete device notifications and state transitions (such as BACnet alarm transitions). See the [Notifications Specification](../specs/notifs.md) for the underlying architectural rationale and lifecycle design.
+
+## Metadata
+
+**Schema Definition:** [model_notifs.json](../../schema/model_notifs.json) ([_🧬View_](../../gencode/docs/model_notifs.html))
+
+Defines notification metadata entries keyed by notification identifier in `metadata.notifs.notifs`.
+
+## State
+
+**Schema Definition:** [state_notifs.json](../../schema/state_notifs.json) ([_🧬View_](../../gencode/docs/state_notifs.html))
+
+Notification state entries are published under `state.notifs.notif_id` as a map keyed by notification identifier, where each object ([state_notifs_notif.json](../../schema/state_notifs_notif.json)) reports:
+
+* `ref`: Mapping for the notification target to an internal device resource (e.g. BACnet object reference).
+* `current`: Current state value of the notification.
+* `timestamp`: RFC 3339 UTC timestamp recording when the notification state last changed.
+* `status`: Optional diagnostic status entry associated with the notification target.
+
+See the [example notification state message](../../tests/schemas/state_notifs/example.json).
+
+## Telemetry
+
+**Schema Definition:** [events_notifs.json](../../schema/events_notifs.json) ([_🧬View_](../../gencode/docs/events_notifs.html))
+
+Notification events published on `events/notifs` carry additional transition detail ([events_notifs_notif.json](../../schema/events_notifs_notif.json)):
+
+* `point`: Logical notification or point identifier associated with the state transition.
+* `current`: Destination state reached at the conclusion of the transition.
+* `previous`: Prior state preceding the transition.
+* `timestamp`: RFC 3339 UTC timestamp recording when the transition occurred.
+* `transition`: Transition identifier or category describing the nature of the state change.
+
+See the [example notification event message](../../tests/schemas/events_notifs/example.json).
+
+## Config
+
+**Schema Definition:** [config_notifs.json](../../schema/config_notifs.json) ([_🧬View_](../../gencode/docs/config_notifs.html))
+
+Specifies device notification sampling parameters and target notification point mappings.
