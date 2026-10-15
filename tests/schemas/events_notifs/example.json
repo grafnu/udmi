@@ -1,20 +1,13 @@
 {
   "version": "1.5.7",
   "timestamp": "2018-08-26T21:39:29.364Z",
-  "notifs": [
-    {
+  "notif_id": {
+    "filter_pressure_alarm": {
       "point": "filter_alarm_pressure_status",
       "current": "offnormal",
       "previous": "normal",
       "timestamp": "2018-08-26T21:39:28.100Z",
       "transition": "to_offnormal"
-    },
-    {
-      "point": "filter_alarm_pressure_status",
-      "current": "normal",
-      "previous": "offnormal",
-      "timestamp": "2018-08-26T21:39:29.150Z",
-      "transition": "to_normal"
     }
-  ]
+  }
 }

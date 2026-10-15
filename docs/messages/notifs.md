@@ -27,9 +27,9 @@ See the [example notification state message](../../tests/schemas/state_notifs/ex
 
 **Schema Definition:** [events_notifs.json](../../schema/events_notifs.json) ([_🧬View_](../../gencode/docs/events_notifs.html))
 
-Notification events published on `events/notifs` carry additional transition detail ([events_notifs_notif.json](../../schema/events_notifs_notif.json)):
+Notification events published on `events/notifs` are structured under `notif_id` as a map keyed by notification identifier (matching the map structure of `state` and `config`), where each entry ([events_notifs_notif.json](../../schema/events_notifs_notif.json)) carries additional transition detail:
 
-* `point`: Logical notification or point identifier associated with the state transition.
+* `point`: Logical point or entity identifier associated with the notification (semantically distinct from the notification's `notif_id` key).
 * `current`: Destination state reached at the conclusion of the transition.
 * `previous`: Prior state preceding the transition.
 * `timestamp`: RFC 3339 UTC timestamp recording when the transition occurred.

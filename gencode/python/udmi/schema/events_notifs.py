@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, Optional
 
 from ._base import DataModel
 from .events_notifs_notif import NotifNotifsEvents
@@ -20,4 +20,4 @@ class NotifsEvents(DataModel):
     version: Optional[str] = None
     upgraded_from: Optional[str] = None
     partial_update: Optional[bool] = None
-    notifs: Optional[List[NotifNotifsEvents]] = None
+    notif_id: Optional[Dict[str, NotifNotifsEvents]] = None

@@ -25,17 +25,21 @@
       "description": "Indicates if this is a partial update",
       "type": "boolean"
     },
-    "notifs": {
-      "description": "List of notification event objects for this device.",
-      "type": "array",
-      "items": {
-        "$ref": "file:events_notifs_notif.json"
+    "notif_id": {
+      "description": "Map of notification event objects keyed by notification identifier for this device.",
+      "additionalProperties": false,
+      "existingJavaType": "java.util.HashMap<String, NotifNotifsEvents>",
+      "patternProperties": {
+        "^[a-z][a-z0-9]*(_[a-z0-9]+)*$": {
+          "description": "Object representation for a single notification event",
+          "$ref": "file:events_notifs_notif.json#"
+        }
       }
     }
   },
   "required": [
     "timestamp",
     "version",
-    "notifs"
+    "notif_id"
   ]
 }
