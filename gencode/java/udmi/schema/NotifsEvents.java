@@ -2,7 +2,7 @@
 package udmi.schema;
 
 import java.util.Date;
-import java.util.List;
+import java.util.HashMap;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
@@ -33,14 +33,14 @@ public class NotifsEvents {
      */
     @JsonProperty("version")
     @JsonPropertyDescription("Version of the UDMI schema")
-    public String version;
+    public java.lang.String version;
     /**
      * Original version of schema pre-upgrade
      * 
      */
     @JsonProperty("upgraded_from")
     @JsonPropertyDescription("Original version of schema pre-upgrade")
-    public String upgraded_from;
+    public java.lang.String upgraded_from;
     /**
      * Indicates if this is a partial update
      * 
@@ -49,20 +49,20 @@ public class NotifsEvents {
     @JsonPropertyDescription("Indicates if this is a partial update")
     public Boolean partial_update;
     /**
-     * List of notification event objects for this device.
+     * Map of notification event objects keyed by notification identifier for this device.
      * (Required)
      * 
      */
-    @JsonProperty("notifs")
-    @JsonPropertyDescription("List of notification event objects for this device.")
-    public List<NotifNotifsEvents> notifs;
+    @JsonProperty("notif_id")
+    @JsonPropertyDescription("Map of notification event objects keyed by notification identifier for this device.")
+    public HashMap<String, NotifNotifsEvents> notif_id;
 
     @Override
     public int hashCode() {
         int result = 1;
         result = ((result* 31)+((this.partial_update == null)? 0 :this.partial_update.hashCode()));
         result = ((result* 31)+((this.upgraded_from == null)? 0 :this.upgraded_from.hashCode()));
-        result = ((result* 31)+((this.notifs == null)? 0 :this.notifs.hashCode()));
+        result = ((result* 31)+((this.notif_id == null)? 0 :this.notif_id.hashCode()));
         result = ((result* 31)+((this.version == null)? 0 :this.version.hashCode()));
         result = ((result* 31)+((this.timestamp == null)? 0 :this.timestamp.hashCode()));
         return result;
@@ -77,7 +77,7 @@ public class NotifsEvents {
             return false;
         }
         NotifsEvents rhs = ((NotifsEvents) other);
-        return ((((((this.partial_update == rhs.partial_update)||((this.partial_update!= null)&&this.partial_update.equals(rhs.partial_update)))&&((this.upgraded_from == rhs.upgraded_from)||((this.upgraded_from!= null)&&this.upgraded_from.equals(rhs.upgraded_from))))&&((this.notifs == rhs.notifs)||((this.notifs!= null)&&this.notifs.equals(rhs.notifs))))&&((this.version == rhs.version)||((this.version!= null)&&this.version.equals(rhs.version))))&&((this.timestamp == rhs.timestamp)||((this.timestamp!= null)&&this.timestamp.equals(rhs.timestamp))));
+        return ((((((this.partial_update == rhs.partial_update)||((this.partial_update!= null)&&this.partial_update.equals(rhs.partial_update)))&&((this.upgraded_from == rhs.upgraded_from)||((this.upgraded_from!= null)&&this.upgraded_from.equals(rhs.upgraded_from))))&&((this.notif_id == rhs.notif_id)||((this.notif_id!= null)&&this.notif_id.equals(rhs.notif_id))))&&((this.version == rhs.version)||((this.version!= null)&&this.version.equals(rhs.version))))&&((this.timestamp == rhs.timestamp)||((this.timestamp!= null)&&this.timestamp.equals(rhs.timestamp))));
     }
 
 }
