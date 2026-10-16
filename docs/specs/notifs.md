@@ -37,14 +37,14 @@ The `notifs` subsystem coordinates notification delivery and lifecycle closure b
 
 2. **Exchange 2 — Event Received Acknowledged (`events/notifs` $\rightarrow$ `config.notifs.notif_id.<notif_id>.event_ack`)**:
    - In parallel with updating `state`, the device publishes an `events/notifs` message containing the supplementary details for `<notif_id>` (including its transition `timestamp` and optional `alarm` properties).
-   - **ACK**: Upon receiving the event, the server updates `config.notifs.notif_id.<notif_id>.event_ack` to the transition `timestamp` from the event (e.g., `"2018-08-26T21:39:28.100Z"`), confirming that the event details have been received.
-   - **Device-Side Timeout & Retry (1 Minute)**: There is no explicit server-side NACK. Instead, event reliability relies on a device-side timeout: `event_ack` matching the event's transition `timestamp` must be received by the device within **1 minute (60 seconds)** of the event being sent; otherwise, the device re-sends the `events/notifs` message.
-   - **Event Idempotency**: Notification events on `events/notifs` are strictly idempotent (uniquely identified by `<notif_id>` and the transition `timestamp`), ensuring that delayed or retransmitted events do not cause duplicate side effects on the server.
+   - **Acknowledgment**: Upon receiving the event, the server updates `config.notifs.notif_id.<notif_id>.event_ack` to the transition `timestamp` from the event (e.g., `"2018-08-26T21:39:28.100Z"`), confirming that the event details have been received.
+   - **Device-Side Timeout & Retry (1 Minute)**: There is no explicit server-side negative acknowledgment. Instead, event reliability relies on a device-side timeout: `event_ack` matching the event's transition `timestamp` must be received by the device within **1 minute (60 seconds)** of the event being sent; otherwise, the device re-sends the `events/notifs` message.
+   - **Event Idempotency**: Notification events on `events/notifs` are strictly idempotent (uniquely identified by `<notif_id>` and the transition `timestamp`), ensuring that delayed or resent events do not cause duplicate side effects on the server.
 
 3. **Intermediate Quiescent State**:
    - Once the notification is raised and its event is acknowledged, the system reaches an intermediate quiescent state while awaiting operator action:
      - `<notif_id>` is active in `state.notifs.notif_id`.
-     - The transition event has been sent on `events/notifs` and ACKed by the server (`config.notifs.notif_id.<notif_id>.event_ack` equals the transition `timestamp`).
+     - The transition event has been sent on `events/notifs` and acknowledged by the server (`config.notifs.notif_id.<notif_id>.event_ack` equals the transition `timestamp`).
      - `<notif_id>` is present in `config.notifs.notif_id`, with `acknowledged` unset or `false`.
 
 4. **Exchange 3 — Operator Acknowledged & Teardown (`config.notifs.notif_id.<notif_id>.acknowledged` $\rightarrow$ `state` removal $\rightarrow$ `config` removal)**:
