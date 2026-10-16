@@ -41,7 +41,7 @@
       "$ref": "file:config_blobset.json#"
     },
     "notifs": {
-      "$ref": "config_notifs.json"
+      "$ref": "file:config_notifs.json#"
     },
     "pointset": {
       "$ref": "file:config_pointset.json#"

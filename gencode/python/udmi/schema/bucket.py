@@ -37,6 +37,9 @@ class Bucket(DataModel):
   # UDMI gateway capabilities
   GATEWAY: ClassVar[str] = "gateway"
 
+  # Notification and alarm capabilities
+  NOTIFS: ClassVar[str] = "notifs"
+
   # Pointset and telemetry capabilities
   POINTSET: ClassVar[str] = "pointset"
 
@@ -68,6 +71,7 @@ class Bucket(DataModel):
     DISCOVERY,
     DISCOVERY_SCAN,
     GATEWAY,
+    NOTIFS,
     POINTSET,
     SYSTEM,
     SYSTEM_MODE,

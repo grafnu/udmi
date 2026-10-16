@@ -166,6 +166,7 @@ import udmi.schema.IotAccess;
 import udmi.schema.IotAccess.IotProvider;
 import udmi.schema.Level;
 import udmi.schema.Metadata;
+import udmi.schema.NotifsEvents;
 import udmi.schema.Operation;
 import udmi.schema.PointsetEvents;
 import udmi.schema.SchemaValidationState;
@@ -215,7 +216,8 @@ public class SequenceBase {
   private static final Map<Class<?>, SubFolder> CLASS_EVENT_SUBTYPE_MAP = ImmutableMap.of(
       SystemEvents.class, SubFolder.SYSTEM,
       PointsetEvents.class, SubFolder.POINTSET,
-      DiscoveryEvents.class, SubFolder.DISCOVERY
+      DiscoveryEvents.class, SubFolder.DISCOVERY,
+      NotifsEvents.class, SubFolder.NOTIFS
   );
   private static final Map<SubType, Class<?>> EXPECTED_UPDATES = ImmutableMap.of(
       SubType.CONFIG, Config.class,
@@ -1370,6 +1372,7 @@ public class SequenceBase {
     if (doPartialUpdates && !force) {
       updateConfig(reason, waitForState, SubFolder.SYSTEM, augmentConfig(deviceConfig.system));
       updateConfig(reason, waitForState, SubFolder.POINTSET, deviceConfig.pointset);
+      updateConfig(reason, waitForState, SubFolder.NOTIFS, deviceConfig.notifs);
       updateConfig(reason, waitForState, SubFolder.GATEWAY, deviceConfig.gateway);
       updateConfig(reason, waitForState, SubFolder.LOCALNET, deviceConfig.localnet);
       updateConfig(reason, waitForState, SubFolder.BLOBSET, deviceConfig.blobset);

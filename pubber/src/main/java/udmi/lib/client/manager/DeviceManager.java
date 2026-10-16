@@ -1,5 +1,7 @@
 package udmi.lib.client.manager;
 
+import static com.google.udmi.util.GeneralUtils.catchToNull;
+
 import java.util.List;
 import java.util.Map;
 import udmi.lib.intf.FamilyProvider;
@@ -24,6 +26,8 @@ public interface DeviceManager extends SubBlockManager {
   LocalnetManager getLocalnetManager();
 
   PointsetManager getPointsetManager();
+
+  NotifsManager getNotifsManager();
 
   DiscoveryManager getDiscoveryManager();
 
@@ -83,6 +87,8 @@ public interface DeviceManager extends SubBlockManager {
     getSystemManager().updateConfig(config.system, config.timestamp);
     getLocalnetManager().updateConfig(config.localnet);
     getPointsetManager().updateConfig(config.pointset);
+    getNotifsManager().updateConfig(config.notifs,
+        catchToNull(() -> config.system.testing.trigger));
     getDiscoveryManager().updateConfig(config.discovery);
     getGatewayManager().updateConfig(config.gateway);
   }

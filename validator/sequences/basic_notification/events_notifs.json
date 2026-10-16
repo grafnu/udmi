@@ -1,0 +1,20 @@
+{
+  "notif_id" : {
+    "8f3a19c2" : {
+      "alarm" : {
+        "ack_required" : true,
+        "event_type" : "change_of_state",
+        "message" : "Filter differential pressure alarm active",
+        "notification_class" : 1,
+        "priority" : 3
+      },
+      "current" : "offnormal",
+      "point" : "filter_alarm_pressure_status",
+      "previous" : "normal",
+      "timestamp" : "TIMESTAMP",
+      "transition" : "to_offnormal"
+    }
+  },
+  "timestamp" : "TIMESTAMP",
+  "version" : "1.5.7"
+}

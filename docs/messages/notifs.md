@@ -6,13 +6,13 @@ The `notifs` block defines notification configurations, states, models, and even
 
 ## Metadata
 
-**Schema Definition:** [model_notifs.json](../../schema/model_notifs.json) ([_🧬View_](../../gencode/docs/model_notifs.html))
+**Schema Definition:** [model_notifs.json](../../schema/model_notifs.json) ([_🧬View_](../../gencode/docs/metadata.html#notifs))
 
 Defines notification metadata entries keyed by an opaque 8-character hexadecimal notification identifier (`^[0-9a-f]{8}$`) in `metadata.notifs.notifs`.
 
 ## State
 
-**Schema Definition:** [state_notifs.json](../../schema/state_notifs.json) ([_🧬View_](../../gencode/docs/state_notifs.html))
+**Schema Definition:** [state_notifs.json](../../schema/state_notifs.json) ([_🧬View_](../../gencode/docs/state.html#notifs))
 
 Notification state entries are published under `state.notifs.notif_id` as a map keyed by an opaque 8-character hexadecimal notification identifier (`^[0-9a-f]{8}$`, e.g., `42a8a8f1`), where each object ([state_notifs_notif.json](../../schema/state_notifs_notif.json)) reports:
 
@@ -45,7 +45,7 @@ See the [example notification event message](../../tests/schemas/events_notifs/e
 
 ## Config
 
-**Schema Definition:** [config_notifs.json](../../schema/config_notifs.json) ([_🧬View_](../../gencode/docs/config_notifs.html))
+**Schema Definition:** [config_notifs.json](../../schema/config_notifs.json) ([_🧬View_](../../gencode/docs/config.html#notifs))
 
 Notification acknowledgments and control directives are published under `config.notifs.notif_id` as a map keyed by an opaque 8-character hexadecimal notification identifier (`^[0-9a-f]{8}$`, e.g., `42a8a8f1`), matching the map structure of `state` and `events`. The presence of a `<notif_id>` entry in `config.notifs.notif_id` indicates that the server has observed the active notification in `state.notifs.notif_id`, and each entry ([config_notifs_notif.json](../../schema/config_notifs_notif.json)) specifies:
 

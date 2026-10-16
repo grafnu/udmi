@@ -75,7 +75,7 @@
       "$ref": "file:model_features.json#"
     },
     "notifs": {
-      "$ref": "model_notifs.json",
+      "$ref": "file:model_notifs.json#",
       "$presentation": {
         "section": "notifs"
       }

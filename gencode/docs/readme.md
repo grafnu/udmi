@@ -25,7 +25,6 @@
 ## Other
 * [**building_config_entity**](building_config_entity.html)
 * [**commands_discovery**](commands_discovery.html) - [Discovery command](../../docs/specs/discovery.md) for provisioning
-* [**config_notifs**](config_notifs.html) - [Notifs Config Documentation](../../docs/messages/notifs.md#config)
 * [**configuration_execution**](configuration_execution.html) - Parameters for configuring the execution run of a UDMI tool
 * [**configuration_pod**](configuration_pod.html) - Parameters for configuring the execution run of a UDMIS pod
 * [**configuration_pubber**](configuration_pubber.html) - Parameters to define a pubber runtime instance
@@ -33,11 +32,9 @@
 * [**equipment_translation**](equipment_translation.html) - [Discovery result](../../docs/specs/discovery.md) with implicit results
 * [**events**](events.html) - Container object for all event schemas, not directly used.
 * [**events_validation**](events_validation.html) - Validation device result
-* [**model_notifs**](model_notifs.html) - Notifications block representing the abstract system expectation for device notification configuration and operation.
 * [**monitoring**](monitoring.html) - Output from UDMIS monitoring
 * [**mosquitto_client_response**](mosquitto_client_response.html) - Information returned by Mosquitto dynamic security getClient command.
 * [**persistent_device**](persistent_device.html) - Device persistent data
 * [**properties**](properties.html)
 * [**query_cloud**](query_cloud.html) - Information specific to how the device communicates with the cloud.
-* [**state_notifs**](state_notifs.html) - State block reporting status of configured notifications.
 * [**state_validation**](state_validation.html) - Validation state summary

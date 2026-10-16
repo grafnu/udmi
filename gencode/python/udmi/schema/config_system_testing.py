@@ -19,3 +19,4 @@ class TestingSystemConfig(DataModel):
     transaction_id: Optional[str] = None
     config_base: Optional[int] = None
     endpoint_type: Optional[str] = None
+    trigger: Optional[str] = None

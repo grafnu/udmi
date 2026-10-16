@@ -17,6 +17,7 @@ These are used to label individual line-item tests.
 * _discovery_: Automated discovery capabilities
   * _scan_: Scanning a network for devices
 * _gateway_: UDMI gateway capabilities
+* _notifs_: Notification and alarm capabilities
 * _pointset_: Pointset and telemetry capabilities
 * _system_: Basic system operations
   * _mode_: System mode
