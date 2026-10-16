@@ -7,7 +7,14 @@
       "current": "offnormal",
       "previous": "normal",
       "timestamp": "2018-08-26T21:39:28.100Z",
-      "transition": "to_offnormal"
+      "transition": "to_offnormal",
+      "alarm": {
+        "priority": 100,
+        "notification_class": 5,
+        "event_type": "change_of_state",
+        "ack_required": true,
+        "message": "Filter differential pressure high limit exceeded"
+      }
     }
   }
 }

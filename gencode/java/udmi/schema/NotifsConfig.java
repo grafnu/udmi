@@ -33,50 +33,18 @@ public class NotifsConfig {
     @JsonPropertyDescription("Version of the UDMI schema")
     public java.lang.String version;
     /**
-     * The `state_etag` of the last _state_ message sent by the device. [Writeback documentation](../docs/specs/sequences/writeback.md)
+     * Map of notification acknowledgment entries keyed by opaque notification identifier. [Notifs documentation](../docs/messages/notifs.md)
      * 
      */
-    @JsonProperty("state_etag")
-    @JsonPropertyDescription("The `state_etag` of the last _state_ message sent by the device. [Writeback documentation](../docs/specs/sequences/writeback.md)")
-    public java.lang.String state_etag;
-    /**
-     * An expiry for the the device to revert to baseline (no set value). [Writeback documentation](../docs/specs/sequences/writeback.md)
-     * 
-     */
-    @JsonProperty("set_value_expiry")
-    @JsonPropertyDescription("An expiry for the the device to revert to baseline (no set value). [Writeback documentation](../docs/specs/sequences/writeback.md)")
-    public Date set_value_expiry;
-    /**
-     * Minimum time between sample updates for the device (including complete and COV updates). Updates more frequent than this should be coalesced into one update.
-     * 
-     */
-    @JsonProperty("sample_limit_sec")
-    @JsonPropertyDescription("Minimum time between sample updates for the device (including complete and COV updates). Updates more frequent than this should be coalesced into one update.")
-    public Integer sample_limit_sec;
-    /**
-     * Maximum time between samples for the device to send out a complete update. It can send out updates more frequently than this. Default to 300.
-     * 
-     */
-    @JsonProperty("sample_rate_sec")
-    @JsonPropertyDescription("Maximum time between samples for the device to send out a complete update. It can send out updates more frequently than this. Default to 300.")
-    public Integer sample_rate_sec = 300;
-    /**
-     * The notifications defined in this dictionary indicate the configured notification targets for the device. [Notifs documentation](../docs/messages/notifs.md)
-     * 
-     */
-    @JsonProperty("notifs")
-    @JsonPropertyDescription("The notifications defined in this dictionary indicate the configured notification targets for the device. [Notifs documentation](../docs/messages/notifs.md)")
-    public HashMap<String, NotifNotifsConfig> notifs;
+    @JsonProperty("notif_id")
+    @JsonPropertyDescription("Map of notification acknowledgment entries keyed by opaque notification identifier. [Notifs documentation](../docs/messages/notifs.md)")
+    public HashMap<String, NotifNotifsConfig> notif_id;
 
     @Override
     public int hashCode() {
         int result = 1;
-        result = ((result* 31)+((this.sample_rate_sec == null)? 0 :this.sample_rate_sec.hashCode()));
-        result = ((result* 31)+((this.notifs == null)? 0 :this.notifs.hashCode()));
-        result = ((result* 31)+((this.state_etag == null)? 0 :this.state_etag.hashCode()));
-        result = ((result* 31)+((this.set_value_expiry == null)? 0 :this.set_value_expiry.hashCode()));
+        result = ((result* 31)+((this.notif_id == null)? 0 :this.notif_id.hashCode()));
         result = ((result* 31)+((this.version == null)? 0 :this.version.hashCode()));
-        result = ((result* 31)+((this.sample_limit_sec == null)? 0 :this.sample_limit_sec.hashCode()));
         result = ((result* 31)+((this.timestamp == null)? 0 :this.timestamp.hashCode()));
         return result;
     }
@@ -90,7 +58,7 @@ public class NotifsConfig {
             return false;
         }
         NotifsConfig rhs = ((NotifsConfig) other);
-        return ((((((((this.sample_rate_sec == rhs.sample_rate_sec)||((this.sample_rate_sec!= null)&&this.sample_rate_sec.equals(rhs.sample_rate_sec)))&&((this.notifs == rhs.notifs)||((this.notifs!= null)&&this.notifs.equals(rhs.notifs))))&&((this.state_etag == rhs.state_etag)||((this.state_etag!= null)&&this.state_etag.equals(rhs.state_etag))))&&((this.set_value_expiry == rhs.set_value_expiry)||((this.set_value_expiry!= null)&&this.set_value_expiry.equals(rhs.set_value_expiry))))&&((this.version == rhs.version)||((this.version!= null)&&this.version.equals(rhs.version))))&&((this.sample_limit_sec == rhs.sample_limit_sec)||((this.sample_limit_sec!= null)&&this.sample_limit_sec.equals(rhs.sample_limit_sec))))&&((this.timestamp == rhs.timestamp)||((this.timestamp!= null)&&this.timestamp.equals(rhs.timestamp))));
+        return ((((this.notif_id == rhs.notif_id)||((this.notif_id!= null)&&this.notif_id.equals(rhs.notif_id)))&&((this.version == rhs.version)||((this.version!= null)&&this.version.equals(rhs.version))))&&((this.timestamp == rhs.timestamp)||((this.timestamp!= null)&&this.timestamp.equals(rhs.timestamp))));
     }
 
 }

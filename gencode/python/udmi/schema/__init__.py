@@ -40,6 +40,7 @@ from .equipment_translation import *
 from .events import *
 from .events_discovery import *
 from .events_notifs import *
+from .events_notifs_alarm import *
 from .events_notifs_notif import *
 from .events_pointset import *
 from .events_pointset_point import *

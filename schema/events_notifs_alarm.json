@@ -1,0 +1,38 @@
+{
+  "$udmi_version": "1.5.7",
+  "title": "Alarm Notifs Events",
+  "description": "Alarm-specific properties for a notification event (such as BACnet alarm parameters).",
+  "type": "object",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "priority": {
+      "description": "Alarm priority level (e.g. BACnet Notification Class priority)",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 255,
+      "examples": [100]
+    },
+    "notification_class": {
+      "description": "Alarm notification class identifier governing routing and acknowledgment behavior",
+      "type": "integer",
+      "minimum": 0,
+      "examples": [5]
+    },
+    "event_type": {
+      "description": "Alarm algorithm or event classification (e.g. out_of_range, change_of_state, floating_limit, command_failure)",
+      "type": "string",
+      "examples": ["out_of_range", "change_of_state"]
+    },
+    "ack_required": {
+      "description": "Indicates whether operator acknowledgment is required for this alarm transition",
+      "type": "boolean",
+      "examples": [true]
+    },
+    "message": {
+      "description": "Descriptive alarm text or operator message emitted with the alarm event",
+      "type": "string",
+      "examples": ["Filter differential pressure high limit exceeded"]
+    }
+  }
+}

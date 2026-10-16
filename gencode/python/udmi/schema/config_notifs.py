@@ -18,8 +18,4 @@ class NotifsConfig(DataModel):
 
     timestamp: Optional[str] = None
     version: Optional[str] = None
-    state_etag: Optional[str] = None
-    set_value_expiry: Optional[str] = None
-    sample_limit_sec: Optional[int] = None
-    sample_rate_sec: Optional[int] = 300
-    notifs: Optional[Dict[str, NotifNotifsConfig]] = None
+    notif_id: Optional[Dict[str, NotifNotifsConfig]] = None
