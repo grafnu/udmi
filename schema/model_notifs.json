@@ -13,7 +13,7 @@
       "maxProperties": 150,
       "existingJavaType": "java.util.HashMap<String, NotifNotifsModel>",
       "patternProperties": {
-        "^[a-z][a-z0-9]*(_[a-z0-9]+)*$": {
+        "^[0-9a-f]{8}$": {
           "$ref": "file:model_notifs_notif.json#"
         }
       },
