@@ -30,7 +30,7 @@
       "additionalProperties": false,
       "existingJavaType": "java.util.HashMap<String, NotifNotifsState>",
       "patternProperties": {
-        "^[a-z][a-z0-9]*(_[a-z0-9]+)*$": {
+        "^[0-9a-f]{8}$": {
           "description": "Object representation for a single notification state",
           "$ref": "file:state_notifs_notif.json#"
         }

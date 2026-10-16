@@ -30,7 +30,7 @@
       "additionalProperties": false,
       "existingJavaType": "java.util.HashMap<String, NotifNotifsEvents>",
       "patternProperties": {
-        "^[a-z][a-z0-9]*(_[a-z0-9]+)*$": {
+        "^[0-9a-f]{8}$": {
           "description": "Object representation for a single notification event",
           "$ref": "file:events_notifs_notif.json#"
         }
