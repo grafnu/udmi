@@ -35,7 +35,26 @@ The local device address `device` can be defined in one of two places, but **not
 The effective device address is resolved as:
 `device_address = metadata.localnet.families.<family>.addr != null ? localnet.families.<family>.addr : gateway.target.addr`
 
-*   **Addr Syntax Constraint:** For families like `modbus`, the effective device address (the `<addr>` component of the URL) must either **start with an alphabetical character** (e.g., `modbus_rtu_1` or `my-host`), or be formatted as a **valid 4-part IPv4 address** (e.g., `192.168.1.1` — starting with a number and having 4 octets separated by dots). A purely numeric, non-IP value like `"2"` is invalid as a host.
+#### Address Authority Classification & Gateway `localnet.networks` Matching
+After stripping any optional `:port` suffix, the `<addr>` authority component of a point URL is validated under one of three mutually exclusive syntactic forms:
+
+1. **Numeric / IP Literal** (e.g., IPv4 `192.168.1.1` or BACnet device instance `1234`):
+   * Validated directly against the protocol family's numeric or IP address format.
+   * Does not require an entry in the parent gateway's `localnet.networks` map.
+2. **Single-Label Identifier** (no `.`, matching `^[a-zA-Z][a-zA-Z0-9]*(?:[_-][a-zA-Z0-9]+)*$`, e.g., `modbus_rtu_1`, `localhost`, `my-host`):
+   * Represents a named serial/fieldbus network key or an unqualified single-label hostname.
+   * When validated in a site model under a parent gateway (`gateway.gateway_id`), requires an **exact key match** in the gateway's `metadata.localnet.networks` map (`addr.equals(key)`).
+3. **Canonical Multi-Label FQDN** (contains `.`, lowercase RFC 1123 labels ending in a valid public or private TLD such as `.com`, `.goog`, `.local`, `.lan`, with **no trailing dot**, e.g., `foo.google.com` or `sensor-1.local`):
+   * Validated via `FqdnFamilyProvider` (trailing root dots such as `foo.google.com.` are rejected to enforce a single canonical representation).
+   * When validated in a site model under a parent gateway, requires a **strict suffix match** against a leading-dot domain key in the gateway's `metadata.localnet.networks` map (e.g., `".google.com"` or `".local"`).
+
+Across all non-numeric `<addr>` authorities, gateway network resolution reduces to a single deterministic predicate over the keys `key` of the parent gateway's `localnet.networks` map:
+
+```java
+key.startsWith(".") ? addr.endsWith(key) : addr.equals(key)
+```
+
+Because every domain suffix key starts with `.` and valid `<addr>` values never start or end with `.`, `addr.endsWith(key)` inherently enforces DNS label boundaries (`foo.google.com` and `a.b.google.com` match `.google.com`, whereas `badgoogle.com` and apex `google.com` do not). Matching is evaluated directly against the `localnet.networks` map keys and is independent of the optional `family` property inside the network entry, allowing a single domain suffix entry (such as `".google.com"`) to cover all hostname-addressed protocols on that gateway.
 
 ### 2. URL Combination Logic
 For standard configurations, the system constructs the complete URL by concatenating the components:

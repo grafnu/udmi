@@ -73,6 +73,13 @@ specifies any information necessary either for the initial (manual) configuratio
 ongoing validation of operation. E.g., if a gateway device has a unique MAC address used for local
 communications, it would be indicated here.
 
+Additionally, a gateway's [🧬`localnet.networks`](../../gencode/docs/metadata.html#localnet) map
+declares the named local networks and leading-dot domain suffixes available to its proxied child
+devices:
+* **Single-label keys** (e.g., `modbus_rtu_1` or `localhost`) match single-label `<addr>` authorities by exact string equality (`addr.equals(key)`).
+* **Leading-dot domain suffix keys** (e.g., `.google.com` or `.local`) match canonical lowercase multi-label FQDN `<addr>` authorities by strict suffix match (`addr.endsWith(key)`).
+* See [Family Providers](family_providers.md) for the complete `<addr>` classification and network-matching rules.
+
 ## Proxy Device Operation
 
 Proxy devices are those that have a logical cloud device entry (in a registry),

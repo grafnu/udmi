@@ -5,7 +5,7 @@
   "localnet": {
     "families": {
       "fqdn": {
-        "addr": "uk-lon-whatever.goog.in."
+        "addr": "uk-lon-whatever.goog.in"
       }
     }
   },

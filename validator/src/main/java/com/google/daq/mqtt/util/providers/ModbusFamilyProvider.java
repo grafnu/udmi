@@ -21,7 +21,7 @@ public class ModbusFamilyProvider implements FamilyProvider {
   // Note: the `split("/", 4)` in `FamilyProvider` splits the URL into:
   // parts[0]: modbus:
   // parts[1]: (empty string)
-  // parts[2]: <addr> (must start with alpha or be a valid IPv4 address)
+  // parts[2]: <addr>[:port] (IPv4 address, single-label key, or lowercase FQDN)
   // parts[3]: <unitid>/<function>/<address>[/<quantity>][?interpretation]
 
   // Address: <unitid>
@@ -49,16 +49,14 @@ public class ModbusFamilyProvider implements FamilyProvider {
     return MODBUS;
   }
 
-  private static final Pattern ALPHA_ADDR = Pattern.compile("^[a-zA-Z][a-zA-Z0-9_.-]*$");
+  private static final Pattern SINGLE_LABEL_ADDR =
+      Pattern.compile("^[a-zA-Z][a-zA-Z0-9]*(?:[_-][a-zA-Z0-9]+)*$");
 
-  private boolean startsWithAlpha(String addr) {
-    if (addr == null || addr.isEmpty()) {
-      return false;
-    }
-    return ALPHA_ADDR.matcher(addr).matches();
+  private boolean isSingleLabelIdentifier(String addr) {
+    return addr != null && SINGLE_LABEL_ADDR.matcher(addr).matches();
   }
 
-  private boolean isValidIpv4(String addr) {
+  static boolean isValidIpv4(String addr) {
     try {
       return com.google.common.net.InetAddresses.isInetAddress(addr)
           && com.google.common.net.InetAddresses.forString(addr) instanceof java.net.Inet4Address;
@@ -71,9 +69,17 @@ public class ModbusFamilyProvider implements FamilyProvider {
   public void validateAddr(String scanAddr) {
     requireNonNull(scanAddr, "missing required modbus scan_addr");
     String addrWithoutPort = validatePort(scanAddr);
-    checkState(startsWithAlpha(addrWithoutPort) || isValidIpv4(addrWithoutPort),
-        format("modbus addr %s is invalid; "
-            + "must start with an alphabetical character or be a valid IPv4 address", scanAddr));
+    boolean valid;
+    if (isValidIpv4(addrWithoutPort)) {
+      valid = true;
+    } else if (addrWithoutPort.contains(".")) {
+      valid = FqdnFamilyProvider.isValidFqdn(addrWithoutPort);
+    } else {
+      valid = isSingleLabelIdentifier(addrWithoutPort);
+    }
+    checkState(valid,
+        format("modbus addr %s is invalid; must be a valid IPv4 address, "
+            + "single-label network/host key, or lowercase FQDN", scanAddr));
   }
 
   @Override

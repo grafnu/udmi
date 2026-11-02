@@ -308,6 +308,12 @@ public class ConfigManager {
             }
 
             getFamilyProvider(targetFamily).validateUrl(fullRef);
+            String gatewayId = getGatewayId();
+            if (siteModel != null && gatewayId != null) {
+              FamilyProvider.validateUrlNetwork(
+                  fullRef, catchToNull(() ->
+                      siteModel.loadDeviceMetadata(gatewayId).localnet.networks));
+            }
           });
     }
     return pointRef;
@@ -331,6 +337,15 @@ public class ConfigManager {
         addWarning("Unrecognized localnet protocol family " + family);
       }
     });
+    if (metadata.localnet.networks != null) {
+      metadata.localnet.networks.forEach((networkKey, networkModel) -> {
+        if (networkKey.startsWith(".")) {
+          captureSchemaViolation(
+              format("fqdn localnet network %s", networkKey),
+              () -> getFamilyProvider(ProtocolFamily.FQDN).validateNetwork(networkKey));
+        }
+      });
+    }
 
     LocalnetConfig localnetConfig = new LocalnetConfig();
     localnetConfig.families = new HashMap<>();

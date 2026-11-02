@@ -21,7 +21,9 @@ public class FqdnFamilyProviderTest {
       "sub.domain.co.uk",
       "a.b.c.d.e.f.g.org",
       "test-ing.com",
-      "zz-tri-fecta-bms-7.lon.bosiot.in.goog.",
+      "zz-tri-fecta-bms-7.lon.bosiot.in.goog",
+      "sensor-1.local",
+      "plc-01.bms.lan",
       "xn--fsqu00a.com" // Punycode for internationalized domain
   );
   public static final Set<String> BAD_ADDRS = ImmutableSet.of(
@@ -33,7 +35,31 @@ public class FqdnFamilyProviderTest {
       "example.com-",        // TLD ends with hyphen
       "example..com",        // Double dot
       "example.c",           // TLD too short
+      "example.com.",        // Trailing dot not allowed
+      "zz-tri-fecta-bms-7.lon.bosiot.in.goog.", // Trailing dot not allowed
+      ".example.com",        // Leading dot is a network suffix, not an addr
+      "localhost",           // Single label without TLD
       "1.2.3.4"              // Looks like an IP
+  );
+
+  public static final Set<String> GOOD_NETWORKS = ImmutableSet.of(
+      ".example.com",
+      ".google.com",
+      ".local",
+      ".bms.lan",
+      ".sub.domain.co.uk",
+      ".xn--fsqu00a.com"
+  );
+  public static final Set<String> BAD_NETWORKS = ImmutableSet.of(
+      "",
+      ".",
+      "example.com",         // Missing leading dot
+      "*.example.com",       // Wildcard asterisk not allowed
+      ".example.com.",       // Trailing dot not allowed
+      ".Example.com",        // Uppercase
+      ".-example.com",       // Label starts with hyphen
+      ".c",                  // TLD too short
+      ".123"                 // Numeric TLD
   );
 
   public static final Set<String> GOOD_REFERENCES = ImmutableSet.of(
@@ -65,6 +91,20 @@ public class FqdnFamilyProviderTest {
         .map(addr -> validate(() -> provider.validateAddr(addr)))
         .filter(GeneralUtils::isNotEmpty).toList();
     assertEquals("Not enough validation errors for addrs", BAD_ADDRS.size(), badErrors.size());
+  }
+
+  @Test
+  public void fqdn_network_validation() {
+    List<String> goodErrors = GOOD_NETWORKS.stream()
+        .map(net -> validate(() -> provider.validateNetwork(net)))
+        .filter(GeneralUtils::isNotEmpty).toList();
+    assertTrue("Unexpected network errors: " + CSV_JOINER.join(goodErrors), goodErrors.isEmpty());
+
+    List<String> badErrors = BAD_NETWORKS.stream()
+        .map(net -> validate(() -> provider.validateNetwork(net)))
+        .filter(GeneralUtils::isNotEmpty).toList();
+    assertEquals("Not enough validation errors for networks",
+        BAD_NETWORKS.size(), badErrors.size());
   }
 
   @Test

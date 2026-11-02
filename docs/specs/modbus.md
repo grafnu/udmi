@@ -10,8 +10,8 @@ UDMI supports reading Modbus points by specifying them via a `modbus://` URL sch
 
 `modbus://<addr>[:port]/<unitid>/<function>/<address>[/<quantity>][?interpretation]`
 
-*   **`addr`**: e.g., `192.28.27.3` or `modbus_rtu_1` (named network from the `localnet.networks` map).
-*   **`port`**: (Optional) The TCP port, e.g. "192.168.2.3:2833" or "hostname:2741".
+*   **`addr`**: An IPv4 address (e.g., `192.28.27.3`), a single-label network/host identifier (e.g., `modbus_rtu_1` or `localhost`, matched by exact key in `localnet.networks`), or a canonical lowercase FQDN without trailing dot (e.g., `foo.google.com` or `sensor-1.local`, matched by leading-dot suffix such as `.google.com` or `.local` in `localnet.networks`).
+*   **`port`**: (Optional) The TCP port, e.g. `192.168.2.3:2833` or `hostname:2741`.
 *   **`unitid`**: The Slave ID (Unit Identifier).
 *   **`function`**: The Function Code (see [Function Codes](#function-codes)).
 *   **`address`**: The starting register address.
@@ -41,10 +41,7 @@ Parameters passed in the query string define how to interpret the fetched regist
 
 ### Network Parameters
 
-The `addr` field is either an IPv4 address, DNS hostname, or maps to a
-named network in the device's `model_localnet.json` (under the
-`networks` field). Each named network can define the following
-(optional) parameters for communication:
+The `addr` field is validated as one of three forms: an IPv4 address, a single-label network/host key, or a canonical lowercase multi-label FQDN (no trailing dot). For proxied devices in a site model, any non-IP `addr` must match an entry in the parent gateway's `localnet.networks` map (defined in `model_localnet.json`) via exact key match (`addr.equals(key)`) for single-label keys or strict leading-dot suffix match (`addr.endsWith(key)`) for FQDNs. Each named network can define the following (optional) `adjunct` parameters for communication:
 
 *   **`protocol`**: i.e., `RTU` or `TCP`.
 *   **`device`**: The port device identifier, e.g. `/dev/tty1`.
@@ -65,7 +62,7 @@ The metadata values in the examples below map to the following complete Modbus U
 
 ### Network Configuration Example
 
-The serial-bus `RTU` network specification as part of a gateway `metadata.json` file:
+The serial-bus `RTU` and domain-suffix `TCP` network specifications as part of a gateway `metadata.json` file:
 
 ```json
 {
@@ -81,6 +78,9 @@ The serial-bus `RTU` network specification as part of a gateway `metadata.json` 
           "stop_bits": 1,
           "device": "COM1"
         }
+      },
+      ".google.com": {
+        "family": "fqdn"
       }
     }
   }
