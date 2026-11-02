@@ -88,6 +88,7 @@ import java.util.stream.Collectors;
 import org.apache.commons.io.IOUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import udmi.lib.ProtocolFamily;
 import udmi.schema.CloudModel;
 import udmi.schema.CloudModel.Auth_type;
 import udmi.schema.Config;
@@ -95,6 +96,7 @@ import udmi.schema.Credential;
 import udmi.schema.Envelope;
 import udmi.schema.Envelope.SubFolder;
 import udmi.schema.Envelope.SubType;
+import udmi.schema.FamilyLocalnetModel;
 import udmi.schema.GatewayModel;
 import udmi.schema.Metadata;
 import udmi.schema.PointPointsetModel;
@@ -284,6 +286,10 @@ class LocalDevice implements SiteDevice {
         && metadata.gateway.target != null
         && Boolean.TRUE.equals(metadata.gateway.target.vendor_ref);
 
+    String gatewayId = catchToNull(() -> metadata.gateway.gateway_id);
+    Map<String, FamilyLocalnetModel> gatewayNetworks = catchToNull(() ->
+        siteModel.loadDeviceMetadata(gatewayId).localnet.networks);
+
     for (Map.Entry<String, PointPointsetModel> entry : metadata.pointset.points.entrySet()) {
       PointPointsetModel pointModel = entry.getValue();
       if (pointModel == null) {
@@ -314,6 +320,9 @@ class LocalDevice implements SiteDevice {
             namedFamilies.get(targetFamily).validateUrl(fullUrl);
           } else {
             throw new RuntimeException("Unknown protocol family in URL: " + targetFamily);
+          }
+          if (siteModel != null && gatewayId != null) {
+            FamilyProvider.validateUrlNetwork(fullUrl, gatewayNetworks);
           }
         } catch (Exception e) {
           validationErrors.add(new RuntimeException(
@@ -428,6 +437,18 @@ class LocalDevice implements SiteDevice {
       metadataObject.localnet.families.forEach((family, familyModel) -> {
         if (FamilyProvider.NAMED_FAMILIES.containsKey(family)) {
           FamilyProvider.NAMED_FAMILIES.get(family).validateModel(familyModel);
+        }
+      });
+    }
+    if (metadataObject != null && metadataObject.localnet != null
+        && metadataObject.localnet.networks != null) {
+      metadataObject.localnet.networks.forEach((networkKey, networkModel) -> {
+        if (networkKey.startsWith(".")) {
+          FamilyProvider.NAMED_FAMILIES.get(ProtocolFamily.FQDN).validateNetwork(networkKey);
+        }
+        if (networkModel != null && networkModel.family != null
+            && FamilyProvider.NAMED_FAMILIES.containsKey(networkModel.family)) {
+          FamilyProvider.NAMED_FAMILIES.get(networkModel.family).validateModel(networkModel);
         }
       });
     }

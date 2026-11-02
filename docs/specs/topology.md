@@ -4,9 +4,10 @@
 
 ## Terminology
 
-* **local networks**: grouped communication patterns for on-prem systems
-  * _family_: network property that defines things about the network (e.g. that an address should be of the form XXX.XXX.XXX.XXX)
-  * _properties_: parameterization of the network, meanings defined by the network _family_
+* **local networks**: grouped communication patterns for on-prem systems defined under `localnet.networks`
+  * _key_: either a single-label identifier (e.g. `modbus_rtu_1` or `localhost`, matched by exact equality) or a leading-dot domain suffix (e.g. `.google.com` or `.local`, matched by strict suffix against canonical lowercase FQDNs with no trailing dot)
+  * _family_: optional network property that defines protocol-specific validation rules for the network entry
+  * _properties_: parameterization of the network (such as `adjunct` serial settings), meanings defined by the network _family_
 * **iot devices**: devices that have a representation in the cloud model
   * _networks_: optional list of _local networks_ the device connects to
   * **direct devices**: devices that have a direct (e.g.) MQTT connection without an intervening gateway

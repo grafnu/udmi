@@ -8,6 +8,7 @@ import com.google.common.collect.ImmutableSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+import udmi.schema.FamilyLocalnetModel;
 
 /**
  * Abstract collection of stuff for managing vendor families.
@@ -127,9 +128,77 @@ public interface FamilyProvider {
   }
 
   /**
+   * Extract the host/network authority component (without port) from a full point URL.
+   */
+  static String extractUrlAddr(String url) {
+    String[] parts = url.split("/", 4);
+    checkState(parts.length >= 3, "Expected at least 3 parts, had " + parts.length);
+    String urlAddr = parts[2];
+    int lastBracket = urlAddr.lastIndexOf(']');
+    int lastColon = urlAddr.lastIndexOf(PORT_SEPARATOR);
+    if (lastColon > lastBracket) {
+      return urlAddr.substring(0, lastColon);
+    }
+    return urlAddr;
+  }
+
+  /**
+   * Return true if the given non-port address authority requires matching against a gateway's
+   * localnet.networks map (alphabetic network key or hostname rather than a numeric/IP literal).
+   */
+  static boolean requiresNetworkMatch(String addrWithoutPort) {
+    if (addrWithoutPort == null || addrWithoutPort.isEmpty()) {
+      return false;
+    }
+    if (ModbusFamilyProvider.isValidIpv4(addrWithoutPort)) {
+      return false;
+    }
+    if (addrWithoutPort.startsWith("[") || addrWithoutPort.chars().allMatch(Character::isDigit)) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Check whether a localnet.networks key matches the given address authority:
+   * leading-dot keys (e.g. ".google.com") use strict suffix match; all other keys use exact match.
+   */
+  static boolean matchesNetworkKey(String networkKey, String addrWithoutPort) {
+    return networkKey.startsWith(".")
+        ? addrWithoutPort.endsWith(networkKey)
+        : addrWithoutPort.equals(networkKey);
+  }
+
+  /**
+   * Validate that the given full URL's authority matches at least one entry in the gateway's
+   * localnet.networks map when required.
+   */
+  static void validateUrlNetwork(String url, Map<String, FamilyLocalnetModel> gatewayNetworks) {
+    String targetFamily = url.contains("://") ? url.substring(0, url.indexOf("://")) : "vendor";
+    if ("vendor".equals(targetFamily) || "iot".equals(targetFamily)) {
+      return;
+    }
+    String addrWithoutPort = extractUrlAddr(url);
+    if (!requiresNetworkMatch(addrWithoutPort)) {
+      return;
+    }
+    if (gatewayNetworks == null || gatewayNetworks.isEmpty()) {
+      throw new IllegalArgumentException(format(
+          "No localnet.networks defined on gateway to match address '%s'", addrWithoutPort));
+    }
+    boolean matched = gatewayNetworks.keySet().stream()
+        .anyMatch(key -> matchesNetworkKey(key, addrWithoutPort));
+    if (!matched) {
+      throw new IllegalArgumentException(format(
+          "Address '%s' does not match any network in gateway localnet.networks %s",
+          addrWithoutPort, gatewayNetworks.keySet()));
+    }
+  }
+
+  /**
    * Validate a family localnet model.
    */
-  default void validateModel(udmi.schema.FamilyLocalnetModel familyModel) {
+  default void validateModel(FamilyLocalnetModel familyModel) {
     if (familyModel.adjunct != null && !familyModel.adjunct.isEmpty()) {
       throw new IllegalArgumentException(String.format(
           "Adjunct properties not allowed for family %s: %s",

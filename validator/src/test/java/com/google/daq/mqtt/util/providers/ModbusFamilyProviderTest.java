@@ -32,11 +32,15 @@ public class ModbusFamilyProviderTest {
       "modbus://modbus_rtu_1/1/3/40001/1?type=UINT32&worder=HWF&border=LSB&scale=10&offset=5",
       "modbus://192.168.1.1:502/1/3/40001",
       "modbus://192.168.2.3:2833/1/3/40001",
-      "modbus://hostname:2741/1/3/40001"
+      "modbus://hostname:2741/1/3/40001",
+      "modbus://foo.google.com/1/3/40001",
+      "modbus://sensor-1.local:502/1/3/40001"
   );
 
   public static final Set<String> BAD_REFERENCES = ImmutableSet.of(
       "modbus://network@192.168.1.1:502/1/3/40001",
+      "modbus://foo.google.com./1/3/40001",
+      "modbus://Foo.google.com/1/3/40001",
       "modbus://1/3/40001",
       "modbus://1/3/40001/10",
       "modbus://1/3/40001/10?type=INT16&border=MSB",
@@ -104,5 +108,42 @@ public class ModbusFamilyProviderTest {
       assertTrue(e.getMessage().contains(
           "invalid modbus adjunct key 'invalid_key'; allowed keys are "));
     }
+  }
+
+  @Test
+  public void network_matching_validation() {
+    java.util.Map<String, udmi.schema.FamilyLocalnetModel> networks = new java.util.HashMap<>();
+    networks.put("modbus_rtu_1", new udmi.schema.FamilyLocalnetModel());
+    networks.put("localhost", new udmi.schema.FamilyLocalnetModel());
+    networks.put("my-host", new udmi.schema.FamilyLocalnetModel());
+    networks.put(".google.com", new udmi.schema.FamilyLocalnetModel());
+    networks.put(".local", new udmi.schema.FamilyLocalnetModel());
+
+    // Exact matches (serial network & bare hostnames)
+    FamilyProvider.validateUrlNetwork("modbus://modbus_rtu_1/1/3/40001", networks);
+    FamilyProvider.validateUrlNetwork("modbus://localhost/2/4/3001", networks);
+    FamilyProvider.validateUrlNetwork("modbus://my-host/1/3/40001", networks);
+
+    // Strict suffix matches (FQDNs with and without port)
+    FamilyProvider.validateUrlNetwork("modbus://foo.google.com/1/3/40001", networks);
+    FamilyProvider.validateUrlNetwork("modbus://a.b.google.com:502/1/3/40001", networks);
+    FamilyProvider.validateUrlNetwork("modbus://sensor-1.local:502/1/3/40001", networks);
+
+    // Numeric / IPv4 addresses do not require a localnet.networks entry
+    FamilyProvider.validateUrlNetwork("modbus://192.168.1.1:502/1/3/40001", null);
+    FamilyProvider.validateUrlNetwork("bacnet://582312/BV/11#present_value", null);
+
+    // Negative cases: unmatched domain, label-boundary violation, apex domain, unknown key
+    Set<String> unmatchedUrls = ImmutableSet.of(
+        "modbus://badgoogle.com/1/3/40001",
+        "modbus://google.com/1/3/40001",
+        "modbus://foo.other.com/1/3/40001",
+        "modbus://modbus_rtu_2/1/3/40001"
+    );
+    List<String> unmatchedErrors = unmatchedUrls.stream()
+        .map(url -> catchToMessage(() -> FamilyProvider.validateUrlNetwork(url, networks)))
+        .filter(GeneralUtils::isNotEmpty).toList();
+    assertEquals("Expected all unmatched URLs to fail",
+        unmatchedUrls.size(), unmatchedErrors.size());
   }
 }
