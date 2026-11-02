@@ -11,7 +11,7 @@ UDMI supports reading Modbus points by specifying them via a `modbus://` URL sch
 `modbus://<addr>[:port]/<unitid>/<function>/<address>[/<quantity>][?interpretation]`
 
 *   **`addr`**: An IPv4 address (e.g., `192.28.27.3`), a single-label network/host identifier (e.g., `modbus_rtu_1` or `localhost`, matched by exact key in `localnet.networks`), or a canonical lowercase FQDN without trailing dot (e.g., `foo.google.com` or `sensor-1.local`, matched by leading-dot suffix such as `.google.com` or `.local` in `localnet.networks`).
-*   **`port`**: (Optional) The TCP port, e.g. "192.168.2.3:2833" or "hostname:2741".
+*   **`port`**: (Optional) The TCP port, e.g. `192.168.2.3:2833` or `hostname:2741`.
 *   **`unitid`**: The Slave ID (Unit Identifier).
 *   **`function`**: The Function Code (see [Function Codes](#function-codes)).
 *   **`address`**: The starting register address.

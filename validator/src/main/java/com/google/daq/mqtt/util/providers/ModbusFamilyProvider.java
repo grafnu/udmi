@@ -21,7 +21,7 @@ public class ModbusFamilyProvider implements FamilyProvider {
   // Note: the `split("/", 4)` in `FamilyProvider` splits the URL into:
   // parts[0]: modbus:
   // parts[1]: (empty string)
-  // parts[2]: <addr> (must start with alpha or be a valid IPv4 address)
+  // parts[2]: <addr>[:port] (IPv4 address, single-label key, or lowercase FQDN)
   // parts[3]: <unitid>/<function>/<address>[/<quantity>][?interpretation]
 
   // Address: <unitid>
