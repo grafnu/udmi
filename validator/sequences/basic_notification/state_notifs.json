@@ -1,0 +1,11 @@
+{
+  "notif_id" : {
+    "8f3a19c2" : {
+      "current" : "offnormal",
+      "ref" : "BV/11#present_value",
+      "timestamp" : "TIMESTAMP"
+    }
+  },
+  "timestamp" : "TIMESTAMP",
+  "version" : "1.5.7"
+}

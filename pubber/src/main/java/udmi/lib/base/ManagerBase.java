@@ -20,6 +20,7 @@ import udmi.schema.DiscoveryState;
 import udmi.schema.Entry;
 import udmi.schema.GatewayState;
 import udmi.schema.LocalnetState;
+import udmi.schema.NotifsState;
 import udmi.schema.PointsetState;
 import udmi.schema.State;
 import udmi.schema.SystemState;
@@ -88,6 +89,8 @@ public abstract class ManagerBase implements SubBlockManager {
       state.gateway = (GatewayState) checkValue;
     } else if (checkTarget instanceof DiscoveryState) {
       state.discovery = (DiscoveryState) checkValue;
+    } else if (checkTarget instanceof NotifsState) {
+      state.notifs = (NotifsState) checkValue;
     } else {
       throw new RuntimeException(
         format("Unrecognized update type %s", checkTarget.getClass().getSimpleName()));

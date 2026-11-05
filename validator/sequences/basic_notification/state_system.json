@@ -1,0 +1,26 @@
+{
+  "hardware" : {
+    "make" : "BOS",
+    "model" : "pubber"
+  },
+  "last_config" : "TIMESTAMP",
+  "operation" : {
+    "last_start" : "TIMESTAMP",
+    "mode" : "initial",
+    "operational" : true,
+    "restart_count" : 1
+  },
+  "serial_no" : "sequencer-13289",
+  "software" : {
+    "firmware" : "v1",
+    "system" : "v1"
+  },
+  "status" : {
+    "category" : "system.config.parse",
+    "level" : 100,
+    "message" : "success",
+    "timestamp" : "TIMESTAMP"
+  },
+  "timestamp" : "TIMESTAMP",
+  "version" : "1.5.7"
+}

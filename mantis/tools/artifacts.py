@@ -852,7 +852,7 @@ def inspect_message_trace(
                 cat in f_lower
                 for cat in (
                     "events", "state", "config", "pointset", "system", "discovery",
-                    "validation", "alarmset", "localnet", "blobset", "model"
+                    "validation", "alarmset", "notifs", "localnet", "blobset", "model"
                 )
             ):
                 trace_files.append(os.path.join(dirpath, f))

@@ -35,6 +35,9 @@ public enum Bucket {
   // UDMI gateway capabilities
   GATEWAY("gateway"),
 
+  // Notification and alarm capabilities
+  NOTIFS("notifs"),
+
   // Pointset and telemetry capabilities
   POINTSET("pointset"),
 

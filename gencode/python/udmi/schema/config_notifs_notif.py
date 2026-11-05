@@ -4,15 +4,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Optional
 
 from ._base import DataModel
 
 
 @dataclass
 class NotifNotifsConfig(DataModel):
-    ref: Optional[str] = None
-    units: Optional[str] = None
-    set_value: Optional[Union[str, bool, float]] = None
-    stop_time: Optional[str] = None
-    cov_increment: Optional[float] = None
+    """
+    Server acknowledgment and control configuration for a single active notification.
+    """
+
+    event_ack: Optional[str] = None
+    acknowledged: Optional[bool] = None

@@ -19,7 +19,7 @@
       "$ref": "file:events_streams.json#"
     },
     "notifs": {
-      "$ref": "events_notifs.json"
+      "$ref": "file:events_notifs.json#"
     }
   }
 }

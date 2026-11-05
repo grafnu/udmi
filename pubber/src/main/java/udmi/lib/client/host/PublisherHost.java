@@ -83,6 +83,7 @@ import udmi.schema.DiscoveryEvents;
 import udmi.schema.EndpointConfiguration;
 import udmi.schema.Entry;
 import udmi.schema.Level;
+import udmi.schema.NotifsEvents;
 import udmi.schema.Operation;
 import udmi.schema.PointsetEvents;
 import udmi.schema.State;
@@ -122,6 +123,7 @@ public interface PublisherHost extends ManagerHost {
           .put(MqttPublisher.FakeTopic.class, getEventsSuffix("racoon"))
           .put(MqttPublisher.InjectedState.class, STATE_TOPIC)
           .put(DiscoveryEvents.class, getEventsSuffix("discovery"))
+          .put(NotifsEvents.class, getEventsSuffix("notifs"))
           .build();
   Map<String, String> INVALID_REPLACEMENTS = ImmutableMap.of(
       "events/blobset", "\"\"",

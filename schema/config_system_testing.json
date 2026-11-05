@@ -21,6 +21,10 @@
     "endpoint_type": {
       "description": "Designator for the kind of endpoint being used for this test",
       "type": "string"
+    },
+    "trigger": {
+      "description": "General out-of-band test trigger for device-under-test",
+      "type": "string"
     }
   }
 }

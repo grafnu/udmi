@@ -11,56 +11,32 @@ import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 /**
  * Notif Notifs Config
  * <p>
- * 
+ * Server acknowledgment and control configuration for a single active notification.
  * 
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class NotifNotifsConfig {
 
     /**
-     * Mapping for the notification target to an internal resource (e.g. BACnet object reference)
+     * RFC 3339 UTC transition timestamp of the most recently received notification event, acknowledging event receipt by the server.
      * 
      */
-    @JsonProperty("ref")
-    @JsonPropertyDescription("Mapping for the notification target to an internal resource (e.g. BACnet object reference)")
-    public String ref;
+    @JsonProperty("event_ack")
+    @JsonPropertyDescription("RFC 3339 UTC transition timestamp of the most recently received notification event, acknowledging event receipt by the server.")
+    public Date event_ack;
     /**
-     * If specified, indicates the units the device should report the data in.
+     * Indicates that the notification condition has been acknowledged by an operator (corresponding to ack_required), instructing the device to clear/remove the notification from state.
      * 
      */
-    @JsonProperty("units")
-    @JsonPropertyDescription("If specified, indicates the units the device should report the data in.")
-    public String units;
-    /**
-     * Used for cloud writeback functionality, this field specifies the value for a given notification target in the device's current units. If the value is numeric, then the type must be integer or number.  If the value is an integer, it should be represented as type integer
-     * 
-     */
-    @JsonProperty("set_value")
-    @JsonPropertyDescription("Used for cloud writeback functionality, this field specifies the value for a given notification target in the device's current units. If the value is numeric, then the type must be integer or number.  If the value is an integer, it should be represented as type integer")
-    public Object set_value;
-    /**
-     * RFC 3339 timestamp for the specified write easing to stop
-     * 
-     */
-    @JsonProperty("stop_time")
-    @JsonPropertyDescription("RFC 3339 timestamp for the specified write easing to stop")
-    public Date stop_time;
-    /**
-     * The CoV (change of value) increment, which when set, enables CoV on the notification target and defines the minimum change before an update is published
-     * 
-     */
-    @JsonProperty("cov_increment")
-    @JsonPropertyDescription("The CoV (change of value) increment, which when set, enables CoV on the notification target and defines the minimum change before an update is published")
-    public Double cov_increment;
+    @JsonProperty("acknowledged")
+    @JsonPropertyDescription("Indicates that the notification condition has been acknowledged by an operator (corresponding to ack_required), instructing the device to clear/remove the notification from state.")
+    public Boolean acknowledged;
 
     @Override
     public int hashCode() {
         int result = 1;
-        result = ((result* 31)+((this.ref == null)? 0 :this.ref.hashCode()));
-        result = ((result* 31)+((this.units == null)? 0 :this.units.hashCode()));
-        result = ((result* 31)+((this.stop_time == null)? 0 :this.stop_time.hashCode()));
-        result = ((result* 31)+((this.set_value == null)? 0 :this.set_value.hashCode()));
-        result = ((result* 31)+((this.cov_increment == null)? 0 :this.cov_increment.hashCode()));
+        result = ((result* 31)+((this.event_ack == null)? 0 :this.event_ack.hashCode()));
+        result = ((result* 31)+((this.acknowledged == null)? 0 :this.acknowledged.hashCode()));
         return result;
     }
 
@@ -73,7 +49,7 @@ public class NotifNotifsConfig {
             return false;
         }
         NotifNotifsConfig rhs = ((NotifNotifsConfig) other);
-        return ((((((this.ref == rhs.ref)||((this.ref!= null)&&this.ref.equals(rhs.ref)))&&((this.units == rhs.units)||((this.units!= null)&&this.units.equals(rhs.units))))&&((this.stop_time == rhs.stop_time)||((this.stop_time!= null)&&this.stop_time.equals(rhs.stop_time))))&&((this.set_value == rhs.set_value)||((this.set_value!= null)&&this.set_value.equals(rhs.set_value))))&&((this.cov_increment == rhs.cov_increment)||((this.cov_increment!= null)&&this.cov_increment.equals(rhs.cov_increment))));
+        return (((this.event_ack == rhs.event_ack)||((this.event_ack!= null)&&this.event_ack.equals(rhs.event_ack)))&&((this.acknowledged == rhs.acknowledged)||((this.acknowledged!= null)&&this.acknowledged.equals(rhs.acknowledged))));
     }
 
 }

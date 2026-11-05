@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from ._base import DataModel
+from .events_notifs_alarm import AlarmNotifsEvents
 
 
 @dataclass
@@ -20,3 +21,4 @@ class NotifNotifsEvents(DataModel):
     previous: Optional[str] = None
     timestamp: Optional[str] = None
     transition: Optional[str] = None
+    alarm: Optional[AlarmNotifsEvents] = None

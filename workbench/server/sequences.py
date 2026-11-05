@@ -64,6 +64,7 @@ BUCKET_DOCS: Dict[str, Dict[str, Optional[str]]] = {
     "pointset": {"spec": None, "message": "docs/messages/pointset.md"},
     "writeback": {"spec": "docs/specs/sequences/writeback.md",
                   "message": "docs/messages/pointset.md"},
+    "notifs": {"spec": "docs/specs/notifs.md", "message": "docs/messages/notifs.md"},
     "unknown": {"spec": None, "message": None},
 }
 

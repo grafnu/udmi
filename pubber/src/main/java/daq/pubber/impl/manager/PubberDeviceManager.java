@@ -8,6 +8,7 @@ import udmi.lib.client.manager.DeviceManager;
 import udmi.lib.client.manager.DiscoveryManager;
 import udmi.lib.client.manager.GatewayManager;
 import udmi.lib.client.manager.LocalnetManager;
+import udmi.lib.client.manager.NotifsManager;
 import udmi.lib.client.manager.PointsetManager;
 import udmi.lib.client.manager.SystemManager;
 import udmi.lib.intf.ManagerHost;
@@ -22,6 +23,7 @@ public class PubberDeviceManager extends PubberManager implements DeviceManager 
   private final PubberSystemManager systemManager;
   private final PubberLocalnetManager localnetManager;
   private final PubberPointsetManager pointsetManager;
+  private final PubberNotifsManager notifsManager;
   private final PubberDiscoveryManager discoveryManager;
   private final PubberGatewayManager gatewayManager;
   private final List<SubBlockManager> subManagers = new ArrayList<>();
@@ -38,6 +40,7 @@ public class PubberDeviceManager extends PubberManager implements DeviceManager 
     systemManager = addManager(new PubberSystemManager(host, configuration));
     localnetManager = addManager(new PubberLocalnetManager(host, configuration));
     pointsetManager = addManager(new PubberPointsetManager(host, configuration));
+    notifsManager = addManager(new PubberNotifsManager(host, configuration));
     discoveryManager = addManager(new PubberDiscoveryManager(host, configuration, this));
     gatewayManager = addManager(new PubberGatewayManager(host, configuration));
   }
@@ -55,6 +58,11 @@ public class PubberDeviceManager extends PubberManager implements DeviceManager 
   @Override
   public PointsetManager getPointsetManager() {
     return pointsetManager;
+  }
+
+  @Override
+  public NotifsManager getNotifsManager() {
+    return notifsManager;
   }
 
   @Override

@@ -42,7 +42,7 @@
       "$ref": "file:state_blobset.json#"
     },
     "notifs": {
-      "$ref": "state_notifs.json"
+      "$ref": "file:state_notifs.json#"
     },
     "pointset": {
       "$ref": "file:state_pointset.json#"

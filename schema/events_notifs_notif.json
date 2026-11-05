@@ -27,6 +27,10 @@
     "transition": {
       "description": "Identifier classifying the transition type or trigger",
       "type": "string"
+    },
+    "alarm": {
+      "description": "Alarm-specific properties associated with this notification event",
+      "$ref": "file:events_notifs_alarm.json"
     }
   }
 }

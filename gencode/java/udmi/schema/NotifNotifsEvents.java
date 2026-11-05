@@ -52,10 +52,20 @@ public class NotifNotifsEvents {
     @JsonProperty("transition")
     @JsonPropertyDescription("Identifier classifying the transition type or trigger")
     public String transition;
+    /**
+     * Alarm Notifs Events
+     * <p>
+     * Alarm-specific properties for a notification event (such as BACnet alarm parameters).
+     * 
+     */
+    @JsonProperty("alarm")
+    @JsonPropertyDescription("Alarm-specific properties for a notification event (such as BACnet alarm parameters).")
+    public AlarmNotifsEvents alarm;
 
     @Override
     public int hashCode() {
         int result = 1;
+        result = ((result* 31)+((this.alarm == null)? 0 :this.alarm.hashCode()));
         result = ((result* 31)+((this.current == null)? 0 :this.current.hashCode()));
         result = ((result* 31)+((this.previous == null)? 0 :this.previous.hashCode()));
         result = ((result* 31)+((this.point == null)? 0 :this.point.hashCode()));
@@ -73,7 +83,7 @@ public class NotifNotifsEvents {
             return false;
         }
         NotifNotifsEvents rhs = ((NotifNotifsEvents) other);
-        return ((((((this.current == rhs.current)||((this.current!= null)&&this.current.equals(rhs.current)))&&((this.previous == rhs.previous)||((this.previous!= null)&&this.previous.equals(rhs.previous))))&&((this.point == rhs.point)||((this.point!= null)&&this.point.equals(rhs.point))))&&((this.transition == rhs.transition)||((this.transition!= null)&&this.transition.equals(rhs.transition))))&&((this.timestamp == rhs.timestamp)||((this.timestamp!= null)&&this.timestamp.equals(rhs.timestamp))));
+        return (((((((this.alarm == rhs.alarm)||((this.alarm!= null)&&this.alarm.equals(rhs.alarm)))&&((this.current == rhs.current)||((this.current!= null)&&this.current.equals(rhs.current))))&&((this.previous == rhs.previous)||((this.previous!= null)&&this.previous.equals(rhs.previous))))&&((this.point == rhs.point)||((this.point!= null)&&this.point.equals(rhs.point))))&&((this.transition == rhs.transition)||((this.transition!= null)&&this.transition.equals(rhs.transition))))&&((this.timestamp == rhs.timestamp)||((this.timestamp!= null)&&this.timestamp.equals(rhs.timestamp))));
     }
 
 }
