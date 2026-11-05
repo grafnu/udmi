@@ -821,6 +821,8 @@ public class SequenceBase {
         .orElse(RESET_LAST_START);
     debug("Configuring device last_start to be " + isoConvert(resetDate));
     setLastStart(SemanticDate.describe("device reported", resetDate));
+    ifNotNullThen(deviceConfig.pointset,
+        pointset -> pointset.state_etag = catchToNull(() -> deviceState.pointset.state_etag));
     setExtraField(null);
   }
 
@@ -2179,6 +2181,8 @@ public class SequenceBase {
                 isoConvert(cutoff)));
 
         deviceState = convertedState;
+        ifNotNullThen(catchToNull(() -> deviceConfig.pointset),
+            pointset -> pointset.state_etag = catchToNull(() -> deviceState.pointset.state_etag));
         validSerialNo();
 
         debug(format("Updated state has last_config %s (expecting %s)",
