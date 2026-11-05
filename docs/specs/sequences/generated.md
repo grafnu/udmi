@@ -571,8 +571,6 @@ Test skipped: Not a gateway
 
 Check that a device publishes pointset events
 
-1. Update config before receive a pointset event
-    * Set `pointset.sample_rate_sec` = `10`
 1. Wait for receive a pointset event
 
 Test passed.
@@ -598,8 +596,6 @@ Test passed.
 
 Check that pointset state does not report an unconfigured point
 
-1. Update config before pointset state matches config
-    * Set `pointset.sample_rate_sec` = `10`
 1. Wait until pointset state matches config
 1. Wait until pointset event contains correct points
 1. Update config before pointset state does not contain removed point
@@ -619,8 +615,6 @@ Test passed.
 
 Check error when pointset configuration contains extraneous point
 
-1. Update config before pointset state matches config
-    * Set `pointset.sample_rate_sec` = `10`
 1. Wait until pointset state matches config
 1. Wait until pointset event contains correct points
 1. Update config before pointset state contains extraneous point error
@@ -640,10 +634,7 @@ Test passed.
 
 Check that boolean values in pointset payloads are reported as JSON booleans
 
-1. Update config before receive a pointset event
-    * Set `pointset.sample_rate_sec` = `10`
 1. Wait for receive a pointset event
-1. Check that received present_value for boolean point(s) [filter_alarm_pressure_status]
 
 Test passed.
 
@@ -651,10 +642,7 @@ Test passed.
 
 Check that multi-state values in pointset payloads match configured values keys
 
-1. Update config before receive a pointset event
-    * Set `pointset.sample_rate_sec` = `10`
 1. Wait for receive a pointset event
-1. Check that received present_value for multi-state point(s) [occupancy_mode, supply_fan_run_status]
 
 Test passed.
 
@@ -662,10 +650,7 @@ Test passed.
 
 Check that numerical values in pointset payloads are reported as JSON numbers and not strings
 
-1. Update config before receive a pointset event
-    * Set `pointset.sample_rate_sec` = `10`
 1. Wait for receive a pointset event
-1. Check that received present_value for numeric point(s) [cooling_request_count, filter_differential_pressure_setpoint, filter_differential_pressure_sensor]
 
 Test passed.
 
@@ -673,10 +658,7 @@ Test passed.
 
 Check that string values in pointset payloads are reported as JSON strings
 
-1. Update config before receive a pointset event
-    * Set `pointset.sample_rate_sec` = `10`
 1. Wait for receive a pointset event
-1. Check that received present_value for string point(s) [active_fault_code]
 
 Test passed.
 
