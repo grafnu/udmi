@@ -162,9 +162,15 @@ class SessionManager:
         filter_str = (" " + " ".join(filter_flags)) if filter_flags else ""
 
         # Build udmi start command
+        no_build_env = (
+            f"export UDMI_NO_BUILD='{os.environ['UDMI_NO_BUILD']}' && "
+            if os.environ.get("UDMI_NO_BUILD")
+            else ""
+        )
         start_cmd = (
             f"export UDMI_ROOT='{self.udmi_root}' && "
             f"export UDMI_RUN_DIR='{run_dir}' && "
+            f"{no_build_env}"
             f"export MQTT_PORT='{mqtt_port}' && "
             f"export ETCD_PORT='{etcd_port}' && "
             f"export INFLUX_PORT='{influx_port}' && "
@@ -276,6 +282,14 @@ class SessionManager:
         """Terminate an active test setup and its tmux session."""
         session_name = self.sanitize_session_name(test_id)
         run_dir = os.path.join(self.instances_dir, session_name)
+        info_path = os.path.join(run_dir, "session_info.json")
+        project_spec = ""
+        if os.path.isfile(info_path):
+            try:
+                with open(info_path, "r", encoding="utf-8") as f:
+                    project_spec = json.load(f).get("project_spec", "")
+            except Exception:
+                project_spec = ""
 
         if self.is_session_active(session_name):
             subprocess.run(
@@ -285,6 +299,19 @@ class SessionManager:
                 check=False,
             )
             time.sleep(0.5)
+
+        if project_spec:
+            stop_env = os.environ.copy()
+            stop_env["UDMI_ROOT"] = self.udmi_root
+            stop_env["UDMI_RUN_DIR"] = run_dir
+            subprocess.run(
+                [os.path.join(self.udmi_root, "bin", "udmi"), "stop", project_spec],
+                cwd=self.udmi_root,
+                env=stop_env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
 
         if clean_workspace and os.path.isdir(run_dir):
             shutil.rmtree(run_dir, ignore_errors=True)

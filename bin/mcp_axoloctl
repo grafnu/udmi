@@ -146,7 +146,7 @@ def invoke_cli_tool(webmcp_url, tool_name, arguments, bound_tag):
 
 
 def invoke_cli_list(webmcp_url):
-  """Queries GET /status on web_mcp for operator inspection of active sessions."""
+  """Queries GET /status on web_mcp to inspect active sessions."""
   status_url = webmcp_url.rsplit("/", 1)[0] + "/status"
   opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
   try:
@@ -188,14 +188,15 @@ def build_parser():
   parser.add_argument(
     "--tag",
     default="",
-    help="Bound session tag identifier (defaults to AXOLOCTL_TAG environment variable)"
+    help="Bound session tag identifier (defaults to AXOLOCTL_TAG env var)"
   )
   subparsers = parser.add_subparsers(dest="command")
 
   subparsers.add_parser("mcp", help="Run in stdio MCP server mode")
 
   start_p = subparsers.add_parser(
-    "start", help="Deploy commit_hash and start the bound session's paired agent & web server"
+    "start",
+    help="Deploy commit_hash and start paired agent & web server",
   )
   start_p.add_argument("commit_hash", help="40-character Git commit SHA")
   start_p.add_argument(
@@ -214,7 +215,8 @@ def build_parser():
   subparsers.add_parser("list", help="List all active web server sessions")
 
   logs_p = subparsers.add_parser(
-    "logs", help="Read unified [server] and [browser] logs for the bound session"
+    "logs",
+    help="Read unified [server] and [browser] logs for the session",
   )
   logs_p.add_argument(
     "--cursor", type=int, default=0, help="Zero-based line cursor offset"

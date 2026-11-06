@@ -77,6 +77,7 @@ $ROOT_DIR/udmis/bin/influxctl version || true
 
 echo "Initializing base site model..."
 $ROOT_DIR/bin/clone_model
+mkdir -p var
 
 # Written after every install step succeeded, and before the ownership fix below
 # so a later non-root run can rewrite it. Read by bin/ensure_venv to tell
@@ -85,7 +86,7 @@ sha256sum etc/requirements.txt | cut -d' ' -f1 > venv/.requirements.sha256
 
 if [[ $(id -u) == 0 ]]; then
     if [[ -n ${SUDO_UID:-} && -n ${SUDO_GID:-} ]]; then
-        chown -R ${SUDO_UID}:${SUDO_GID} sites venv 2>/dev/null || true
+        chown -R ${SUDO_UID}:${SUDO_GID} sites venv var udmis/bin/etcd_bin udmis/bin/influx_bin 2>/dev/null || true
     fi
-    chmod -R a+rwX sites venv 2>/dev/null || true
+    chmod -R a+rwX sites venv var udmis/bin/etcd_bin udmis/bin/influx_bin 2>/dev/null || true
 fi
