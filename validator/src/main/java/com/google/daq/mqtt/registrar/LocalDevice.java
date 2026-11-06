@@ -33,11 +33,6 @@ import static java.lang.String.format;
 import static java.util.Optional.ofNullable;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.github.fge.jsonschema.core.exceptions.ProcessingException;
-import com.github.fge.jsonschema.core.report.LogLevel;
-import com.github.fge.jsonschema.core.report.ProcessingMessage;
-import com.github.fge.jsonschema.core.report.ProcessingReport;
-import com.github.fge.jsonschema.main.JsonSchema;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
@@ -61,6 +56,8 @@ import com.google.udmi.util.SiteModel.MetadataException;
 import com.google.udmi.util.ValidationError;
 import com.google.udmi.util.ValidationException;
 import com.google.udmi.util.ValidationWarning;
+import com.networknt.schema.JsonSchema;
+import com.networknt.schema.ValidationMessage;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileWriter;
@@ -349,16 +346,14 @@ class LocalDevice implements SiteDevice {
     }
   }
 
-  public static void parseMetadataValidateProcessingReport(ProcessingReport report)
+  public static void parseMetadataValidateProcessingReport(Set<ValidationMessage> report)
       throws ValidationException {
-    if (report.isSuccess()) {
+    if (report.isEmpty()) {
       return;
     }
-
-    for (ProcessingMessage msg : report) {
-      if (msg.getLogLevel().compareTo(LogLevel.ERROR) >= 0) {
-        throw MessageValidator.fromProcessingReport(report);
-      }
+    ValidationException exception = MessageValidator.fromProcessingReport(report);
+    if (exception != null) {
+      throw exception;
     }
   }
 
@@ -418,9 +413,9 @@ class LocalDevice implements SiteDevice {
     try {
       extraValidation(metadata);  // Do this first so it will always be called.
       JsonNode metadataObject = JsonUtil.convertTo(JsonNode.class, metadata);
-      ProcessingReport report = schemas.get(METADATA_SCHEMA_JSON).validate(metadataObject);
+      Set<ValidationMessage> report = schemas.get(METADATA_SCHEMA_JSON).validate(metadataObject);
       parseMetadataValidateProcessingReport(report);
-    } catch (ProcessingException | ValidationException e) {
+    } catch (ValidationException e) {
       exceptionMap.put(ExceptionCategory.validation, e);
     }
   }
@@ -454,6 +449,68 @@ class LocalDevice implements SiteDevice {
         }
       });
     }
+  }
+
+  private void validatePointTypes(Map<String, PointPointsetModel> points) {
+    points.forEach((pointName, pointModel) -> {
+      if (pointModel == null) {
+        return;
+      }
+      boolean hasUnits = pointModel.units != null;
+      boolean hasValues = pointModel.values != null;
+      boolean hasType = pointModel.type != null;
+      int typeSpecifiers = (hasUnits ? 1 : 0) + (hasValues ? 1 : 0) + (hasType ? 1 : 0);
+      if (typeSpecifiers != 1) {
+        throw new ValidationError(format(
+            "Point %s must specify exactly one of units, values, or type", pointName));
+      }
+      boolean hasNumericOnlyFields = pointModel.units_reported != null
+          || pointModel.range_min != null
+          || pointModel.range_max != null
+          || pointModel.baseline_tolerance != null
+          || pointModel.cov_increment != null;
+      if (!hasUnits && hasNumericOnlyFields) {
+        throw new ValidationError(format(
+            "Non-numeric point %s cannot specify numeric-only fields", pointName));
+      }
+      if (hasUnits) {
+        if (pointModel.units.isBlank()) {
+          throw new ValidationError(format(
+              "Numeric point %s units must not be blank", pointName));
+        }
+        if (pointModel.baseline_value != null
+            && !PointsetValidator.isValidNumericValue(pointModel.baseline_value)) {
+          throw new ValidationError(format(
+              "Numeric point %s baseline_value must be a number", pointName));
+        }
+      } else if (hasValues) {
+        if (pointModel.values.size() < 2) {
+          throw new ValidationError(format(
+              "Multi-state point %s values map must contain at least 2 entries", pointName));
+        }
+        if (pointModel.baseline_value != null
+            && !PointsetValidator.isValidMultistateValue(pointModel, pointModel.baseline_value)) {
+          throw new ValidationError(format(
+              "Multi-state point %s baseline_value must be a key in values", pointName));
+        }
+      } else if (PointsetValidator.isStringPoint(pointModel)) {
+        if (pointModel.baseline_value != null
+            && !PointsetValidator.isValidStringValue(pointModel.baseline_value)) {
+          throw new ValidationError(format(
+              "String point %s baseline_value must be a string", pointName));
+        }
+      } else if (PointsetValidator.isBooleanPoint(pointModel)) {
+        if (pointModel.baseline_value != null
+            && !PointsetValidator.isValidBooleanValue(pointModel.baseline_value)) {
+          throw new ValidationError(format(
+              "Binary point %s baseline_value must be a boolean", pointName));
+        }
+      } else {
+        throw new ValidationError(format(
+            "Point %s has invalid type %s (expected string or boolean)",
+            pointName, pointModel.type));
+      }
+    });
   }
 
   private void validatePointTypes(Map<String, PointPointsetModel> points) {
@@ -809,12 +866,11 @@ class LocalDevice implements SiteDevice {
       envelope.projectId = fakeProjectId();
       envelope.deviceNumId = makeNumId(envelope);
       String envelopeJson = OBJECT_MAPPER_STRICT.writeValueAsString(envelope);
-      ProcessingReport processingReport = schemas.get(ENVELOPE_SCHEMA_JSON)
+      Set<ValidationMessage> processingReport = schemas.get(ENVELOPE_SCHEMA_JSON)
           .validate(OBJECT_MAPPER.readTree(envelopeJson));
-      if (!processingReport.isSuccess()) {
-        processingReport.forEach(action -> {
-          throw new RuntimeException("Against envelope schema", action.asException());
-        });
+      if (!processingReport.isEmpty()) {
+        throw new RuntimeException("Against envelope schema",
+            MessageValidator.fromProcessingReport(processingReport));
       }
     } catch (Exception e) {
       throw new IllegalStateException("Validating envelope " + deviceId, e);
