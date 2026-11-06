@@ -808,7 +808,7 @@ public class SequenceBase {
   }
 
   @VisibleForTesting
-  void resetDeviceConfig(boolean clean) {
+  protected void resetDeviceConfig(boolean clean) {
     debug("Clear configTransactions and reset device config");
     configTransactions.clear();
     sentConfig.clear();
