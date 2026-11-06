@@ -31,6 +31,8 @@ for cmd in java nc base64 openssl curl tar jq gcloud mosquitto; do
 done
 
 export HOST_IP="127.0.0.1"
+export NO_PROXY="127.0.0.1,localhost${NO_PROXY:+,$NO_PROXY}"
+export no_proxy="$NO_PROXY"
 export MOSQUITTO_LOG_PATH="$(pwd)/var/mosquitto/log/mosquitto.log"
 
 PUBSUB_PORT=${PUBSUB_PORT:-8085}
@@ -123,6 +125,14 @@ bin/start_udmis stop >/dev/null 2>&1 || true
 bin/start_butler stop >/dev/null 2>&1 || true
 bin/start_influx stop >/dev/null 2>&1 || true
 bin/start_postgresql stop >/dev/null 2>&1 || true
+bin/tmux_mcp stop "$SITE_MODEL" "//mqtt/localhost:${MQTT_PORT}" >/dev/null 2>&1 || true
+for i in {1..10}; do
+  if ! nc -z "$HOST_IP" "$PUBSUB_PORT" &>/dev/null || \
+     curl -sf "$PUBSUB_BASE_URL/v1/projects/udmis/topics" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.5
+done
 ETCD_PEER_PORT=$((ETCD_PORT + 1000))
 ETCD_TLS_DIR="var/etcd_tls"
 ETCD_TLS_LOG="out/etcd_tls.log"
@@ -214,7 +224,11 @@ for device_dir in "$SITE_MODEL"/devices/*; do
 done
 
 # 9. Start Pub/Sub Emulator if not running
-if ! nc -z "$HOST_IP" "$PUBSUB_PORT" &>/dev/null; then
+if ! curl -sf "$PUBSUB_BASE_URL/v1/projects/udmis/topics" >/dev/null 2>&1; then
+  if nc -z "$HOST_IP" "$PUBSUB_PORT" &>/dev/null; then
+    echo "Error: Port $PUBSUB_PORT is already in use by a non-Pub/Sub service on $HOST_IP:$PUBSUB_PORT." >&2
+    exit 1
+  fi
   echo "Checking native Pub/Sub Emulator component availability..."
   if ! gcloud --quiet beta emulators pubsub env-init >/dev/null 2>&1; then
     echo "Native pubsub-emulator component missing; attempting automated package or component install..."
