@@ -39,6 +39,8 @@ Dynsec
 ETHMAC
 ETL
 FCU
+FQDN
+FQDNs
 Fallbacks
 FastMCP
 GCP
@@ -119,6 +121,7 @@ Serialisation
 Stackdriver
 Subprocess
 SystemModel
+TLD
 TLS
 TODO
 Tagabase
