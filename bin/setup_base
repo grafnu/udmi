@@ -83,9 +83,10 @@ $ROOT_DIR/bin/clone_model
 # whether venv/ matches etc/requirements.txt.
 sha256sum etc/requirements.txt | cut -d' ' -f1 > venv/.requirements.sha256
 
+mkdir -p var
 if [[ $(id -u) == 0 ]]; then
     if [[ -n ${SUDO_UID:-} && -n ${SUDO_GID:-} ]]; then
-        chown -R ${SUDO_UID}:${SUDO_GID} sites venv 2>/dev/null || true
+        chown -R ${SUDO_UID}:${SUDO_GID} sites venv var udmis/bin/etcd_bin udmis/bin/influx_bin 2>/dev/null || true
     fi
-    chmod -R a+rwX sites venv 2>/dev/null || true
+    chmod -R a+rwX sites venv var udmis/bin/etcd_bin udmis/bin/influx_bin 2>/dev/null || true
 fi

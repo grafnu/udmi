@@ -162,9 +162,11 @@ class SessionManager:
         filter_str = (" " + " ".join(filter_flags)) if filter_flags else ""
 
         # Build udmi start command
+        no_build = os.environ.get("UDMI_NO_BUILD", "")
         start_cmd = (
             f"export UDMI_ROOT='{self.udmi_root}' && "
             f"export UDMI_RUN_DIR='{run_dir}' && "
+            f"export UDMI_NO_BUILD='{no_build}' && "
             f"export MQTT_PORT='{mqtt_port}' && "
             f"export ETCD_PORT='{etcd_port}' && "
             f"export INFLUX_PORT='{influx_port}' && "
@@ -276,6 +278,14 @@ class SessionManager:
         """Terminate an active test setup and its tmux session."""
         session_name = self.sanitize_session_name(test_id)
         run_dir = os.path.join(self.instances_dir, session_name)
+        info_path = os.path.join(run_dir, "session_info.json")
+        project_spec = None
+        if os.path.isfile(info_path):
+            try:
+                with open(info_path, "r", encoding="utf-8") as f:
+                    project_spec = json.load(f).get("project_spec")
+            except Exception:
+                project_spec = None
 
         if self.is_session_active(session_name):
             subprocess.run(
@@ -284,6 +294,14 @@ class SessionManager:
                 stderr=subprocess.DEVNULL,
                 check=False,
             )
+            if project_spec:
+                subprocess.run(
+                    [os.path.join(self.udmi_root, "bin", "udmi"), "stop", project_spec],
+                    cwd=self.udmi_root,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
             time.sleep(0.5)
 
         if clean_workspace and os.path.isdir(run_dir):
