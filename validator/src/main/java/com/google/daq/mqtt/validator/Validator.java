@@ -59,6 +59,7 @@ import com.google.daq.mqtt.util.ImpulseRunningAverage;
 import com.google.daq.mqtt.util.MessagePublisher;
 import com.google.daq.mqtt.util.MessagePublisher.QuerySpeed;
 import com.google.daq.mqtt.util.PubSubClient;
+import com.google.daq.mqtt.validator.DiscoveryAnalyzer.ScanKey;
 import com.google.udmi.util.CommandLineOption;
 import com.google.udmi.util.CommandLineProcessor;
 import com.google.udmi.util.Common;
@@ -169,6 +170,10 @@ public class Validator {
   private static final String VALIDATOR_TOOL_NAME = "validator";
   private static final String REGISTRY_DEVICE_DEFAULT = "_regsitry";
   private static final String SCHEMA_NAME_KEY = "ignore_envelope";
+  private static final String EVENTS_DISCOVERY_SCHEMA = "events_discovery";
+  private static final String STATE_DISCOVERY_SCHEMA = "state_discovery";
+  private static final String STATE_SCHEMA = "state";
+  private static final String DISCOVERY_KEY = "discovery";
   private long reportingDelaySec = DEFAULT_INTERVAL_SEC;
   private final CommandLineProcessor commandLineProcessor = new CommandLineProcessor(this);
   private final Map<String, ReportingDevice> reportingDevices = new TreeMap<>();
@@ -184,6 +189,7 @@ public class Validator {
       "Message validate");
   private Set<String> targetDevices;
   private final LoggingHandler outputLogger;
+  private final DiscoveryAnalyzer discoveryAnalyzer;
   private Set<String> expectedDevices;
   private File outBaseDir;
   private File schemaRoot;
@@ -209,6 +215,7 @@ public class Validator {
    */
   public Validator(ExecutionConfiguration validatorConfig, BiConsumer<Level, String> logger) {
     outputLogger = new LoggingHandler(logger);
+    discoveryAnalyzer = new DiscoveryAnalyzer(outputLogger, reportingDevices);
     config = validatorConfig;
     setSchemaSpec("schema");
     client = new NullPublisher();
@@ -222,18 +229,24 @@ public class Validator {
    */
   public Validator(List<String> argList) {
     outputLogger = new LoggingHandler();
+    discoveryAnalyzer = new DiscoveryAnalyzer(outputLogger, reportingDevices);
     List<String> listCopy = new ArrayList<>(argList);
     parseArgs(listCopy);
     if (client == null) {
       validateReflector();
     }
     targetDevices = Set.copyOf(listCopy);
-    siteModel = ifNotNullGet(config.site_model, SiteModel::new);
+    siteModel = (config.site_model == null || NO_SITE.equals(config.site_model))
+        ? null : new SiteModel(config.site_model);
     ifNotNullThen(siteModel, this::initializeExpectedDevices);
   }
 
+  /**
+   * Create an unconfigured validator instance.
+   */
   public Validator() {
     outputLogger = new LoggingHandler();
+    discoveryAnalyzer = new DiscoveryAnalyzer(outputLogger, reportingDevices);
   }
 
   @VisibleForTesting
@@ -244,6 +257,11 @@ public class Validator {
   @VisibleForTesting
   public Set<String> getExpectedDevices() {
     return expectedDevices;
+  }
+
+  @VisibleForTesting
+  public DiscoveryAnalyzer getDiscoveryAnalyzer() {
+    return discoveryAnalyzer;
   }
 
   Validator processArgs(List<String> argListRaw) {
@@ -408,6 +426,7 @@ public class Validator {
 
   Validator prepForMock() {
     simulatedMessages = true;
+    discoveryAnalyzer.configureRuntime(executor, true, this::graceCloseDiscoveryScan);
     return this;
   }
 
@@ -429,6 +448,7 @@ public class Validator {
 
     outBaseDir = new File(baseDir, "out");
     outBaseDir.mkdirs();
+    discoveryAnalyzer.setOutBaseDir(outBaseDir);
     dataSinks.add(new FileDataSink(outBaseDir));
   }
 
@@ -477,6 +497,7 @@ public class Validator {
 
   private ReportingDevice newReportingDevice(String device) {
     ReportingDevice reportingDevice = new ReportingDevice(device);
+    reportingDevice.setDiscoveryAnalyzer(discoveryAnalyzer);
     ifTrueThen(validateCurrent, () -> reportingDevice.setThreshold(reportingDelaySec));
     return reportingDevice;
   }
@@ -524,7 +545,7 @@ public class Validator {
   }
 
   private String getRegistryId() {
-    if (config == null) {
+    if (config == null || config.registry_id == null) {
       return null;
     }
     String prefix = getNamespacePrefix(config.udmi_namespace);
@@ -564,6 +585,7 @@ public class Validator {
     if (client == null || client.getSubscriptionId() == null) {
       return;
     }
+    discoveryAnalyzer.configureRuntime(executor, simulatedMessages, this::graceCloseDiscoveryScan);
     sendInitializationQuery();
     outputLogger.info("Running udmi tools version " + UDMI_TOOLS);
     outputLogger.notice("Entering message loop on " + client.getSubscriptionId());
@@ -571,6 +593,11 @@ public class Validator {
     ScheduledFuture<?> reportSender =
         simulatedMessages ? null : executor.scheduleAtFixedRate(this::processValidationReport,
             reportingDelaySec, reportingDelaySec, TimeUnit.SECONDS);
+    Thread shutdownHook = simulatedMessages ? null
+        : new Thread(this::finalizeAllDiscoveryScans, "discovery-shutdown");
+    if (shutdownHook != null) {
+      Runtime.getRuntime().addShutdownHook(shutdownHook);
+    }
     try {
       while (client.isActive()) {
         try {
@@ -584,6 +611,30 @@ public class Validator {
       if (reportSender != null) {
         reportSender.cancel(true);
       }
+      if (shutdownHook != null) {
+        try {
+          Runtime.getRuntime().removeShutdownHook(shutdownHook);
+        } catch (IllegalStateException expected) {
+          // JVM shutdown already in progress; finalizeAllDiscoveryScans runs here or in hook.
+        }
+      }
+      finalizeAllDiscoveryScans();
+    }
+  }
+
+  private synchronized void graceCloseDiscoveryScan(ScanKey key) {
+    if (discoveryAnalyzer.closeIfExpired(key)) {
+      processValidationReport();
+    }
+  }
+
+  /**
+   * Finalize any remaining open active discovery scans and flush validation reports.
+   */
+  @VisibleForTesting
+  public synchronized void finalizeAllDiscoveryScans() {
+    if (discoveryAnalyzer.finalizeAllScans() && outBaseDir != null) {
+      processValidationReport();
     }
   }
 
@@ -715,7 +766,10 @@ public class Validator {
       Map<String, Object> message = isString ? null : mapCast(messageObj);
       validateTimestamp(device, message, attributes);
 
-      if (!device.shouldProcessMessage(schemaName, getInstant(messageObj, attributes))) {
+      Instant effectiveNow = ofNullable(getInstant(messageObj, attributes)).orElseGet(this::getNow);
+      if (shouldBypassThrottle(deviceId, schemaName, message)) {
+        device.markSchemaSeen(schemaName, effectiveNow);
+      } else if (!device.shouldProcessMessage(schemaName, effectiveNow)) {
         outputLogger.trace("Ignoring device %s/%s (too soon)", deviceId, schemaName);
         return null;
       }
@@ -817,19 +871,46 @@ public class Validator {
     }
 
     String deviceId = attributes.get("deviceId");
-    if (expectedDevices == null || expectedDevices.isEmpty()) {
-      // No devices configured, so don't consider check metadata or consider extra.
-    } else if (expectedDevices.contains(deviceId)) {
-      try {
-        device.validateRawMessage(schemaName, message, attributes);
-      } catch (Exception e) {
-        outputLogger.error("Error validating contents for %s: %s",
-            schemaName, friendlyStackTrace(e));
-        device.addError(e, attributes, Category.VALIDATION_DEVICE_CONTENT);
-      }
-    } else {
+    boolean knownDevice = expectedDevices != null && expectedDevices.contains(deviceId);
+    if (expectedDevices != null && !expectedDevices.isEmpty() && !knownDevice) {
       extraDevices.add(deviceId);
     }
+    if (knownDevice) {
+      validateDeviceContent(schemaName, device, attributes,
+          () -> device.validateRawMessage(schemaName, message, attributes));
+    } else if (device.hasDiscoveryAnalyzer() && isDiscoverySchema(schemaName)) {
+      validateDeviceContent(schemaName, device, attributes,
+          () -> device.validateDiscoveryMessage(schemaName, message, attributes));
+    }
+  }
+
+  private void validateDeviceContent(String schemaName, ReportingDevice device,
+      Map<String, String> attributes, Runnable validatorCall) {
+    try {
+      validatorCall.run();
+    } catch (Exception e) {
+      outputLogger.error("Error validating contents for %s: %s",
+          schemaName, friendlyStackTrace(e));
+      device.addError(e, attributes, Category.VALIDATION_DEVICE_CONTENT);
+    }
+  }
+
+  private boolean isDiscoverySchema(String schemaName) {
+    return EVENTS_DISCOVERY_SCHEMA.equals(schemaName)
+        || STATE_DISCOVERY_SCHEMA.equals(schemaName)
+        || STATE_SCHEMA.equals(schemaName);
+  }
+
+  private boolean shouldBypassThrottle(String deviceId, String schemaName,
+      Map<String, Object> message) {
+    if (EVENTS_DISCOVERY_SCHEMA.equals(schemaName)
+        || STATE_DISCOVERY_SCHEMA.equals(schemaName)) {
+      return true;
+    }
+    if (STATE_SCHEMA.equals(schemaName) && message != null) {
+      return discoveryAnalyzer.hasRelevantDiscoveryState(deviceId, message.get(DISCOVERY_KEY));
+    }
+    return false;
   }
 
   private void validateTimestamp(ReportingDevice device, Map<String, Object> message,
@@ -937,8 +1018,12 @@ public class Validator {
 
   private boolean shouldProcessMessage(Map<String, String> attributes) {
     String registryId = attributes.get(DEVICE_REGISTRY_ID_KEY);
+    String configuredRegistry = getRegistryId();
+    boolean allowUnconfigured = configuredRegistry == null
+        && NO_SITE.equals(catchToNull(() -> config.site_model));
 
-    if (registryId == null || !registryId.equals(getRegistryId())) {
+    if (!allowUnconfigured
+        && (registryId == null || !registryId.equals(configuredRegistry))) {
       if (registryId != null && ignoredRegistries.add(registryId)) {
         outputLogger.warn("Ignoring data for not-configured registry " + registryId);
       }
@@ -1038,7 +1123,8 @@ public class Validator {
     summary.error_devices = new ArrayList<>();
 
     Map<String, DeviceValidationEvents> devices = new TreeMap<>();
-    Collection<String> targets = targetDevices.isEmpty() ? expectedDevices : targetDevices;
+    Collection<String> targets = !targetDevices.isEmpty()
+        ? targetDevices : ofNullable(expectedDevices).orElse(ImmutableSet.of());
     for (String deviceId : reportingDevices.keySet()) {
       ReportingDevice deviceInfo = reportingDevices.get(deviceId);
       ValidationState deviceState = summaries.computeIfAbsent(deviceId,
@@ -1079,6 +1165,7 @@ public class Validator {
     System.err.println("Updating validation reports to " + outBaseDir.getAbsolutePath());
     sendValidationReport(makeValidationReport(summary, devices));
     sendDeviceValidationReports(summaries);
+    discoveryAnalyzer.writeAnalysisReport();
   }
 
   private boolean isPending(ReportingDevice device) {

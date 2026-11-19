@@ -46,6 +46,7 @@ public class ReportingDevice implements ErrorCollector {
   private Date lastSeen = new Date(0); // Always defined, just start a long time ago!
   private PointsetValidator pointsetValidator;
   private DiscoveryValidator discoveryValidator;
+  private DiscoveryAnalyzer discoveryAnalyzer;
   private Metadata metadata;
   private long thresholdSec = DEFAULT_THRESHOLD_SEC;
 
@@ -187,8 +188,25 @@ public class ReportingDevice implements ErrorCollector {
       Class<?> targetClass = Common.classForSchema(schemaName);
       Object obj = convertTo(targetClass, message);
       pointsetValidator.validateMessage(obj, attributes);
-      discoveryValidator.validateMessage(obj, attributes);
+      getDiscoveryValidator().validateMessage(obj, attributes);
     }
+  }
+
+  /**
+   * Validate a discovery message even when device metadata is unavailable.
+   */
+  public void validateDiscoveryMessage(String schemaName, Map<String, Object> message,
+      Map<String, String> attributes) {
+    Class<?> targetClass = Common.classForSchema(schemaName);
+    Object obj = convertTo(targetClass, message);
+    getDiscoveryValidator().validateMessage(obj, attributes);
+  }
+
+  private DiscoveryValidator getDiscoveryValidator() {
+    if (discoveryValidator == null) {
+      discoveryValidator = new DiscoveryValidator(this, deviceId, metadata, discoveryAnalyzer);
+    }
+    return discoveryValidator;
   }
 
   /**
@@ -272,7 +290,21 @@ public class ReportingDevice implements ErrorCollector {
   public void setMetadata(Metadata metadata) {
     this.metadata = metadata;
     this.pointsetValidator = new PointsetValidator(this, metadata);
-    this.discoveryValidator = new DiscoveryValidator(this, metadata);
+    this.discoveryValidator = new DiscoveryValidator(this, deviceId, metadata, discoveryAnalyzer);
+  }
+
+  /**
+   * Attach a site-wide discovery analyzer to this device.
+   *
+   * @param discoveryAnalyzer analyzer instance
+   */
+  public void setDiscoveryAnalyzer(DiscoveryAnalyzer discoveryAnalyzer) {
+    this.discoveryAnalyzer = discoveryAnalyzer;
+    this.discoveryValidator = new DiscoveryValidator(this, deviceId, metadata, discoveryAnalyzer);
+  }
+
+  public boolean hasDiscoveryAnalyzer() {
+    return discoveryAnalyzer != null;
   }
 
   public Set<String> getMissingPoints() {
@@ -305,6 +337,15 @@ public class ReportingDevice implements ErrorCollector {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Record that a message schema was seen at the given instant without rate throttling.
+   */
+  public void markSchemaSeen(String schemaName, Instant now) {
+    if (now != null) {
+      messageMarks.put(schemaName, Date.from(now));
+    }
   }
 
   public Date getLastSeen() {
