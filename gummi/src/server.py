@@ -16,6 +16,9 @@ from gummi.src.db import GummiDB
 from gummi.src.uufi import GummiUUFIClient
 
 
+STATIC_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "static")
+
+
 class GummiRequestHandler(SimpleHTTPRequestHandler):
     """Custom HTTP request handler serving GUMMI static files and REST API routes."""
 
@@ -23,8 +26,7 @@ class GummiRequestHandler(SimpleHTTPRequestHandler):
 
     def __init__(self, *args, **kwargs):
         # Set static directory root
-        static_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "static")
-        super().__init__(*args, directory=static_dir, **kwargs)
+        super().__init__(*args, directory=STATIC_DIR, **kwargs)
 
     @property
     def db(self) -> GummiDB:
