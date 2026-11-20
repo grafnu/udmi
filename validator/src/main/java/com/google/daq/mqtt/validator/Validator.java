@@ -53,6 +53,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedSet;
 import com.google.daq.mqtt.util.CloudIotManager;
 import com.google.daq.mqtt.util.FileDataSink;
 import com.google.daq.mqtt.util.ImpulseRunningAverage;
@@ -190,7 +191,7 @@ public class Validator {
   private Set<String> targetDevices;
   private final LoggingHandler outputLogger;
   private final DiscoveryAnalyzer discoveryAnalyzer;
-  private Set<String> expectedDevices;
+  private Set<String> expectedDevices = new TreeSet<>();
   private File outBaseDir;
   private File schemaRoot;
   private String schemaSpec;
@@ -222,7 +223,7 @@ public class Validator {
     config = validatorConfig;
     setSchemaSpec("schema");
     client = new NullPublisher();
-    targetDevices = ImmutableSet.of();
+    targetDevices = ImmutableSortedSet.of();
   }
 
   /**
@@ -247,7 +248,7 @@ public class Validator {
     if (client == null) {
       validateReflector();
     }
-    targetDevices = Set.copyOf(listCopy);
+    targetDevices = ImmutableSortedSet.copyOf(listCopy);
     siteModel = (config.site_model == null || NO_SITE.equals(config.site_model))
         ? null : new SiteModel(config.site_model);
     ifNotNullThen(siteModel, this::initializeExpectedDevices);
@@ -284,7 +285,7 @@ public class Validator {
       commandLineProcessor.showUsage(e.getMessage());
     }
     processProfile(siteModel.getExecutionConfiguration());
-    targetDevices = Set.copyOf(postProcessArgs(argList));
+    targetDevices = ImmutableSortedSet.copyOf(postProcessArgs(argList));
     initializeExpectedDevices();
     return this;
   }
@@ -513,7 +514,7 @@ public class Validator {
   private void initializeExpectedDevices() {
     Set<String> siteDevices = siteModel.getDeviceIds();
     try {
-      expectedDevices = new HashSet<>(siteDevices);
+      expectedDevices = new TreeSet<>(siteDevices);
       for (String device : siteDevices) {
         ReportingDevice reportingDevice = newReportingDevice(device);
         try {
@@ -909,8 +910,9 @@ public class Validator {
     }
 
     String deviceId = attributes.get("deviceId");
-    boolean knownDevice = expectedDevices != null && expectedDevices.contains(deviceId);
-    if (expectedDevices != null && !expectedDevices.isEmpty() && !knownDevice) {
+    boolean hasExpected = expectedDevices != null && !expectedDevices.isEmpty();
+    boolean knownDevice = hasExpected && deviceId != null && expectedDevices.contains(deviceId);
+    if (hasExpected && deviceId != null && !knownDevice) {
       extraDevices.add(deviceId);
     }
     if (knownDevice) {
