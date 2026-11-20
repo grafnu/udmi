@@ -203,6 +203,9 @@ public class Validator {
   private boolean forceUpgrade;
   private SiteModel siteModel;
   private boolean validateCurrent;
+  private boolean resetSubscription = true;
+  private String pubSubTarget;
+  private PubSubClientFactory pubSubClientFactory = PubSubClient::new;
 
   static {
     System.setProperty(SimpleLogger.DEFAULT_LOG_LEVEL_KEY, "info");
@@ -228,10 +231,19 @@ public class Validator {
    * @param argList Argument list
    */
   public Validator(List<String> argList) {
+    this(argList, PubSubClient::new);
+  }
+
+  @VisibleForTesting
+  Validator(List<String> argList, PubSubClientFactory pubSubClientFactory) {
     outputLogger = new LoggingHandler();
     discoveryAnalyzer = new DiscoveryAnalyzer(outputLogger, reportingDevices);
+    this.pubSubClientFactory = requireNonNull(pubSubClientFactory);
     List<String> listCopy = new ArrayList<>(argList);
     parseArgs(listCopy);
+    if (client == null && pubSubTarget != null) {
+      validatePubSub(pubSubTarget, true);
+    }
     if (client == null) {
       validateReflector();
     }
@@ -278,18 +290,26 @@ public class Validator {
   }
 
   void execute() {
-    if (!Strings.isNullOrEmpty(config.feed_name)) {
-      validatePubSub(config.feed_name, true);
-    }
-    if (config.iot_provider == PUBSUB) {
-      Tuple<String, String> tuple = getFeedInfo(config);
-      validatePubSub(format("%s/%s", tuple.x(), tuple.y()), false);
-    }
+    initializePubSubClient();
     if (client == null) {
       validateReflector();
     }
     checkState(client != null, "no validator client specified");
     messageLoop();
+  }
+
+  private void initializePubSubClient() {
+    if (client != null) {
+      return;
+    }
+    if (pubSubTarget != null) {
+      validatePubSub(pubSubTarget, true);
+    } else if (!Strings.isNullOrEmpty(config.feed_name)) {
+      validatePubSub(config.feed_name, true);
+    } else if (config.iot_provider == PUBSUB) {
+      Tuple<String, String> tuple = getFeedInfo(config);
+      validatePubSub(format("%s/%s", tuple.x(), tuple.y()), false);
+    }
   }
 
   /**
@@ -375,10 +395,15 @@ public class Validator {
     config.project_id = parts[1];
   }
 
+  @CommandLineOption(short_form = "-R", description = "Do not reset PubSub subscription")
+  private void setNoReset() {
+    resetSubscription = false;
+  }
+
   @CommandLineOption(short_form = "-t", arg_name = "target",
       description = "Validate pub sub target")
-  private void validatePubSub(String pubSubCombo) {
-    validatePubSub(pubSubCombo, true);
+  private void setPubSubTarget(String pubSubCombo) {
+    pubSubTarget = pubSubCombo;
   }
 
   private void validatePubSub(String pubSubCombo, boolean reflect) {
@@ -389,12 +414,25 @@ public class Validator {
         new File(config.site_model), null, config.registry_suffix, PUBSUB, VALIDATOR_TOOL_NAME);
     String registryId = getRegistryId();
     String updateTopic = parts.length > 1 ? parts[1] : cloudIotManager.getUpdateTopic();
-    client = new PubSubClient(config.project_id, registryId, subscriptionId, updateTopic, reflect);
+    client = pubSubClientFactory.create(config.project_id, registryId, subscriptionId, updateTopic,
+        reflect, resetSubscription);
     if (updateTopic == null) {
       outputLogger.warn("Not sending to update topic because PubSub update_topic not defined");
     } else {
       dataSinks.add(client);
     }
+  }
+
+  @VisibleForTesting
+  void setPubSubClientFactory(PubSubClientFactory pubSubClientFactory) {
+    this.pubSubClientFactory = requireNonNull(pubSubClientFactory);
+  }
+
+  @FunctionalInterface
+  interface PubSubClientFactory {
+
+    MessagePublisher create(String projectId, String registryId, String subscriptionId,
+        String updateTopic, boolean reflect, boolean reset);
   }
 
   private void processProfile(File profilePath) {

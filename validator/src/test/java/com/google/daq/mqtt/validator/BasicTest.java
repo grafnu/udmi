@@ -12,6 +12,7 @@ import static udmi.schema.Level.INFO;
 
 import com.google.common.collect.ImmutableList;
 import com.google.daq.mqtt.TestCommon;
+import com.google.daq.mqtt.util.MessagePublisher;
 import com.google.daq.mqtt.validator.Validator.MessageBundle;
 import com.google.udmi.util.SiteModel;
 import java.time.Instant;
@@ -19,7 +20,9 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Test;
+import org.mockito.Mockito;
 import udmi.schema.Category;
 import udmi.schema.CloudModel;
 import udmi.schema.CloudModel.ModelOperation;
@@ -346,6 +349,57 @@ public class BasicTest extends TestBase {
         .anyMatch(entry -> entry.message.contains("baseline_value")
             && Category.VALIDATION_DEVICE_CONTENT.equals(entry.category));
     assertTrue("Should have baseline_tolerance error", hasBaselineError);
+  }
+
+  private record CapturedPubSub(String projectId, String subscriptionId, boolean reset) {
+  }
+
+  private static CapturedPubSub capturePubSub(boolean viaExecute, List<String> args) {
+    AtomicReference<CapturedPubSub> captured = new AtomicReference<>();
+    Validator.PubSubClientFactory factory =
+        (projectId, registryId, subscriptionId, updateTopic, reflect, reset) -> {
+          captured.set(new CapturedPubSub(projectId, subscriptionId, reset));
+          return Mockito.mock(MessagePublisher.class);
+        };
+    if (viaExecute) {
+      Validator v = new Validator();
+      v.setPubSubClientFactory(factory);
+      v.processArgs(args).execute();
+    } else {
+      new Validator(args, factory);
+    }
+    return captured.get();
+  }
+
+  @Test
+  public void pubSubNoResetOption() {
+    CapturedPubSub defaultCall = capturePubSub(true, ImmutableList.of(
+        TestCommon.SITE_DIR, "-p", SiteModel.MOCK_PROJECT, "-t", "test-sub"));
+    assertEquals(SiteModel.MOCK_PROJECT, defaultCall.projectId());
+    assertEquals("test-sub", defaultCall.subscriptionId());
+    assertTrue(defaultCall.reset());
+
+    CapturedPubSub afterTarget = capturePubSub(true, ImmutableList.of(
+        TestCommon.SITE_DIR, "-t", "test-sub", "-p", SiteModel.MOCK_PROJECT, "-R"));
+    assertEquals(SiteModel.MOCK_PROJECT, afterTarget.projectId());
+    assertEquals("test-sub", afterTarget.subscriptionId());
+    assertFalse(afterTarget.reset());
+
+    CapturedPubSub beforeTarget = capturePubSub(true, ImmutableList.of(
+        TestCommon.SITE_DIR, "-R", "-p", SiteModel.MOCK_PROJECT, "-t", "test-sub"));
+    assertEquals("test-sub", beforeTarget.subscriptionId());
+    assertFalse(beforeTarget.reset());
+
+    CapturedPubSub providerSpec = capturePubSub(true, ImmutableList.of(
+        TestCommon.SITE_DIR, "//pubsub/" + SiteModel.MOCK_PROJECT + "+testuser", "-R"));
+    assertEquals(SiteModel.MOCK_PROJECT, providerSpec.projectId());
+    assertEquals("udmi_target+testuser", providerSpec.subscriptionId());
+    assertFalse(providerSpec.reset());
+
+    CapturedPubSub argListCtor = capturePubSub(false, ImmutableList.of(
+        "-p", SiteModel.MOCK_PROJECT, "-s", TestCommon.SITE_DIR, "-t", "ctor-sub", "-R"));
+    assertEquals("ctor-sub", argListCtor.subscriptionId());
+    assertFalse(argListCtor.reset());
   }
 
 }
