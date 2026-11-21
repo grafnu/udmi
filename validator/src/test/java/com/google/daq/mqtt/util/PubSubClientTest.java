@@ -2,6 +2,7 @@ package com.google.daq.mqtt.util;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -81,7 +82,7 @@ public class PubSubClientTest {
     long twoHoursAgo = Instant.now().minusSeconds(7200).getEpochSecond();
     PubsubMessage oldMessage = PubsubMessage.newBuilder()
         .setData(ByteString.copyFromUtf8("{\"version\":\"1.5.2\"}"))
-        .setPublishTime(Timestamp.newBuilder().setSeconds(twoHoursAgo).build())
+        .setPublishTime(Timestamp.newBuilder().setSeconds(twoHoursAgo).setNanos(123456000).build())
         .putAttributes("deviceId", "DSN-1")
         .build();
     AckReplyConsumer mockAck = mock(AckReplyConsumer.class);
@@ -92,6 +93,11 @@ public class PubSubClientTest {
     assertNotNull("Historical message must not be flushed when reset=false", bundle);
     assertEquals("DSN-1", bundle.attributes.get("deviceId"));
     assertEquals("1.5.2", bundle.message.get("version"));
+    assertEquals(Instant.ofEpochSecond(twoHoursAgo, 123456000).toString(), bundle.timestamp);
+    assertNull("Polling empty queue should time out cleanly",
+        client.takeNextMessage(QuerySpeed.QUICK));
+    assertNull("Publishing without updateTopic must be a safe no-op",
+        client.publish("DSN-1", "update/query", "{}"));
     client.close();
   }
 }

@@ -344,6 +344,11 @@ public class PubSubClient implements MessagePublisher, MessageHandler {
 
   @Override
   public String publish(String deviceId, String topic, String data) {
+    if (publisher == null) {
+      System.err.printf("Dropping message to %s/%s/%s (no update topic)%n",
+          registryId, deviceId, topic);
+      return null;
+    }
     return useReflector ? publishReflector(deviceId, topic, data)
         : publishDirect(deviceId, topic, data);
   }
