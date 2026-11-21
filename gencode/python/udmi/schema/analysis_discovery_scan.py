@@ -24,17 +24,6 @@ class Depth(Enum):
     trace = 'trace'
 
 
-class Status(Enum):
-    """
-    Scan validation outcome; omitted when the scan passed with no errors or warnings
-    """
-
-    PASSED_WITH_WARNINGS = 'PASSED_WITH_WARNINGS'
-    FAILED = 'FAILED'
-    INCOMPLETE = 'INCOMPLETE'
-    IN_PROGRESS = 'IN_PROGRESS'
-
-
 MissingEventNo: TypeAlias = Optional[int]
 
 
@@ -52,12 +41,11 @@ class DiscoveryScanSummary(DataModel):
     generation: Optional[str] = None
     active_count: Optional[int] = None
     depth: Optional[Depth] = None
-    status: Optional[Status] = None
+    status: Optional[str] = None
     missing_event_nos: Optional[List[MissingEventNo]] = None
     duplicate_event_nos: Optional[List[DuplicateEventNo]] = None
     duplicate_addrs: Optional[List[str]] = None
     duplicate_networks: Optional[List[str]] = None
-    missing_devices: Optional[List[str]] = None
     extra_addrs: Optional[List[str]] = None
     errors: Optional[List[str]] = None
     warnings: Optional[List[str]] = None

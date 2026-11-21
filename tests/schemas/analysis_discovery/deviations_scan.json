@@ -10,27 +10,48 @@
         1
       ],
       "errors": [
-        "Duplicate discovery event_no 1",
-        "Duplicate discovered addr 100.87.174.140",
-        "Missing discovery event_no values: [2]"
+        "Some active discovery events have duplicate event_no",
+        "Missing discovery event_no values in sequence",
+        "Some discovered addresses were reported more than once"
       ],
       "extra_addrs": [
         "100.87.174.140"
       ],
       "family": "ipv4",
       "generation": "2026-11-19T18:00:00Z",
-      "missing_devices": [
-        "CGW-1",
-        "SRV-2"
-      ],
       "missing_event_nos": [
         2
       ],
       "scanner_device_id": "DSN-1",
       "status": "FAILED",
       "warnings": [
-        "Site model devices not discovered for ipv4: CGW-1, SRV-2",
-        "Discovered ipv4 addrs not in site model: 100.87.174.140"
+        "Some site model devices were not discovered",
+        "Some discovered addresses are not in site model"
+      ]
+    },
+    {
+      "active_count": 1,
+      "depth": "system",
+      "errors": [
+        "Some devices have system.name mismatch"
+      ],
+      "family": "bacnet",
+      "generation": "2026-11-19T19:00:00Z",
+      "scanner_device_id": "DSN-1",
+      "status": "WITH_ERRORS"
+    },
+    {
+      "active_count": 1,
+      "depth": "entries",
+      "extra_addrs": [
+        "100.87.174.254"
+      ],
+      "family": "ipv4",
+      "generation": "2026-11-19T20:00:00Z",
+      "scanner_device_id": "DSN-1",
+      "status": "WITH_WARNINGS",
+      "warnings": [
+        "Some discovered addresses are not in site model"
       ]
     }
   ],

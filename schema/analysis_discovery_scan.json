@@ -39,14 +39,24 @@
       ]
     },
     "status": {
-      "title": "Scan Status",
       "description": "Scan validation outcome; omitted when the scan passed with no errors or warnings",
       "type": "string",
-      "enum": [
-        "PASSED_WITH_WARNINGS",
-        "FAILED",
-        "INCOMPLETE",
-        "IN_PROGRESS"
+      "oneOf": [
+        {
+          "pattern": "^WITH_WARNINGS$"
+        },
+        {
+          "pattern": "^WITH_ERRORS$"
+        },
+        {
+          "pattern": "^FAILED$"
+        },
+        {
+          "pattern": "^INCOMPLETE$"
+        },
+        {
+          "pattern": "^IN_PROGRESS$"
+        }
       ]
     },
     "missing_event_nos": {
@@ -77,14 +87,6 @@
     },
     "duplicate_networks": {
       "description": "Networks reported multiple times within the same buckets scan",
-      "type": "array",
-      "minItems": 1,
-      "items": {
-        "type": "string"
-      }
-    },
-    "missing_devices": {
-      "description": "Modeled site devices for this family that were not discovered",
       "type": "array",
       "minItems": 1,
       "items": {

@@ -1,6 +1,10 @@
 package com.google.daq.mqtt.validator;
 
 import static com.google.daq.mqtt.validator.DiscoveryAnalyzer.DISCOVERY_ANALYSIS_FILENAME;
+import static com.google.daq.mqtt.validator.DiscoveryAnalyzer.STATUS_FAILED;
+import static com.google.daq.mqtt.validator.DiscoveryAnalyzer.STATUS_INCOMPLETE;
+import static com.google.daq.mqtt.validator.DiscoveryAnalyzer.STATUS_WITH_ERRORS;
+import static com.google.daq.mqtt.validator.DiscoveryAnalyzer.STATUS_WITH_WARNINGS;
 import static com.google.udmi.util.Common.PUBLISH_TIME_KEY;
 import static com.google.udmi.util.Common.SUBFOLDER_PROPERTY_KEY;
 import static com.google.udmi.util.Common.SUBTYPE_PROPERTY_KEY;
@@ -13,6 +17,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Sets;
 import com.google.daq.mqtt.TestCommon;
@@ -42,7 +47,6 @@ import udmi.schema.DeviceValidationEvents;
 import udmi.schema.DiscoveryAnalysis;
 import udmi.schema.DiscoveryEvents;
 import udmi.schema.DiscoveryScanSummary;
-import udmi.schema.DiscoveryScanSummary.ScanStatus;
 import udmi.schema.DiscoveryState;
 import udmi.schema.Entry;
 import udmi.schema.Enumerations.Depth;
@@ -55,6 +59,7 @@ import udmi.schema.RefDiscovery;
 import udmi.schema.State;
 import udmi.schema.StateSystemHardware;
 import udmi.schema.SystemDiscoveryData;
+import udmi.schema.ValidationEvents;
 import udmi.schema.ValidationState;
 
 /**
@@ -120,7 +125,6 @@ public class DiscoveryValidatorTest extends TestBase {
     assertNull(summary.status);
     assertEquals(Depth.DETAILS, summary.depth);
     assertEquals(Integer.valueOf(3), summary.active_count);
-    assertNull(summary.missing_devices);
     assertNull(summary.extra_addrs);
     assertNull(summary.errors);
     assertNull(summary.warnings);
@@ -146,17 +150,21 @@ public class DiscoveryValidatorTest extends TestBase {
     sendState(validator, TestCommon.GATEWAY_ID, Phase.STOPPED, generation, 2);
 
     File analysisFile = new File(TestCommon.SITE_DIR, "out/" + DISCOVERY_ANALYSIS_FILENAME);
-    validateAnalysisSchemaAndNoEmptyArrays(analysisFile);
+    JsonNode rawReport = validateAnalysisSchemaAndNoEmptyArrays(analysisFile);
+    assertFalse(rawReport.get("scans").get(0).has("missing_devices"));
 
     DiscoveryAnalysis report = validator.getDiscoveryAnalyzer().getAnalysisReport();
     assertEquals(1, report.scans.size());
     DiscoveryScanSummary summary = report.scans.get(0);
-    assertEquals(ScanStatus.PASSED_WITH_WARNINGS, summary.status);
+    assertEquals(STATUS_WITH_WARNINGS, summary.status);
     assertEquals(Integer.valueOf(2), summary.active_count);
-    assertEquals(List.of("AHU-22", "GAT-123"), summary.missing_devices);
     assertEquals(List.of("99999"), summary.extra_addrs);
     assertNull(summary.errors);
-    assertEquals(2, summary.warnings.size());
+    assertEquals(
+        List.of(
+            "Some site model devices were not discovered",
+            "Some discovered addresses are not in site model"),
+        summary.warnings);
 
     ValidationState validationReport = getValidationReport();
     assertFalse(validationReport.summary.error_devices.contains(TestCommon.GATEWAY_ID));
@@ -179,7 +187,7 @@ public class DiscoveryValidatorTest extends TestBase {
 
     DiscoveryScanSummary summary = validator.getDiscoveryAnalyzer().getAnalysisReport()
         .scans.get(0);
-    assertEquals(ScanStatus.PASSED_WITH_WARNINGS, summary.status);
+    assertEquals(STATUS_WITH_WARNINGS, summary.status);
     assertEquals(Integer.valueOf(1), summary.active_count);
     assertNull(summary.errors);
   }
@@ -229,11 +237,14 @@ public class DiscoveryValidatorTest extends TestBase {
 
     DiscoveryScanSummary summary = validator.getDiscoveryAnalyzer().getAnalysisReport()
         .scans.get(0);
-    assertEquals(ScanStatus.FAILED, summary.status);
-    assertTrue(summary.errors.stream().anyMatch(e -> e.contains("network mismatch")));
-    assertTrue(summary.errors.stream().anyMatch(e -> e.contains("system.name mismatch")));
-    assertTrue(summary.errors.stream().anyMatch(e -> e.contains("system.hardware.make mismatch")));
-    assertTrue(summary.errors.stream().anyMatch(e -> e.contains("refs mismatch")));
+    assertEquals(STATUS_WITH_ERRORS, summary.status);
+    assertEquals(
+        List.of(
+            "Some devices have network mismatch",
+            "Some devices have system.name mismatch",
+            "Some devices have system.hardware.make mismatch",
+            "Some devices have refs mismatch"),
+        summary.errors);
 
     ValidationState validationReport = getValidationReport();
     assertTrue(validationReport.summary.error_devices.contains(TestCommon.GATEWAY_ID));
@@ -262,13 +273,13 @@ public class DiscoveryValidatorTest extends TestBase {
 
     DiscoveryScanSummary summary = validator.getDiscoveryAnalyzer().getAnalysisReport()
         .scans.get(0);
-    assertEquals(ScanStatus.FAILED, summary.status);
+    assertEquals(STATUS_FAILED, summary.status);
     assertEquals(List.of(2), summary.missing_event_nos);
     assertEquals(List.of("27312"), summary.duplicate_addrs);
     assertTrue(summary.errors.stream().anyMatch(e -> e.contains("Missing discovery start marker")));
     assertTrue(summary.errors.stream().anyMatch(e -> e.contains("Missing discovery event_no")));
-    assertTrue(summary.errors.stream().anyMatch(e -> e.contains("Duplicate discovered addr")));
-    assertTrue(summary.errors.stream().anyMatch(e -> e.contains("end marker mismatch")));
+    assertTrue(summary.errors.stream().anyMatch(e -> e.contains("addresses were reported more")));
+    assertTrue(summary.errors.stream().anyMatch(e -> e.contains("end marker count mismatch")));
     assertTrue(summary.errors.stream().anyMatch(e -> e.contains("active_count mismatch")));
   }
 
@@ -299,10 +310,11 @@ public class DiscoveryValidatorTest extends TestBase {
     DiscoveryAnalysis report = validator.getDiscoveryAnalyzer().getAnalysisReport();
     assertEquals(1, report.scans.size());
     DiscoveryScanSummary summary = report.scans.get(0);
-    assertEquals(ScanStatus.INCOMPLETE, summary.status);
+    assertEquals(STATUS_INCOMPLETE, summary.status);
     assertEquals(Depth.BUCKETS, summary.depth);
-    assertTrue(summary.warnings.stream().anyMatch(
-        w -> w.contains("Site model networks not discovered: 9289")));
+    assertEquals(
+        List.of("Some site model networks were not discovered"),
+        summary.warnings);
     assertTrue(summary.errors.stream().anyMatch(e -> e.contains("Missing discovery end marker")));
     assertTrue(summary.errors.stream().anyMatch(e -> e.contains("stopped phase")));
   }
@@ -322,7 +334,7 @@ public class DiscoveryValidatorTest extends TestBase {
 
     DiscoveryScanSummary summary = validator.getDiscoveryAnalyzer().getAnalysisReport()
         .scans.get(0);
-    assertEquals(ScanStatus.FAILED, summary.status);
+    assertEquals(STATUS_FAILED, summary.status);
     assertTrue(summary.errors.stream().anyMatch(e -> e.contains("Missing discovery end marker")));
   }
 
@@ -386,9 +398,11 @@ public class DiscoveryValidatorTest extends TestBase {
 
     DiscoveryScanSummary summary = validator.getDiscoveryAnalyzer().getAnalysisReport()
         .scans.get(0);
-    assertEquals(ScanStatus.PASSED_WITH_WARNINGS, summary.status);
+    assertEquals(STATUS_WITH_WARNINGS, summary.status);
     assertEquals("SPT-99", summary.scanner_device_id);
-    assertEquals(List.of("AHU-22", "GAT-123"), summary.missing_devices);
+    assertEquals(
+        List.of("Some site model devices were not discovered"),
+        summary.warnings);
   }
 
   @Test
@@ -405,10 +419,9 @@ public class DiscoveryValidatorTest extends TestBase {
 
     DiscoveryScanSummary summary = validator.getDiscoveryAnalyzer().getAnalysisReport()
         .scans.get(0);
-    assertEquals(ScanStatus.FAILED, summary.status);
+    assertEquals(STATUS_WITH_ERRORS, summary.status);
     assertEquals(Depth.DETAILS, summary.depth);
-    assertTrue(summary.errors.stream().anyMatch(
-        e -> e.contains("Device AHU-1 omitted refs in details scan")));
+    assertEquals(List.of("Some devices have refs mismatch"), summary.errors);
   }
 
   @Test
@@ -473,16 +486,23 @@ public class DiscoveryValidatorTest extends TestBase {
     item.status.message = "point read timed out";
     validator.validateMessage(makeBundle(TestCommon.GATEWAY_ID, EVENTS_SUBTYPE,
         DISCOVERY_SUBFOLDER, item));
+    ValidationEvents validationResult = getValidationResult(
+        TestCommon.GATEWAY_ID, EVENTS_SUBTYPE, DISCOVERY_SUBFOLDER);
+    assertTrue(validationResult.status.detail.contains("point read timed out"));
 
     sendMarker(validator, TestCommon.GATEWAY_ID, BACNET_FAMILY, generation, -2);
     sendState(validator, TestCommon.GATEWAY_ID, Phase.STOPPED, generation, 1);
 
     DiscoveryScanSummary summary = validator.getDiscoveryAnalyzer().getAnalysisReport()
         .scans.get(0);
-    assertEquals(ScanStatus.FAILED, summary.status);
-    assertTrue(summary.errors.stream().anyMatch(e -> e.contains("point read timed out")));
-    assertTrue(summary.errors.stream().anyMatch(e -> e.contains("Unknown family bogus_family")));
-    assertTrue(summary.errors.stream().anyMatch(e -> e.contains("Invalid ref INVALID:1")));
+    assertEquals(STATUS_WITH_ERRORS, summary.status);
+    assertEquals(
+        List.of(
+            "Some discovery events reported error status",
+            "Some discovered entries reference an unknown family",
+            "Some discovered point refs are invalid",
+            "Some devices have refs mismatch"),
+        summary.errors);
   }
 
   @Test
@@ -490,7 +510,7 @@ public class DiscoveryValidatorTest extends TestBase {
     Validator validator = new Validator(TEST_ARGS).prepForMock();
     Date gen1 = getDate("2026-11-18T21:00:00Z");
 
-    // Scan 1 (ether): unknown depth (events missing addr and network x3)
+    // Scan 1 (ether): content errors only, unknown depth (3 items missing addr & network)
     DiscoveryState etherActive = buildDiscoveryState("ether", Phase.ACTIVE, gen1, 0);
     validator.validateMessage(makeBundle(TestCommon.GATEWAY_ID, STATE_SUBTYPE,
         DISCOVERY_SUBFOLDER, etherActive));
@@ -504,7 +524,7 @@ public class DiscoveryValidatorTest extends TestBase {
     validator.validateMessage(makeBundle(TestCommon.GATEWAY_ID, STATE_SUBTYPE,
         DISCOVERY_SUBFOLDER, etherStopped));
 
-    // Scan 2 (bacnet): missing start marker + mismatched network
+    // Scan 2 (bacnet): structural + content error (missing start marker + mismatched network)
     Date gen2 = getDate("2026-11-18T22:00:00Z");
     sendState(validator, TestCommon.GATEWAY_ID, Phase.ACTIVE, gen2, 0);
     DiscoveryEvents badAhu = baseDiscoveryEvent(BACNET_FAMILY, gen2, 1);
@@ -515,26 +535,52 @@ public class DiscoveryValidatorTest extends TestBase {
     sendMarker(validator, TestCommon.GATEWAY_ID, BACNET_FAMILY, gen2, -2);
     sendState(validator, TestCommon.GATEWAY_ID, Phase.STOPPED, gen2, 1);
 
+    // Scan 3 (ipv4): scan without errors (clean protocol, warnings only)
+    Date gen3 = getDate("2026-11-18T23:00:00Z");
+    validator.validateMessage(makeBundle(TestCommon.GATEWAY_ID, STATE_SUBTYPE,
+        DISCOVERY_SUBFOLDER, buildDiscoveryState("ipv4", Phase.ACTIVE, gen3, 0)));
+    sendMarker(validator, TestCommon.GATEWAY_ID, "ipv4", gen3, 0);
+    DiscoveryEvents ipItem = baseDiscoveryEvent("ipv4", gen3, 1);
+    ipItem.addr = "10.0.0.10";
+    validator.validateMessage(makeBundle(TestCommon.GATEWAY_ID, EVENTS_SUBTYPE,
+        DISCOVERY_SUBFOLDER, ipItem));
+    sendMarker(validator, TestCommon.GATEWAY_ID, "ipv4", gen3, -2);
+    validator.validateMessage(makeBundle(TestCommon.GATEWAY_ID, STATE_SUBTYPE,
+        DISCOVERY_SUBFOLDER, buildDiscoveryState("ipv4", Phase.STOPPED, gen3, 1)));
+
     File analysisFile = new File(TestCommon.SITE_DIR, "out/" + DISCOVERY_ANALYSIS_FILENAME);
     final JsonNode rawReport = validateAnalysisSchemaAndNoEmptyArrays(analysisFile);
-    // Scan 1 (ether, index 1 after alphabetical family sort) has unknown depth -> omitted
     DiscoveryAnalysis report = OBJECT_MAPPER.readValue(analysisFile, DiscoveryAnalysis.class);
-    assertEquals(2, report.scans.size());
+    assertEquals(3, report.scans.size());
     DiscoveryScanSummary etherScan = report.scans.stream()
         .filter(s -> "ether".equals(s.family)).findFirst().orElseThrow();
+    assertEquals(STATUS_WITH_ERRORS, etherScan.status);
     assertNull(etherScan.depth);
-    assertEquals(3, etherScan.errors.size());
+    assertEquals(List.of("Some events are missing both addr and network"), etherScan.errors);
     assertFalse(rawReport.get("scans").get(1).has("depth"));
+
+    DiscoveryScanSummary bacnetScan = report.scans.stream()
+        .filter(s -> BACNET_FAMILY.equals(s.family)).findFirst().orElseThrow();
+    assertEquals(STATUS_FAILED, bacnetScan.status);
+
+    DiscoveryScanSummary ipv4Scan = report.scans.stream()
+        .filter(s -> "ipv4".equals(s.family)).findFirst().orElseThrow();
+    assertEquals(STATUS_WITH_WARNINGS, ipv4Scan.status);
+    assertNull(ipv4Scan.errors);
+
+    // Schema negative check: arbitrary status value must fail oneOf pattern validation
+    JsonSchema schema = MessageValidator.getSchema(
+        new File(TestCommon.SCHEMA_SPEC, "analysis_discovery.json"));
+    ObjectNode invalidRoot = (ObjectNode) rawReport.deepCopy();
+    ((ObjectNode) invalidRoot.get("scans").get(0)).put("status", "PASSED_WITH_WARNINGS");
+    assertFalse("Legacy status string must be rejected by oneOf",
+        schema.validate(invalidRoot).isEmpty());
 
     ValidationState validationReport = getValidationReport();
     DeviceValidationEvents gatValidation = validationReport.devices.get(TestCommon.GATEWAY_ID);
-    assertEquals(Category.VALIDATION_DEVICE_MULTIPLE, gatValidation.status.category);
-    assertEquals("Multiple validation errors", gatValidation.status.message);
+    assertEquals(Category.VALIDATION_DEVICE_CONTENT, gatValidation.status.category);
     assertEquals(
-        "Discovery errors across 2/2 scans (bacnet: 1, ether: 1); "
-            + "events missing addr and network (x3); "
-            + "missing start marker (x1); "
-            + "device network mismatch (x1)",
+        "Scans without errors (ipv4: 1), scans with errors (bacnet: 1, ether: 1)",
         gatValidation.status.detail);
   }
 
@@ -554,7 +600,7 @@ public class DiscoveryValidatorTest extends TestBase {
         "-t", "mock-sub", "-R", TestCommon.GATEWAY_ID)).execute();
     DiscoveryScanSummary unbufferedScan = unbufferedValidator.getDiscoveryAnalyzer()
         .getAnalysisReport().scans.get(0);
-    assertEquals(ScanStatus.FAILED, unbufferedScan.status);
+    assertEquals(STATUS_FAILED, unbufferedScan.status);
     assertTrue(unbufferedScan.errors.stream().anyMatch(
         err -> err.contains("arrived after scan closed")));
 
