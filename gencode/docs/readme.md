@@ -23,6 +23,7 @@
 * [**configuration_endpoint**](configuration_endpoint.html) - Parameters to define a message endpoint
 
 ## Other
+* [**analysis_discovery**](analysis_discovery.html) - Site-level passive analysis summary of active [discovery](../../docs/specs/discovery.md) scans
 * [**building_config_entity**](building_config_entity.html)
 * [**commands_discovery**](commands_discovery.html) - [Discovery command](../../docs/specs/discovery.md) for provisioning
 * [**configuration_execution**](configuration_execution.html) - Parameters for configuring the execution run of a UDMI tool

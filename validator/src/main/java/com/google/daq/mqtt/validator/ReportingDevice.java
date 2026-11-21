@@ -176,7 +176,8 @@ public class ReportingDevice implements ErrorCollector {
    * @return {@code true} if this device has errors
    */
   public boolean hasErrors() {
-    return !entries.isEmpty();
+    return !entries.isEmpty()
+        || (discoveryAnalyzer != null && discoveryAnalyzer.hasDeviceErrors(deviceId));
   }
 
   /**
@@ -250,6 +251,13 @@ public class ReportingDevice implements ErrorCollector {
     addEntry(entry);
   }
 
+  @Override
+  public void addMessageError(Exception error, String category, String detail) {
+    Entry entry = makeEntry(error, category, detail);
+    entryExceptions.put(entry, error);
+    messageEntries.add(entry);
+  }
+
   public static String typeFolderPairKey(String subType, String subFolder) {
     return format("%s_%s", ofNullable(subType).orElse(SubType.EVENTS.value()), subFolder);
   }
@@ -262,13 +270,21 @@ public class ReportingDevice implements ErrorCollector {
    * @return Entry list or errors.
    */
   public List<Entry> getErrors(Date now, String detailPrefix) {
-    if (now == null) {
-      return entries;
-    }
-    return entries.stream()
+    List<Entry> baseEntries = now == null ? entries : entries.stream()
         .filter(entry -> !entry.timestamp.before(getThreshold(now.toInstant())))
         .filter(entry -> detailPrefix == null || entry.detail.startsWith(detailPrefix))
         .collect(Collectors.toList());
+    if (discoveryAnalyzer == null || !discoveryAnalyzer.hasDeviceErrors(deviceId)) {
+      return baseEntries;
+    }
+    List<Entry> combined = new ArrayList<>(baseEntries);
+    for (Entry entry : discoveryAnalyzer.getDeviceErrorEntries(deviceId, getTimestamp())) {
+      if (detailPrefix == null
+          || (entry.detail != null && entry.detail.startsWith(detailPrefix))) {
+        combined.add(entry);
+      }
+    }
+    return combined;
   }
 
   /**
@@ -375,7 +391,8 @@ public class ReportingDevice implements ErrorCollector {
         throw new RuntimeException("Encapsulated Error", exception);
       }
     }
-    List<Exception> exceptions = entries.stream().map(entryExceptions::get).toList();
+    List<Entry> sourceEntries = !entries.isEmpty() ? entries : messageEntries;
+    List<Exception> exceptions = sourceEntries.stream().map(entryExceptions::get).toList();
     throw new ExceptionList(exceptions);
   }
 

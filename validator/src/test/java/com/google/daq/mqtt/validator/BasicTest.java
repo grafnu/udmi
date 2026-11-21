@@ -402,4 +402,14 @@ public class BasicTest extends TestBase {
     assertFalse(argListCtor.reset());
   }
 
+  @Test(expected = RuntimeException.class)
+  public void negativeStartupBufferDelayRejected() {
+    new Validator(ImmutableList.of(
+        "-n",
+        "-p", SiteModel.MOCK_PROJECT,
+        "-a", TestCommon.SCHEMA_SPEC,
+        "-s", TestCommon.SITE_DIR,
+        "-b", "-1"));
+  }
+
 }

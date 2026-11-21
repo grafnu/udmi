@@ -1,6 +1,7 @@
 package com.google.daq.mqtt.validator;
 
 import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.daq.mqtt.util.ConfigUtil.UDMI_VERSION;
 import static com.google.daq.mqtt.util.providers.FamilyProvider.MAX_PORT_VALUE;
 import static com.google.daq.mqtt.util.providers.FamilyProvider.constructUrl;
 import static com.google.udmi.util.CleanDateFormat.cleanDate;
@@ -8,19 +9,20 @@ import static com.google.udmi.util.GeneralUtils.CSV_JOINER;
 import static com.google.udmi.util.GeneralUtils.catchToNull;
 import static com.google.udmi.util.JsonUtil.OBJECT_MAPPER;
 import static com.google.udmi.util.JsonUtil.convertTo;
+import static com.google.udmi.util.JsonUtil.getDate;
 import static com.google.udmi.util.JsonUtil.isoConvert;
 import static java.lang.String.format;
 import static java.util.Optional.ofNullable;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.annotation.JsonInclude.Include;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.daq.mqtt.util.providers.FamilyProvider;
 import com.google.udmi.util.ValidationException;
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Comparator;
 import java.util.Date;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -35,9 +37,14 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 import udmi.schema.Category;
+import udmi.schema.DiscoveryAnalysis;
 import udmi.schema.DiscoveryEvents;
+import udmi.schema.DiscoveryScanSummary;
+import udmi.schema.DiscoveryScanSummary.ScanStatus;
 import udmi.schema.DiscoveryState;
+import udmi.schema.Enumerations.Depth;
 import udmi.schema.FamilyDiscovery;
 import udmi.schema.FamilyDiscoveryState;
 import udmi.schema.FamilyDiscoveryState.Phase;
@@ -55,11 +62,6 @@ public class DiscoveryAnalyzer {
   private static final long LIVE_CLOSE_GRACE_SEC = 5;
   private static final String EVENTS_DETAIL_PREFIX = "events_discovery";
   private static final String STATE_DETAIL_PREFIX = "state_discovery";
-  private static final String STATUS_IN_PROGRESS = "IN_PROGRESS";
-  private static final String STATUS_PASSED = "PASSED";
-  private static final String STATUS_PASSED_WITH_WARNINGS = "PASSED_WITH_WARNINGS";
-  private static final String STATUS_FAILED = "FAILED";
-  private static final String STATUS_INCOMPLETE = "INCOMPLETE";
 
   private final LoggingHandler outputLogger;
   private final Map<String, ReportingDevice> reportingDevices;
@@ -103,7 +105,7 @@ public class DiscoveryAnalyzer {
    * Configure runtime timer callback.
    *
    * @param executor          scheduler for live grace timers
-   * @param simulatedMessages true when replaying offline traces
+   * @param simulatedMessages true when replaying offline traces or draining startup buffers
    * @param graceCloseHandler callback invoked when a live scan grace timer expires
    */
   public void configureRuntime(ScheduledExecutorService executor, boolean simulatedMessages,
@@ -111,6 +113,28 @@ public class DiscoveryAnalyzer {
     this.executor = executor;
     this.simulatedMessages = simulatedMessages;
     this.graceCloseHandler = graceCloseHandler;
+  }
+
+  /**
+   * Schedule live close grace timers for any open active scans that observed a partial closing
+   * signal during a startup buffer drain.
+   */
+  public void armPendingGraceTimers() {
+    if (simulatedMessages || executor == null || graceCloseHandler == null) {
+      return;
+    }
+    for (DiscoveryScanSession session : scans.values()) {
+      if (!session.activated || session.closed || session.graceScheduled) {
+        continue;
+      }
+      if (session.endMarkerEventNo != null || session.latestPhase == Phase.STOPPED) {
+        session.graceScheduled = true;
+        ScheduledFuture<?> future = executor.schedule(
+            () -> graceCloseHandler.accept(session.key),
+            LIVE_CLOSE_GRACE_SEC, TimeUnit.SECONDS);
+        pendingTimers.put(session.key, future);
+      }
+    }
   }
 
   /**
@@ -148,6 +172,102 @@ public class DiscoveryAnalyzer {
   }
 
   /**
+   * Check whether a scanner device has any recorded discovery validation errors.
+   *
+   * @param scannerDeviceId scanner device identifier
+   * @return true if at least one active scan recorded an error for this scanner
+   */
+  public boolean hasDeviceErrors(String scannerDeviceId) {
+    if (scannerDeviceId == null) {
+      return false;
+    }
+    for (DiscoveryScanSession session : scans.values()) {
+      if (session.activated
+          && scannerDeviceId.equals(session.key.scannerDeviceId)
+          && !session.errors.isEmpty()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Build summarized device-level validation error entries for a scanner device.
+   *
+   * @param scannerDeviceId scanner device identifier
+   * @param timestamp       timestamp to stamp on generated entries
+   * @return summarized error entries for device validation reports
+   */
+  public List<udmi.schema.Entry> getDeviceErrorEntries(String scannerDeviceId, Date timestamp) {
+    if (scannerDeviceId == null) {
+      return List.of();
+    }
+    int totalScans = 0;
+    int errorScans = 0;
+    int totalErrors = 0;
+    Map<String, Integer> familyErrorScans = new TreeMap<>();
+    EnumMap<IssueKind, Integer> combinedIssues = new EnumMap<>(IssueKind.class);
+    String singleMessage = null;
+    String singlePrefix = null;
+
+    for (DiscoveryScanSession session : scans.values()) {
+      if (!session.activated || !scannerDeviceId.equals(session.key.scannerDeviceId)) {
+        continue;
+      }
+      totalScans++;
+      if (!session.errors.isEmpty()) {
+        errorScans++;
+        totalErrors += session.errors.size();
+        familyErrorScans.merge(session.key.family, 1, Integer::sum);
+        session.issueCounts.forEach((kind, count) -> combinedIssues.merge(kind, count,
+            Integer::sum));
+        if (singleMessage == null) {
+          singleMessage = session.firstErrorMessage;
+          singlePrefix = session.firstErrorPrefix;
+        }
+      }
+    }
+
+    if (totalErrors == 0) {
+      return List.of();
+    }
+    if (totalErrors == 1) {
+      return List.of(makeSummaryEntry(singleMessage,
+          format("%s: %s", singlePrefix, singleMessage), timestamp));
+    }
+
+    List<udmi.schema.Entry> summarized = new ArrayList<>();
+    String familyBreakdown = familyErrorScans.entrySet().stream()
+        .map(entry -> entry.getKey() + ": " + entry.getValue())
+        .collect(Collectors.joining(", "));
+    String headerMessage = format("Discovery errors across %d/%d scans (%s)",
+        errorScans, totalScans, familyBreakdown);
+    summarized.add(makeSummaryEntry(headerMessage,
+        format("%s: %s", EVENTS_DETAIL_PREFIX, headerMessage), timestamp));
+
+    combinedIssues.entrySet().stream()
+        .sorted(Comparator.<Entry<IssueKind, Integer>>comparingInt(Entry::getValue).reversed()
+            .thenComparingInt(entry -> entry.getKey().ordinal()))
+        .forEach(entry -> {
+          IssueKind kind = entry.getKey();
+          String itemMessage = format("%s (x%d)", kind.summaryLabel, entry.getValue());
+          summarized.add(makeSummaryEntry(itemMessage,
+              format("%s: %s", kind.detailPrefix, itemMessage), timestamp));
+        });
+    return summarized;
+  }
+
+  private static udmi.schema.Entry makeSummaryEntry(String message, String detail, Date timestamp) {
+    udmi.schema.Entry entry = new udmi.schema.Entry();
+    entry.category = Category.VALIDATION_DEVICE_CONTENT;
+    entry.level = Level.ERROR.value();
+    entry.message = message;
+    entry.detail = detail;
+    entry.timestamp = timestamp;
+    return entry;
+  }
+
+  /**
    * Validate and record a DiscoveryEvents message.
    *
    * @param scannerDeviceId device emitting the discovery event
@@ -179,7 +299,7 @@ public class DiscoveryAnalyzer {
     session.activated = true;
 
     if (session.closed) {
-      recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+      recordError(session, IssueKind.LATE_EVENT, errorCollector, EVENTS_DETAIL_PREFIX,
           format("Discovery event (event_no=%s) arrived after scan closed", event.event_no));
     }
 
@@ -227,7 +347,7 @@ public class DiscoveryAnalyzer {
       if (famState.status != null && famState.status.level != null
           && famState.status.level >= Level.ERROR.value()) {
         String detail = ofNullable(famState.status.message).orElse("error status reported");
-        recordError(session, errorCollector, STATE_DETAIL_PREFIX,
+        recordError(session, IssueKind.STATE_ERROR_STATUS, errorCollector, STATE_DETAIL_PREFIX,
             format("Discovery state %s error: %s", family, detail));
       }
       if (famState.phase == Phase.STOPPED && session.activated) {
@@ -307,15 +427,17 @@ public class DiscoveryAnalyzer {
    * @return current report covering all activated scans
    */
   @VisibleForTesting
-  public DiscoveryAnalysisReport getAnalysisReport() {
-    DiscoveryAnalysisReport report = new DiscoveryAnalysisReport();
+  public DiscoveryAnalysis getAnalysisReport() {
+    DiscoveryAnalysis report = new DiscoveryAnalysis();
+    report.version = UDMI_VERSION;
     report.timestamp = new Date();
-    report.scans = new ArrayList<>();
+    List<DiscoveryScanSummary> summaries = new ArrayList<>();
     for (DiscoveryScanSession session : scans.values()) {
       if (session.activated) {
-        report.scans.add(buildScanSummary(session));
+        summaries.add(buildScanSummary(session));
       }
     }
+    report.scans = emptyToNull(summaries);
     return report;
   }
 
@@ -344,31 +466,31 @@ public class DiscoveryAnalyzer {
   private void validateActiveEvent(DiscoveryScanSession session, DiscoveryEvents event,
       FamilyProvider familyProvider, ErrorCollector errorCollector) {
     if (event.event_no == null) {
-      recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+      recordError(session, IssueKind.MISSING_EVENT_NO, errorCollector, EVENTS_DETAIL_PREFIX,
           "Active discovery event missing event_no");
       return;
     }
     int eventNo = event.event_no;
     if (eventNo == 0) {
       if (session.startMarkerSeen) {
-        recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+        recordError(session, IssueKind.DUPLICATE_START_MARKER, errorCollector, EVENTS_DETAIL_PREFIX,
             "Duplicate discovery start marker (event_no=0)");
       }
       session.startMarkerSeen = true;
       if (event.addr != null || event.network != null) {
-        recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+        recordError(session, IssueKind.INVALID_START_MARKER, errorCollector, EVENTS_DETAIL_PREFIX,
             "Start marker (event_no=0) must not specify addr or network");
       }
       return;
     }
     if (eventNo < 0) {
       if (session.endMarkerEventNo != null) {
-        recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+        recordError(session, IssueKind.DUPLICATE_END_MARKER, errorCollector, EVENTS_DETAIL_PREFIX,
             format("Duplicate discovery end marker (event_no=%d)", eventNo));
       }
       session.endMarkerEventNo = eventNo;
       if (event.addr != null || event.network != null) {
-        recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+        recordError(session, IssueKind.INVALID_END_MARKER, errorCollector, EVENTS_DETAIL_PREFIX,
             format("End marker (event_no=%d) must not specify addr or network", eventNo));
       }
       onClosingSignal(session, errorCollector);
@@ -378,7 +500,7 @@ public class DiscoveryAnalyzer {
     session.rawItemCount++;
     if (!session.positiveEventNos.add(eventNo)) {
       session.duplicateEventNos.add(eventNo);
-      recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+      recordError(session, IssueKind.DUPLICATE_EVENT_NO, errorCollector, EVENTS_DETAIL_PREFIX,
           format("Duplicate discovery event_no %d", eventNo));
     }
 
@@ -386,7 +508,7 @@ public class DiscoveryAnalyzer {
         && event.status.level >= Level.ERROR.value();
     if (hasErrorStatus) {
       String detail = ofNullable(event.status.message).orElse("error status reported");
-      recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+      recordError(session, IssueKind.EVENT_ERROR_STATUS, errorCollector, EVENTS_DETAIL_PREFIX,
           format("Discovery event %d error status: %s", eventNo, detail));
     }
 
@@ -395,7 +517,7 @@ public class DiscoveryAnalyzer {
     } else if (event.addr != null) {
       validateDeviceItem(session, event, familyProvider, errorCollector);
     } else if (!hasErrorStatus) {
-      recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+      recordError(session, IssueKind.MISSING_ADDR_AND_NETWORK, errorCollector, EVENTS_DETAIL_PREFIX,
           format("Discovery event %d missing both addr and network", eventNo));
     }
   }
@@ -406,22 +528,24 @@ public class DiscoveryAnalyzer {
     String network = event.network;
     if (!session.discoveredNetworks.add(network)) {
       session.duplicateNetworks.add(network);
-      recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+      recordError(session, IssueKind.DUPLICATE_NETWORK, errorCollector, EVENTS_DETAIL_PREFIX,
           format("Duplicate discovered network %s", network));
     }
     try {
       familyProvider.validateNetwork(network);
     } catch (Exception e) {
-      recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+      recordError(session, IssueKind.INVALID_NETWORK, errorCollector, EVENTS_DETAIL_PREFIX,
           format("Invalid network %s: %s", network, e.getMessage()));
     }
     if (event.system != null) {
-      recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
-          format("Unexpected system block in buckets scan for network %s", network));
+      recordError(session, IssueKind.UNEXPECTED_BUCKETS_PAYLOAD, errorCollector,
+          EVENTS_DETAIL_PREFIX, format("Unexpected system block in buckets scan for network %s",
+              network));
     }
     if (event.refs != null) {
-      recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
-          format("Unexpected refs block in buckets scan for network %s", network));
+      recordError(session, IssueKind.UNEXPECTED_BUCKETS_PAYLOAD, errorCollector,
+          EVENTS_DETAIL_PREFIX, format("Unexpected refs block in buckets scan for network %s",
+              network));
     }
     validateDiscoveredFamilies(session, event.families, errorCollector);
   }
@@ -432,13 +556,13 @@ public class DiscoveryAnalyzer {
     String addr = event.addr;
     if (!session.discoveredAddrs.add(addr)) {
       session.duplicateAddrs.add(addr);
-      recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+      recordError(session, IssueKind.DUPLICATE_ADDR, errorCollector, EVENTS_DETAIL_PREFIX,
           format("Duplicate discovered addr %s", addr));
     }
     try {
       familyProvider.validateAddr(addr);
     } catch (Exception e) {
-      recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+      recordError(session, IssueKind.INVALID_ADDR, errorCollector, EVENTS_DETAIL_PREFIX,
           format("Invalid addr %s: %s", addr, e.getMessage()));
     }
 
@@ -447,7 +571,7 @@ public class DiscoveryAnalyzer {
       try {
         familyProvider.validateNetwork(event.network);
       } catch (Exception e) {
-        recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+        recordError(session, IssueKind.INVALID_NETWORK, errorCollector, EVENTS_DETAIL_PREFIX,
             format("Invalid network %s for addr %s: %s", event.network, addr, e.getMessage()));
       }
     }
@@ -463,7 +587,7 @@ public class DiscoveryAnalyzer {
         try {
           familyProvider.validateUrl(constructUrl(event.family, addr, refKey));
         } catch (Exception e) {
-          recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+          recordError(session, IssueKind.INVALID_REF, errorCollector, EVENTS_DETAIL_PREFIX,
               format("Invalid ref %s for addr %s: %s", refKey, addr, e.getMessage()));
         }
       }
@@ -482,8 +606,8 @@ public class DiscoveryAnalyzer {
       FamilyDiscovery famDiscovery = entry.getValue();
       FamilyProvider famProvider = FamilyProvider.NAMED_FAMILIES.get(famKey);
       if (famProvider == null) {
-        recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
-            format("Unknown family %s in discovered families map", famKey));
+        recordError(session, IssueKind.UNKNOWN_DISCOVERED_FAMILY, errorCollector,
+            EVENTS_DETAIL_PREFIX, format("Unknown family %s in discovered families map", famKey));
         continue;
       }
       if (famDiscovery == null) {
@@ -493,14 +617,15 @@ public class DiscoveryAnalyzer {
         try {
           famProvider.validateAddr(famDiscovery.addr);
         } catch (Exception e) {
-          recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+          recordError(session, IssueKind.INVALID_FAMILY_ENDPOINT, errorCollector,
+              EVENTS_DETAIL_PREFIX,
               format("Invalid %s family addr %s: %s", famKey, famDiscovery.addr, e.getMessage()));
         }
       }
       if (famDiscovery.port != null
           && (famDiscovery.port < 0 || famDiscovery.port > MAX_PORT_VALUE)) {
-        recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
-            format("Invalid %s family port %d", famKey, famDiscovery.port));
+        recordError(session, IssueKind.INVALID_FAMILY_ENDPOINT, errorCollector,
+            EVENTS_DETAIL_PREFIX, format("Invalid %s family port %d", famKey, famDiscovery.port));
       }
     }
   }
@@ -523,7 +648,7 @@ public class DiscoveryAnalyzer {
         () -> metadata.localnet.families.get(event.family).network);
     if ((expectedNetwork != null || event.network != null)
         && !Objects.equals(expectedNetwork, event.network)) {
-      recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+      recordError(session, IssueKind.DEVICE_NETWORK_MISMATCH, errorCollector, EVENTS_DETAIL_PREFIX,
           format("Device %s network mismatch: expected %s, got %s",
               matchedDeviceId, expectedNetwork, event.network));
     }
@@ -537,7 +662,8 @@ public class DiscoveryAnalyzer {
         }
         if ("iot".equals(famKey)) {
           if (!Objects.equals(matchedDeviceId, discoveredFamAddr)) {
-            recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+            recordError(session, IssueKind.DEVICE_FAMILY_ADDR_MISMATCH, errorCollector,
+                EVENTS_DETAIL_PREFIX,
                 format("Device %s iot family addr mismatch: expected %s, got %s",
                     matchedDeviceId, matchedDeviceId, discoveredFamAddr));
           }
@@ -545,7 +671,8 @@ public class DiscoveryAnalyzer {
           String expectedFamAddr = catchToNull(
               () -> metadata.localnet.families.get(famKey).addr);
           if (expectedFamAddr != null && !Objects.equals(expectedFamAddr, discoveredFamAddr)) {
-            recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+            recordError(session, IssueKind.DEVICE_FAMILY_ADDR_MISMATCH, errorCollector,
+                EVENTS_DETAIL_PREFIX,
                 format("Device %s family %s addr mismatch: expected %s, got %s",
                     matchedDeviceId, famKey, expectedFamAddr, discoveredFamAddr));
           }
@@ -565,7 +692,7 @@ public class DiscoveryAnalyzer {
       Set<String> extraRefs = new TreeSet<>(discoveredRefs);
       extraRefs.removeAll(expectedRefs);
       if (!missingRefs.isEmpty() || !extraRefs.isEmpty()) {
-        recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+        recordError(session, IssueKind.DEVICE_REFS_MISMATCH, errorCollector, EVENTS_DETAIL_PREFIX,
             format("Device %s refs mismatch: missing=%s, extra=%s",
                 matchedDeviceId, missingRefs, extraRefs));
       }
@@ -578,27 +705,27 @@ public class DiscoveryAnalyzer {
       Metadata metadata, SystemDiscoveryData system, ErrorCollector errorCollector) {
     String expectedName = catchToNull(() -> metadata.system.physical_tag.asset.name);
     if (!Objects.equals(expectedName, system.name)) {
-      recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+      recordError(session, IssueKind.DEVICE_SYSTEM_MISMATCH, errorCollector, EVENTS_DETAIL_PREFIX,
           format("Device %s system.name mismatch: expected %s, got %s",
               matchedDeviceId, expectedName, system.name));
     }
     String expectedSerial = catchToNull(() -> metadata.system.serial_no);
     if (!Objects.equals(expectedSerial, system.serial_no)) {
-      recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+      recordError(session, IssueKind.DEVICE_SYSTEM_MISMATCH, errorCollector, EVENTS_DETAIL_PREFIX,
           format("Device %s system.serial_no mismatch: expected %s, got %s",
               matchedDeviceId, expectedSerial, system.serial_no));
     }
     String expectedMake = catchToNull(() -> metadata.system.hardware.make);
     String actualMake = catchToNull(() -> system.hardware.make);
     if (!Objects.equals(expectedMake, actualMake)) {
-      recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+      recordError(session, IssueKind.DEVICE_SYSTEM_MISMATCH, errorCollector, EVENTS_DETAIL_PREFIX,
           format("Device %s system.hardware.make mismatch: expected %s, got %s",
               matchedDeviceId, expectedMake, actualMake));
     }
     String expectedModel = catchToNull(() -> metadata.system.hardware.model);
     String actualModel = catchToNull(() -> system.hardware.model);
     if (!Objects.equals(expectedModel, actualModel)) {
-      recordError(session, errorCollector, EVENTS_DETAIL_PREFIX,
+      recordError(session, IssueKind.DEVICE_SYSTEM_MISMATCH, errorCollector, EVENTS_DETAIL_PREFIX,
           format("Device %s system.hardware.model mismatch: expected %s, got %s",
               matchedDeviceId, expectedModel, actualModel));
     }
@@ -637,7 +764,7 @@ public class DiscoveryAnalyzer {
         ? EVENTS_DETAIL_PREFIX : STATE_DETAIL_PREFIX;
 
     if (!session.startMarkerSeen) {
-      recordError(session, errorCollector, detailPrefix,
+      recordError(session, IssueKind.MISSING_START_MARKER, errorCollector, detailPrefix,
           "Missing discovery start marker (event_no=0)");
     }
 
@@ -649,18 +776,18 @@ public class DiscoveryAnalyzer {
       }
     }
     if (!session.missingEventNos.isEmpty()) {
-      recordError(session, errorCollector, detailPrefix,
+      recordError(session, IssueKind.MISSING_EVENT_NOS, errorCollector, detailPrefix,
           format("Missing discovery event_no values: %s", session.missingEventNos));
     }
 
     if (session.endMarkerEventNo == null) {
       session.incomplete = atFinalization;
-      recordError(session, errorCollector, detailPrefix,
+      recordError(session, IssueKind.MISSING_END_MARKER, errorCollector, detailPrefix,
           "Missing discovery end marker (event_no<0)");
     } else {
       int expectedEndMarker = -(session.rawItemCount + 1);
       if (session.endMarkerEventNo != expectedEndMarker) {
-        recordError(session, errorCollector, detailPrefix,
+        recordError(session, IssueKind.END_MARKER_MISMATCH, errorCollector, detailPrefix,
             format("Discovery end marker mismatch: expected %d, got %d",
                 expectedEndMarker, session.endMarkerEventNo));
       }
@@ -669,14 +796,15 @@ public class DiscoveryAnalyzer {
     if (session.stateObserved) {
       if (session.latestPhase != Phase.STOPPED) {
         session.incomplete = atFinalization;
-        recordError(session, errorCollector, STATE_DETAIL_PREFIX,
+        recordError(session, IssueKind.STATE_NOT_STOPPED, errorCollector, STATE_DETAIL_PREFIX,
             format("Discovery state did not reach stopped phase (last phase: %s)",
                 session.latestPhase == null ? "null" : session.latestPhase.value()));
       }
       if (session.stateActiveCount == null) {
         recordWarning(session, "Discovery state did not report active_count");
       } else if (session.stateActiveCount != session.rawItemCount) {
-        recordError(session, errorCollector, STATE_DETAIL_PREFIX,
+        recordError(session, IssueKind.STATE_ACTIVE_COUNT_MISMATCH, errorCollector,
+            STATE_DETAIL_PREFIX,
             format("Discovery state active_count mismatch: expected %d, got %d",
                 session.rawItemCount, session.stateActiveCount));
       }
@@ -686,7 +814,7 @@ public class DiscoveryAnalyzer {
 
     if (session.sawDetailsRefs) {
       for (Entry<String, Set<String>> entry : session.matchedDevicesWithoutRefs.entrySet()) {
-        recordError(session, errorCollector, detailPrefix,
+        recordError(session, IssueKind.DEVICE_REFS_MISMATCH, errorCollector, detailPrefix,
             format("Device %s omitted refs in details scan (expected %d)",
                 entry.getKey(), entry.getValue().size()));
       }
@@ -734,7 +862,9 @@ public class DiscoveryAnalyzer {
     if (outputLogger == null) {
       return;
     }
-    DiscoveryScanSummary summary = buildScanSummary(session);
+    ScanStatus resolved = resolveStatus(session);
+    String status = resolved == null ? "PASSED" : resolved.value();
+    String depth = ofNullable(inferDepth(session)).map(Depth::value).orElse("unknown");
     String stateDesc = session.stateObserved
         ? format("%s(%s)",
             session.latestPhase == null ? "unknown" : session.latestPhase.value(),
@@ -746,86 +876,88 @@ public class DiscoveryAnalyzer {
     String line = format(
         "Discovery scan analysis [%s / %s @ %s]: status=%s, depth=%s, items=%d, "
             + "markers=%s, state=%s, matched=%d %s, missing=%d, extra=%d, errors=%d, warnings=%d",
-        summary.scannerDeviceId, summary.family, summary.generation, summary.status,
-        summary.inferredDepth, summary.receivedItemCount, markersDesc, stateDesc,
-        summary.matchedDevices.size(), summary.matchedDevices,
-        summary.missingDevices.size(), summary.extraAddrs.size(),
-        summary.errors.size(), summary.warnings.size());
-    if (!summary.errors.isEmpty()) {
+        session.key.scannerDeviceId, session.key.family, session.key.generationIso, status,
+        depth, session.rawItemCount, markersDesc, stateDesc,
+        session.matchedDevices.size(), session.matchedDevices,
+        session.missingDevices.size(), session.extraAddrs.size(),
+        session.errors.size(), session.warnings.size());
+    if (!session.errors.isEmpty()) {
       outputLogger.error("%s", line);
-      summary.errors.forEach(err -> outputLogger.error("  [error] %s", err));
-    } else if (!summary.warnings.isEmpty()) {
+      session.errors.forEach(err -> outputLogger.error("  [error] %s", err));
+    } else if (!session.warnings.isEmpty()) {
       outputLogger.warn(line);
     } else {
       outputLogger.notice(line);
     }
-    summary.warnings.forEach(warn -> outputLogger.warn("  [warning] " + warn));
+    session.warnings.forEach(warn -> outputLogger.warn("  [warning] " + warn));
   }
 
   private DiscoveryScanSummary buildScanSummary(DiscoveryScanSession session) {
     DiscoveryScanSummary summary = new DiscoveryScanSummary();
-    summary.scannerDeviceId = session.key.scannerDeviceId;
+    summary.scanner_device_id = session.key.scannerDeviceId;
     summary.family = session.key.family;
-    summary.generation = session.key.generationIso;
+    summary.generation = getDate(session.key.generationIso);
     summary.status = resolveStatus(session);
-    summary.inferredDepth = inferDepth(session);
-    summary.stateObserved = session.stateObserved;
-    summary.statePhases = new ArrayList<>(session.statePhases);
-    summary.stateActiveCount = session.stateActiveCount;
-    summary.startMarkerSeen = session.startMarkerSeen;
-    summary.endMarkerEventNo = session.endMarkerEventNo;
-    summary.receivedItemCount = session.rawItemCount;
-    summary.missingEventNos = new ArrayList<>(session.missingEventNos);
-    summary.duplicateEventNos = new ArrayList<>(session.duplicateEventNos);
-    summary.discoveredAddrs = new ArrayList<>(session.discoveredAddrs);
-    summary.duplicateAddrs = new ArrayList<>(session.duplicateAddrs);
-    summary.discoveredNetworks = new ArrayList<>(session.discoveredNetworks);
-    summary.duplicateNetworks = new ArrayList<>(session.duplicateNetworks);
-    summary.matchedDevices = new ArrayList<>(session.matchedDevices);
-    summary.missingDevices = new ArrayList<>(session.missingDevices);
-    summary.extraAddrs = new ArrayList<>(session.extraAddrs);
-    summary.errors = new ArrayList<>(session.errors);
-    summary.warnings = new ArrayList<>(session.warnings);
+    summary.depth = inferDepth(session);
+    summary.active_count = session.rawItemCount;
+    summary.missing_event_nos = emptyToNull(session.missingEventNos);
+    summary.duplicate_event_nos = emptyToNull(session.duplicateEventNos);
+    summary.duplicate_addrs = emptyToNull(session.duplicateAddrs);
+    summary.duplicate_networks = emptyToNull(session.duplicateNetworks);
+    summary.missing_devices = emptyToNull(session.missingDevices);
+    summary.extra_addrs = emptyToNull(session.extraAddrs);
+    summary.errors = emptyToNull(session.errors);
+    summary.warnings = emptyToNull(session.warnings);
     return summary;
   }
 
-  private String resolveStatus(DiscoveryScanSession session) {
+  private static <T> List<T> emptyToNull(Collection<T> items) {
+    return items == null || items.isEmpty() ? null : new ArrayList<>(items);
+  }
+
+  private ScanStatus resolveStatus(DiscoveryScanSession session) {
     if (!session.closed) {
-      return STATUS_IN_PROGRESS;
+      return ScanStatus.IN_PROGRESS;
     }
     if (session.incomplete) {
-      return STATUS_INCOMPLETE;
+      return ScanStatus.INCOMPLETE;
     }
     if (!session.errors.isEmpty()) {
-      return STATUS_FAILED;
+      return ScanStatus.FAILED;
     }
     if (!session.warnings.isEmpty()) {
-      return STATUS_PASSED_WITH_WARNINGS;
+      return ScanStatus.PASSED_WITH_WARNINGS;
     }
-    return STATUS_PASSED;
+    return null;
   }
 
-  private String inferDepth(DiscoveryScanSession session) {
+  private Depth inferDepth(DiscoveryScanSession session) {
     if (session.sawDetailsRefs) {
-      return "details";
+      return Depth.DETAILS;
     }
     if (session.sawSystemBlock) {
-      return "system";
+      return Depth.SYSTEM;
     }
     if (session.sawEntriesItem) {
-      return "entries";
+      return Depth.ENTRIES;
     }
     if (session.sawBucketsItem) {
-      return "buckets";
+      return Depth.BUCKETS;
     }
-    return "unknown";
+    return null;
   }
 
-  private void recordError(DiscoveryScanSession session, ErrorCollector errorCollector,
-      String detailPrefix, String message) {
-    session.errors.add(message);
+  private void recordError(DiscoveryScanSession session, IssueKind kind,
+      ErrorCollector errorCollector, String detailPrefix, String message) {
+    if (session.errors.add(message)) {
+      session.issueCounts.merge(kind, 1, Integer::sum);
+      if (session.firstErrorMessage == null) {
+        session.firstErrorMessage = message;
+        session.firstErrorPrefix = detailPrefix;
+      }
+    }
     if (errorCollector != null) {
-      errorCollector.addError(new ValidationException(message),
+      errorCollector.addMessageError(new ValidationException(message),
           Category.VALIDATION_DEVICE_CONTENT, format("%s: %s", detailPrefix, message));
     }
   }
@@ -903,6 +1035,45 @@ public class DiscoveryAnalyzer {
     return isoConvert(cleanDate(new Date(generation.getTime())));
   }
 
+  private enum IssueKind {
+    MISSING_ADDR_AND_NETWORK("events missing addr and network", EVENTS_DETAIL_PREFIX),
+    LATE_EVENT("events after scan closed", EVENTS_DETAIL_PREFIX),
+    DEVICE_SYSTEM_MISMATCH("device system metadata mismatch", EVENTS_DETAIL_PREFIX),
+    STATE_ACTIVE_COUNT_MISMATCH("state active_count mismatch", STATE_DETAIL_PREFIX),
+    MISSING_EVENT_NOS("missing event_no sequence gaps", EVENTS_DETAIL_PREFIX),
+    STATE_NOT_STOPPED("discovery state not stopped", STATE_DETAIL_PREFIX),
+    MISSING_START_MARKER("missing start marker", EVENTS_DETAIL_PREFIX),
+    END_MARKER_MISMATCH("end marker count mismatch", EVENTS_DETAIL_PREFIX),
+    MISSING_END_MARKER("missing end marker", EVENTS_DETAIL_PREFIX),
+    DEVICE_NETWORK_MISMATCH("device network mismatch", EVENTS_DETAIL_PREFIX),
+    DEVICE_FAMILY_ADDR_MISMATCH("device family addr mismatch", EVENTS_DETAIL_PREFIX),
+    DEVICE_REFS_MISMATCH("device refs mismatch", EVENTS_DETAIL_PREFIX),
+    DUPLICATE_EVENT_NO("duplicate event_no", EVENTS_DETAIL_PREFIX),
+    DUPLICATE_ADDR("duplicate discovered addr", EVENTS_DETAIL_PREFIX),
+    DUPLICATE_NETWORK("duplicate discovered network", EVENTS_DETAIL_PREFIX),
+    DUPLICATE_START_MARKER("duplicate start marker", EVENTS_DETAIL_PREFIX),
+    DUPLICATE_END_MARKER("duplicate end marker", EVENTS_DETAIL_PREFIX),
+    INVALID_START_MARKER("invalid start marker payload", EVENTS_DETAIL_PREFIX),
+    INVALID_END_MARKER("invalid end marker payload", EVENTS_DETAIL_PREFIX),
+    MISSING_EVENT_NO("active events missing event_no", EVENTS_DETAIL_PREFIX),
+    EVENT_ERROR_STATUS("discovery event error status", EVENTS_DETAIL_PREFIX),
+    STATE_ERROR_STATUS("discovery state error status", STATE_DETAIL_PREFIX),
+    INVALID_ADDR("invalid discovered addr", EVENTS_DETAIL_PREFIX),
+    INVALID_NETWORK("invalid discovered network", EVENTS_DETAIL_PREFIX),
+    INVALID_REF("invalid discovered ref", EVENTS_DETAIL_PREFIX),
+    UNKNOWN_DISCOVERED_FAMILY("unknown family in families map", EVENTS_DETAIL_PREFIX),
+    INVALID_FAMILY_ENDPOINT("invalid family addr/port", EVENTS_DETAIL_PREFIX),
+    UNEXPECTED_BUCKETS_PAYLOAD("unexpected system/refs in buckets scan", EVENTS_DETAIL_PREFIX);
+
+    private final String summaryLabel;
+    private final String detailPrefix;
+
+    IssueKind(String summaryLabel, String detailPrefix) {
+      this.summaryLabel = summaryLabel;
+      this.detailPrefix = detailPrefix;
+    }
+  }
+
   /**
    * Comparable key identifying a single active discovery scan.
    */
@@ -967,6 +1138,7 @@ public class DiscoveryAnalyzer {
     private final List<String> statePhases = new ArrayList<>();
     private final Set<String> errors = new LinkedHashSet<>();
     private final Set<String> warnings = new LinkedHashSet<>();
+    private final EnumMap<IssueKind, Integer> issueCounts = new EnumMap<>(IssueKind.class);
 
     private boolean activated;
     private boolean closed;
@@ -982,95 +1154,11 @@ public class DiscoveryAnalyzer {
     private boolean sawEntriesItem;
     private boolean sawSystemBlock;
     private boolean sawDetailsRefs;
+    private String firstErrorMessage;
+    private String firstErrorPrefix;
 
     private DiscoveryScanSession(ScanKey key) {
       this.key = key;
     }
-  }
-
-  /**
-   * High-level discovery analysis report written to discovery_analysis.json.
-   */
-  @JsonInclude(Include.NON_NULL)
-  public static class DiscoveryAnalysisReport {
-
-    @JsonProperty("timestamp")
-    public Date timestamp;
-
-    @JsonProperty("scans")
-    public List<DiscoveryScanSummary> scans;
-  }
-
-  /**
-   * High-level summary of a single active discovery scan.
-   */
-  @JsonInclude(Include.NON_NULL)
-  public static class DiscoveryScanSummary {
-
-    @JsonProperty("scanner_device_id")
-    public String scannerDeviceId;
-
-    @JsonProperty("family")
-    public String family;
-
-    @JsonProperty("generation")
-    public String generation;
-
-    @JsonProperty("status")
-    public String status;
-
-    @JsonProperty("inferred_depth")
-    public String inferredDepth;
-
-    @JsonProperty("state_observed")
-    public boolean stateObserved;
-
-    @JsonProperty("state_phases")
-    public List<String> statePhases;
-
-    @JsonProperty("state_active_count")
-    public Integer stateActiveCount;
-
-    @JsonProperty("start_marker_seen")
-    public boolean startMarkerSeen;
-
-    @JsonProperty("end_marker_event_no")
-    public Integer endMarkerEventNo;
-
-    @JsonProperty("received_item_count")
-    public int receivedItemCount;
-
-    @JsonProperty("missing_event_nos")
-    public List<Integer> missingEventNos;
-
-    @JsonProperty("duplicate_event_nos")
-    public List<Integer> duplicateEventNos;
-
-    @JsonProperty("discovered_addrs")
-    public List<String> discoveredAddrs;
-
-    @JsonProperty("duplicate_addrs")
-    public List<String> duplicateAddrs;
-
-    @JsonProperty("discovered_networks")
-    public List<String> discoveredNetworks;
-
-    @JsonProperty("duplicate_networks")
-    public List<String> duplicateNetworks;
-
-    @JsonProperty("matched_devices")
-    public List<String> matchedDevices;
-
-    @JsonProperty("missing_devices")
-    public List<String> missingDevices;
-
-    @JsonProperty("extra_addrs")
-    public List<String> extraAddrs;
-
-    @JsonProperty("errors")
-    public List<String> errors;
-
-    @JsonProperty("warnings")
-    public List<String> warnings;
   }
 }

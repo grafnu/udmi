@@ -1,33 +1,51 @@
 package com.google.daq.mqtt.validator;
 
 import static com.google.daq.mqtt.validator.DiscoveryAnalyzer.DISCOVERY_ANALYSIS_FILENAME;
+import static com.google.udmi.util.Common.PUBLISH_TIME_KEY;
 import static com.google.udmi.util.Common.SUBFOLDER_PROPERTY_KEY;
 import static com.google.udmi.util.Common.SUBTYPE_PROPERTY_KEY;
 import static com.google.udmi.util.JsonUtil.OBJECT_MAPPER;
 import static com.google.udmi.util.JsonUtil.getDate;
+import static com.google.udmi.util.JsonUtil.isoConvert;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Sets;
 import com.google.daq.mqtt.TestCommon;
-import com.google.daq.mqtt.validator.DiscoveryAnalyzer.DiscoveryAnalysisReport;
-import com.google.daq.mqtt.validator.DiscoveryAnalyzer.DiscoveryScanSummary;
+import com.google.daq.mqtt.util.ConfigUtil;
+import com.google.daq.mqtt.util.MessagePublisher;
 import com.google.daq.mqtt.validator.DiscoveryAnalyzer.ScanKey;
 import com.google.daq.mqtt.validator.Validator.MessageBundle;
+import com.google.udmi.util.MessageValidator;
 import com.google.udmi.util.SiteModel;
+import com.networknt.schema.JsonSchema;
+import com.networknt.schema.ValidationMessage;
 import java.io.File;
+import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
+import java.util.Set;
 import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+import udmi.schema.Category;
+import udmi.schema.DeviceValidationEvents;
+import udmi.schema.DiscoveryAnalysis;
 import udmi.schema.DiscoveryEvents;
+import udmi.schema.DiscoveryScanSummary;
+import udmi.schema.DiscoveryScanSummary.ScanStatus;
 import udmi.schema.DiscoveryState;
 import udmi.schema.Entry;
+import udmi.schema.Enumerations.Depth;
 import udmi.schema.FamilyDiscovery;
 import udmi.schema.FamilyDiscoveryState;
 import udmi.schema.FamilyDiscoveryState.Phase;
@@ -90,29 +108,29 @@ public class DiscoveryValidatorTest extends TestBase {
 
     File analysisFile = new File(TestCommon.SITE_DIR, "out/" + DISCOVERY_ANALYSIS_FILENAME);
     assertTrue("discovery_analysis.json should exist", analysisFile.exists());
-    DiscoveryAnalysisReport report = OBJECT_MAPPER.readValue(
-        analysisFile, DiscoveryAnalysisReport.class);
+    JsonNode rawReport = validateAnalysisSchemaAndNoEmptyArrays(analysisFile);
+    assertEquals(
+        Set.of("scanner_device_id", "family", "generation", "depth", "active_count"),
+        Sets.newHashSet(rawReport.get("scans").get(0).fieldNames()));
+
+    DiscoveryAnalysis report = OBJECT_MAPPER.readValue(analysisFile, DiscoveryAnalysis.class);
+    assertEquals(ConfigUtil.UDMI_VERSION, report.version);
     assertEquals(1, report.scans.size());
     DiscoveryScanSummary summary = report.scans.get(0);
-    assertEquals("PASSED", summary.status);
-    assertEquals("details", summary.inferredDepth);
-    assertEquals(3, summary.receivedItemCount);
-    assertTrue(summary.startMarkerSeen);
-    assertEquals(Integer.valueOf(-4), summary.endMarkerEventNo);
-    assertEquals(Integer.valueOf(3), summary.stateActiveCount);
-    assertEquals(List.of("pending", "active", "stopped"), summary.statePhases);
-    assertEquals(List.of("AHU-1", "AHU-22", "GAT-123"), summary.matchedDevices);
-    assertTrue(summary.missingDevices.isEmpty());
-    assertTrue(summary.extraAddrs.isEmpty());
-    assertTrue(summary.errors.isEmpty());
-    assertTrue(summary.warnings.isEmpty());
+    assertNull(summary.status);
+    assertEquals(Depth.DETAILS, summary.depth);
+    assertEquals(Integer.valueOf(3), summary.active_count);
+    assertNull(summary.missing_devices);
+    assertNull(summary.extra_addrs);
+    assertNull(summary.errors);
+    assertNull(summary.warnings);
 
     ValidationState validationReport = getValidationReport();
     assertFalse(validationReport.summary.error_devices.contains(TestCommon.GATEWAY_ID));
   }
 
   @Test
-  public void partialScanProducesWarningsNotErrors() {
+  public void partialScanProducesWarningsNotErrors() throws Exception {
     Validator validator = new Validator(TEST_ARGS).prepForMock();
     Date generation = getDate(SCAN_GEN_ISO);
 
@@ -127,14 +145,17 @@ public class DiscoveryValidatorTest extends TestBase {
     sendMarker(validator, TestCommon.GATEWAY_ID, BACNET_FAMILY, generation, -3);
     sendState(validator, TestCommon.GATEWAY_ID, Phase.STOPPED, generation, 2);
 
-    DiscoveryAnalysisReport report = validator.getDiscoveryAnalyzer().getAnalysisReport();
+    File analysisFile = new File(TestCommon.SITE_DIR, "out/" + DISCOVERY_ANALYSIS_FILENAME);
+    validateAnalysisSchemaAndNoEmptyArrays(analysisFile);
+
+    DiscoveryAnalysis report = validator.getDiscoveryAnalyzer().getAnalysisReport();
     assertEquals(1, report.scans.size());
     DiscoveryScanSummary summary = report.scans.get(0);
-    assertEquals("PASSED_WITH_WARNINGS", summary.status);
-    assertEquals(List.of("AHU-1"), summary.matchedDevices);
-    assertEquals(List.of("AHU-22", "GAT-123"), summary.missingDevices);
-    assertEquals(List.of("99999"), summary.extraAddrs);
-    assertTrue(summary.errors.isEmpty());
+    assertEquals(ScanStatus.PASSED_WITH_WARNINGS, summary.status);
+    assertEquals(Integer.valueOf(2), summary.active_count);
+    assertEquals(List.of("AHU-22", "GAT-123"), summary.missing_devices);
+    assertEquals(List.of("99999"), summary.extra_addrs);
+    assertNull(summary.errors);
     assertEquals(2, summary.warnings.size());
 
     ValidationState validationReport = getValidationReport();
@@ -158,10 +179,9 @@ public class DiscoveryValidatorTest extends TestBase {
 
     DiscoveryScanSummary summary = validator.getDiscoveryAnalyzer().getAnalysisReport()
         .scans.get(0);
-    assertEquals("PASSED_WITH_WARNINGS", summary.status);
-    assertTrue(summary.stateObserved);
-    assertEquals(Integer.valueOf(1), summary.stateActiveCount);
-    assertTrue(summary.errors.isEmpty());
+    assertEquals(ScanStatus.PASSED_WITH_WARNINGS, summary.status);
+    assertEquals(Integer.valueOf(1), summary.active_count);
+    assertNull(summary.errors);
   }
 
   @Test
@@ -174,13 +194,13 @@ public class DiscoveryValidatorTest extends TestBase {
     File analysisFile = new File(TestCommon.SITE_DIR, "out/" + DISCOVERY_ANALYSIS_FILENAME);
     assertFalse("Stale STOPPED state must not create discovery_analysis.json",
         analysisFile.exists());
-    assertTrue(validator.getDiscoveryAnalyzer().getAnalysisReport().scans.isEmpty());
+    assertNull(validator.getDiscoveryAnalyzer().getAnalysisReport().scans);
     ValidationState validationReport = getValidationReport();
     assertFalse(validationReport.summary.error_devices.contains(TestCommon.GATEWAY_ID));
   }
 
   @Test
-  public void matchedDeviceMismatchesAndExactRefsEnforced() {
+  public void matchedDeviceMismatchesAndExactRefsEnforced() throws Exception {
     Validator validator = new Validator(TEST_ARGS).prepForMock();
     Date generation = getDate(SCAN_GEN_ISO);
 
@@ -204,9 +224,12 @@ public class DiscoveryValidatorTest extends TestBase {
     sendMarker(validator, TestCommon.GATEWAY_ID, BACNET_FAMILY, generation, -2);
     sendState(validator, TestCommon.GATEWAY_ID, Phase.STOPPED, generation, 1);
 
+    File analysisFile = new File(TestCommon.SITE_DIR, "out/" + DISCOVERY_ANALYSIS_FILENAME);
+    validateAnalysisSchemaAndNoEmptyArrays(analysisFile);
+
     DiscoveryScanSummary summary = validator.getDiscoveryAnalyzer().getAnalysisReport()
         .scans.get(0);
-    assertEquals("FAILED", summary.status);
+    assertEquals(ScanStatus.FAILED, summary.status);
     assertTrue(summary.errors.stream().anyMatch(e -> e.contains("network mismatch")));
     assertTrue(summary.errors.stream().anyMatch(e -> e.contains("system.name mismatch")));
     assertTrue(summary.errors.stream().anyMatch(e -> e.contains("system.hardware.make mismatch")));
@@ -217,7 +240,7 @@ public class DiscoveryValidatorTest extends TestBase {
   }
 
   @Test
-  public void sequenceGapsDuplicatesAndActiveCountMismatchDetected() {
+  public void sequenceGapsDuplicatesAndActiveCountMismatchDetected() throws Exception {
     Validator validator = new Validator(TEST_ARGS).prepForMock();
     Date generation = getDate(SCAN_GEN_ISO);
 
@@ -234,12 +257,14 @@ public class DiscoveryValidatorTest extends TestBase {
     sendMarker(validator, TestCommon.GATEWAY_ID, BACNET_FAMILY, generation, -9);
     sendState(validator, TestCommon.GATEWAY_ID, Phase.STOPPED, generation, 5);
 
+    File analysisFile = new File(TestCommon.SITE_DIR, "out/" + DISCOVERY_ANALYSIS_FILENAME);
+    validateAnalysisSchemaAndNoEmptyArrays(analysisFile);
+
     DiscoveryScanSummary summary = validator.getDiscoveryAnalyzer().getAnalysisReport()
         .scans.get(0);
-    assertEquals("FAILED", summary.status);
-    assertFalse(summary.startMarkerSeen);
-    assertEquals(List.of(2), summary.missingEventNos);
-    assertEquals(List.of("27312"), summary.duplicateAddrs);
+    assertEquals(ScanStatus.FAILED, summary.status);
+    assertEquals(List.of(2), summary.missing_event_nos);
+    assertEquals(List.of("27312"), summary.duplicate_addrs);
     assertTrue(summary.errors.stream().anyMatch(e -> e.contains("Missing discovery start marker")));
     assertTrue(summary.errors.stream().anyMatch(e -> e.contains("Missing discovery event_no")));
     assertTrue(summary.errors.stream().anyMatch(e -> e.contains("Duplicate discovered addr")));
@@ -271,12 +296,13 @@ public class DiscoveryValidatorTest extends TestBase {
     Validator validator = new Validator(traceArgs);
     validator.messageLoop();
 
-    DiscoveryAnalysisReport report = validator.getDiscoveryAnalyzer().getAnalysisReport();
+    DiscoveryAnalysis report = validator.getDiscoveryAnalyzer().getAnalysisReport();
     assertEquals(1, report.scans.size());
     DiscoveryScanSummary summary = report.scans.get(0);
-    assertEquals("INCOMPLETE", summary.status);
-    assertEquals("buckets", summary.inferredDepth);
-    assertEquals(List.of("9288"), summary.discoveredNetworks);
+    assertEquals(ScanStatus.INCOMPLETE, summary.status);
+    assertEquals(Depth.BUCKETS, summary.depth);
+    assertTrue(summary.warnings.stream().anyMatch(
+        w -> w.contains("Site model networks not discovered: 9289")));
     assertTrue(summary.errors.stream().anyMatch(e -> e.contains("Missing discovery end marker")));
     assertTrue(summary.errors.stream().anyMatch(e -> e.contains("stopped phase")));
   }
@@ -296,7 +322,7 @@ public class DiscoveryValidatorTest extends TestBase {
 
     DiscoveryScanSummary summary = validator.getDiscoveryAnalyzer().getAnalysisReport()
         .scans.get(0);
-    assertEquals("FAILED", summary.status);
+    assertEquals(ScanStatus.FAILED, summary.status);
     assertTrue(summary.errors.stream().anyMatch(e -> e.contains("Missing discovery end marker")));
   }
 
@@ -324,7 +350,7 @@ public class DiscoveryValidatorTest extends TestBase {
         "-s", "--");
     Validator validator = new Validator(noSiteArgs).prepForMock();
     validator.validateMessage(makeBundle("SPT-99", EVENTS_SUBTYPE, DISCOVERY_SUBFOLDER, selfEnum));
-    assertTrue(validator.getDiscoveryAnalyzer().getAnalysisReport().scans.isEmpty());
+    assertNull(validator.getDiscoveryAnalyzer().getAnalysisReport().scans);
 
     // Active scan from unregistered scanner works without siteModel
     sendState(validator, "SPT-99", Phase.ACTIVE, generation, 0);
@@ -337,10 +363,14 @@ public class DiscoveryValidatorTest extends TestBase {
 
     DiscoveryScanSummary summary = validator.getDiscoveryAnalyzer().getAnalysisReport()
         .scans.get(0);
-    assertEquals("PASSED", summary.status);
-    assertEquals("SPT-99", summary.scannerDeviceId);
-    assertEquals(List.of("12345"), summary.discoveredAddrs);
+    assertNull(summary.status);
+    assertEquals("SPT-99", summary.scanner_device_id);
+    assertEquals(Depth.ENTRIES, summary.depth);
+    assertEquals(Integer.valueOf(1), summary.active_count);
     assertTrue(noSiteOut.exists());
+    JsonNode rawReport = validateAnalysisSchemaAndNoEmptyArrays(noSiteOut);
+    assertFalse(rawReport.get("scans").get(0).has("discovered_addrs"));
+    assertFalse(rawReport.get("scans").get(0).has("discovered_networks"));
   }
 
   @Test
@@ -356,10 +386,9 @@ public class DiscoveryValidatorTest extends TestBase {
 
     DiscoveryScanSummary summary = validator.getDiscoveryAnalyzer().getAnalysisReport()
         .scans.get(0);
-    assertEquals("PASSED_WITH_WARNINGS", summary.status);
-    assertEquals("SPT-99", summary.scannerDeviceId);
-    assertEquals(List.of("AHU-1"), summary.matchedDevices);
-    assertEquals(List.of("AHU-22", "GAT-123"), summary.missingDevices);
+    assertEquals(ScanStatus.PASSED_WITH_WARNINGS, summary.status);
+    assertEquals("SPT-99", summary.scanner_device_id);
+    assertEquals(List.of("AHU-22", "GAT-123"), summary.missing_devices);
   }
 
   @Test
@@ -376,8 +405,8 @@ public class DiscoveryValidatorTest extends TestBase {
 
     DiscoveryScanSummary summary = validator.getDiscoveryAnalyzer().getAnalysisReport()
         .scans.get(0);
-    assertEquals("FAILED", summary.status);
-    assertEquals("details", summary.inferredDepth);
+    assertEquals(ScanStatus.FAILED, summary.status);
+    assertEquals(Depth.DETAILS, summary.depth);
     assertTrue(summary.errors.stream().anyMatch(
         e -> e.contains("Device AHU-1 omitted refs in details scan")));
   }
@@ -414,14 +443,15 @@ public class DiscoveryValidatorTest extends TestBase {
 
     File analysisFile = new File(TestCommon.SITE_DIR, "out/" + DISCOVERY_ANALYSIS_FILENAME);
     assertTrue(analysisFile.exists());
-    DiscoveryAnalysisReport report = OBJECT_MAPPER.readValue(
-        analysisFile, DiscoveryAnalysisReport.class);
+    validateAnalysisSchemaAndNoEmptyArrays(analysisFile);
+    DiscoveryAnalysis report = OBJECT_MAPPER.readValue(analysisFile, DiscoveryAnalysis.class);
     assertEquals(1, report.scans.size());
     DiscoveryScanSummary summary = report.scans.get(0);
-    assertEquals("PASSED", summary.status);
-    assertEquals("details", summary.inferredDepth);
-    assertEquals(List.of("AHU-1", "AHU-22", "GAT-123"), summary.matchedDevices);
-    assertTrue(summary.errors.isEmpty());
+    assertNull(summary.status);
+    assertEquals(Depth.DETAILS, summary.depth);
+    assertEquals(Integer.valueOf(3), summary.active_count);
+    assertNull(summary.errors);
+    assertNull(summary.warnings);
   }
 
   @Test
@@ -449,10 +479,173 @@ public class DiscoveryValidatorTest extends TestBase {
 
     DiscoveryScanSummary summary = validator.getDiscoveryAnalyzer().getAnalysisReport()
         .scans.get(0);
-    assertEquals("FAILED", summary.status);
+    assertEquals(ScanStatus.FAILED, summary.status);
     assertTrue(summary.errors.stream().anyMatch(e -> e.contains("point read timed out")));
     assertTrue(summary.errors.stream().anyMatch(e -> e.contains("Unknown family bogus_family")));
     assertTrue(summary.errors.stream().anyMatch(e -> e.contains("Invalid ref INVALID:1")));
+  }
+
+  @Test
+  public void multiScanErrorsProduceTractableDeviceStatusSummary() throws Exception {
+    Validator validator = new Validator(TEST_ARGS).prepForMock();
+    Date gen1 = getDate("2026-11-18T21:00:00Z");
+
+    // Scan 1 (ether): unknown depth (events missing addr and network x3)
+    DiscoveryState etherActive = buildDiscoveryState("ether", Phase.ACTIVE, gen1, 0);
+    validator.validateMessage(makeBundle(TestCommon.GATEWAY_ID, STATE_SUBTYPE,
+        DISCOVERY_SUBFOLDER, etherActive));
+    sendMarker(validator, TestCommon.GATEWAY_ID, "ether", gen1, 0);
+    for (int i = 1; i <= 3; i++) {
+      validator.validateMessage(makeBundle(TestCommon.GATEWAY_ID, EVENTS_SUBTYPE,
+          DISCOVERY_SUBFOLDER, baseDiscoveryEvent("ether", gen1, i)));
+    }
+    sendMarker(validator, TestCommon.GATEWAY_ID, "ether", gen1, -4);
+    DiscoveryState etherStopped = buildDiscoveryState("ether", Phase.STOPPED, gen1, 3);
+    validator.validateMessage(makeBundle(TestCommon.GATEWAY_ID, STATE_SUBTYPE,
+        DISCOVERY_SUBFOLDER, etherStopped));
+
+    // Scan 2 (bacnet): missing start marker + mismatched network
+    Date gen2 = getDate("2026-11-18T22:00:00Z");
+    sendState(validator, TestCommon.GATEWAY_ID, Phase.ACTIVE, gen2, 0);
+    DiscoveryEvents badAhu = baseDiscoveryEvent(BACNET_FAMILY, gen2, 1);
+    badAhu.addr = "27312";
+    badAhu.network = "9999";
+    validator.validateMessage(makeBundle(TestCommon.GATEWAY_ID, EVENTS_SUBTYPE,
+        DISCOVERY_SUBFOLDER, badAhu));
+    sendMarker(validator, TestCommon.GATEWAY_ID, BACNET_FAMILY, gen2, -2);
+    sendState(validator, TestCommon.GATEWAY_ID, Phase.STOPPED, gen2, 1);
+
+    File analysisFile = new File(TestCommon.SITE_DIR, "out/" + DISCOVERY_ANALYSIS_FILENAME);
+    final JsonNode rawReport = validateAnalysisSchemaAndNoEmptyArrays(analysisFile);
+    // Scan 1 (ether, index 1 after alphabetical family sort) has unknown depth -> omitted
+    DiscoveryAnalysis report = OBJECT_MAPPER.readValue(analysisFile, DiscoveryAnalysis.class);
+    assertEquals(2, report.scans.size());
+    DiscoveryScanSummary etherScan = report.scans.stream()
+        .filter(s -> "ether".equals(s.family)).findFirst().orElseThrow();
+    assertNull(etherScan.depth);
+    assertEquals(3, etherScan.errors.size());
+    assertFalse(rawReport.get("scans").get(1).has("depth"));
+
+    ValidationState validationReport = getValidationReport();
+    DeviceValidationEvents gatValidation = validationReport.devices.get(TestCommon.GATEWAY_ID);
+    assertEquals(Category.VALIDATION_DEVICE_MULTIPLE, gatValidation.status.category);
+    assertEquals("Multiple validation errors", gatValidation.status.message);
+    assertEquals(
+        "Discovery errors across 2/2 scans (bacnet: 1, ether: 1); "
+            + "events missing addr and network (x3); "
+            + "missing start marker (x1); "
+            + "device network mismatch (x1)",
+        gatValidation.status.detail);
+  }
+
+  @Test
+  public void startupBufferReordersOutOfOrderBacklogThenStreamsLive() throws Exception {
+    final Date gen1 = getDate("2026-11-18T21:00:00Z");
+    final Instant baseTs = Instant.parse("2026-11-18T21:00:00Z");
+
+    // Negative check: without -b, out-of-order delivery fails with late-event errors
+    Queue<MessageBundle> unbufferedLive = buildOutOfOrderBacklog(gen1, baseTs);
+    MessagePublisher unbufferedMock = new TwoPhaseMockPublisher(new ArrayDeque<>(), unbufferedLive);
+    Validator unbufferedValidator = new Validator();
+    unbufferedValidator.setPubSubClientFactory(
+        (projectId, registryId, subscriptionId, updateTopic, reflect, reset) -> unbufferedMock);
+    unbufferedValidator.processArgs(ImmutableList.of(
+        TestCommon.SITE_DIR, "-p", SiteModel.MOCK_PROJECT, "-a", TestCommon.SCHEMA_SPEC,
+        "-t", "mock-sub", "-R", TestCommon.GATEWAY_ID)).execute();
+    DiscoveryScanSummary unbufferedScan = unbufferedValidator.getDiscoveryAnalyzer()
+        .getAnalysisReport().scans.get(0);
+    assertEquals(ScanStatus.FAILED, unbufferedScan.status);
+    assertTrue(unbufferedScan.errors.stream().anyMatch(
+        err -> err.contains("arrived after scan closed")));
+
+    // Positive check: with -b 1, startup backlog is sorted before replay and live scan follows
+    Queue<MessageBundle> backlog = buildOutOfOrderBacklog(gen1, baseTs);
+
+    // Post-buffer live scan (gen2) delivered once startup buffer window ends
+    Date gen2 = getDate("2026-11-18T22:00:00Z");
+    Queue<MessageBundle> liveQueue = new ArrayDeque<>();
+    liveQueue.add(timedBundle(TestCommon.GATEWAY_ID, STATE_SUBTYPE, DISCOVERY_SUBFOLDER,
+        buildDiscoveryState(BACNET_FAMILY, Phase.ACTIVE, gen2, 0),
+        baseTs.plusSeconds(3600), baseTs.plusSeconds(3600)));
+    liveQueue.add(timedBundle(TestCommon.GATEWAY_ID, EVENTS_SUBTYPE, DISCOVERY_SUBFOLDER,
+        baseDiscoveryEvent(BACNET_FAMILY, gen2, 0),
+        baseTs.plusSeconds(3601), baseTs.plusSeconds(3601)));
+    liveQueue.add(timedBundle(TestCommon.GATEWAY_ID, EVENTS_SUBTYPE, DISCOVERY_SUBFOLDER,
+        buildAhu1Event(gen2, 1, true),
+        baseTs.plusSeconds(3602), baseTs.plusSeconds(3602)));
+    liveQueue.add(timedBundle(TestCommon.GATEWAY_ID, EVENTS_SUBTYPE, DISCOVERY_SUBFOLDER,
+        buildAhu22Event(gen2, 2),
+        baseTs.plusSeconds(3603), baseTs.plusSeconds(3603)));
+    liveQueue.add(timedBundle(TestCommon.GATEWAY_ID, EVENTS_SUBTYPE, DISCOVERY_SUBFOLDER,
+        buildGat123Event(gen2, 3),
+        baseTs.plusSeconds(3604), baseTs.plusSeconds(3604)));
+    liveQueue.add(timedBundle(TestCommon.GATEWAY_ID, EVENTS_SUBTYPE, DISCOVERY_SUBFOLDER,
+        baseDiscoveryEvent(BACNET_FAMILY, gen2, -4),
+        baseTs.plusSeconds(3605), baseTs.plusSeconds(3605)));
+    liveQueue.add(timedBundle(TestCommon.GATEWAY_ID, STATE_SUBTYPE, DISCOVERY_SUBFOLDER,
+        buildDiscoveryState(BACNET_FAMILY, Phase.STOPPED, gen2, 3),
+        baseTs.plusSeconds(3606), baseTs.plusSeconds(3606)));
+
+    MessagePublisher mockPubSub = new TwoPhaseMockPublisher(backlog, liveQueue);
+    Validator.PubSubClientFactory factory =
+        (projectId, registryId, subscriptionId, updateTopic, reflect, reset) -> mockPubSub;
+
+    List<String> args = ImmutableList.of(
+        TestCommon.SITE_DIR,
+        "-p", SiteModel.MOCK_PROJECT,
+        "-a", TestCommon.SCHEMA_SPEC,
+        "-t", "mock-sub",
+        "-R",
+        "-b", "1",
+        TestCommon.GATEWAY_ID);
+
+    Validator bufferedValidator = new Validator();
+    bufferedValidator.setPubSubClientFactory(factory);
+    bufferedValidator.processArgs(args).execute();
+
+    DiscoveryAnalysis report = bufferedValidator.getDiscoveryAnalyzer().getAnalysisReport();
+    assertEquals(2, report.scans.size());
+    for (DiscoveryScanSummary scan : report.scans) {
+      assertNull("Both buffered and live scans should pass cleanly", scan.status);
+      assertNull(scan.errors);
+      assertEquals(Integer.valueOf(3), scan.active_count);
+    }
+  }
+
+  private Queue<MessageBundle> buildOutOfOrderBacklog(Date generation, Instant baseTs) {
+    Queue<MessageBundle> backlog = new ArrayDeque<>();
+    backlog.add(timedBundle(TestCommon.GATEWAY_ID, STATE_SUBTYPE, DISCOVERY_SUBFOLDER,
+        buildDiscoveryState(BACNET_FAMILY, Phase.STOPPED, generation, 3),
+        baseTs.plusSeconds(2), baseTs.plusMillis(2500)));
+    backlog.add(timedBundle(TestCommon.GATEWAY_ID, EVENTS_SUBTYPE, DISCOVERY_SUBFOLDER,
+        baseDiscoveryEvent(BACNET_FAMILY, generation, -4),
+        baseTs.plusSeconds(2), baseTs.plusMillis(2200)));
+    backlog.add(timedBundle(TestCommon.GATEWAY_ID, EVENTS_SUBTYPE, DISCOVERY_SUBFOLDER,
+        buildGat123Event(generation, 3),
+        baseTs.plusSeconds(1), baseTs.plusMillis(1300)));
+    backlog.add(timedBundle(TestCommon.GATEWAY_ID, EVENTS_SUBTYPE, DISCOVERY_SUBFOLDER,
+        buildAhu22Event(generation, 2),
+        baseTs.plusSeconds(1), baseTs.plusMillis(1200)));
+    backlog.add(timedBundle(TestCommon.GATEWAY_ID, EVENTS_SUBTYPE, DISCOVERY_SUBFOLDER,
+        buildAhu1Event(generation, 1, true),
+        baseTs.plusSeconds(1), baseTs.plusMillis(1100)));
+    backlog.add(timedBundle(TestCommon.GATEWAY_ID, EVENTS_SUBTYPE, DISCOVERY_SUBFOLDER,
+        baseDiscoveryEvent(BACNET_FAMILY, generation, 0),
+        baseTs, baseTs.plusMillis(100)));
+    return backlog;
+  }
+
+  private MessageBundle timedBundle(String deviceId, String subType, String subFolder,
+      Object messageObj, Instant payloadInstant, Instant publishInstant) {
+    MessageBundle bundle = getMessageBundle(subType, subFolder, messageObj);
+    bundle.attributes.put("deviceId", deviceId);
+    bundle.attributes.put(SUBTYPE_PROPERTY_KEY, subType);
+    bundle.attributes.put(SUBFOLDER_PROPERTY_KEY, subFolder);
+    String secIso = isoConvert(Date.from(payloadInstant));
+    bundle.message.put("timestamp", secIso);
+    bundle.attributes.put(PUBLISH_TIME_KEY, secIso);
+    bundle.timestamp = publishInstant.toString();
+    return bundle;
   }
 
   private void sendState(Validator validator, String deviceId, Phase phase, Date generation,
@@ -589,5 +782,80 @@ public class DiscoveryValidatorTest extends TestBase {
     advanceClockSec(1);
     MessageBundle bundle = getMessageBundle(EVENTS_SUBTYPE, DISCOVERY_SUBFOLDER, messageObj);
     OBJECT_MAPPER.writeValue(new File(deviceDir, fileName), bundle.message);
+  }
+
+  private JsonNode validateAnalysisSchemaAndNoEmptyArrays(File analysisFile) throws Exception {
+    JsonNode rawReport = OBJECT_MAPPER.readTree(analysisFile);
+    assertNoEmptyArrays(rawReport);
+    JsonSchema schema = MessageValidator.getSchema(
+        new File(TestCommon.SCHEMA_SPEC, "analysis_discovery.json"));
+    Set<ValidationMessage> errors = schema.validate(rawReport);
+    assertTrue("analysis_discovery.json schema violations: " + errors, errors.isEmpty());
+    return rawReport;
+  }
+
+  private void assertNoEmptyArrays(JsonNode node) {
+    if (node.isArray()) {
+      assertFalse("Serialized JSON must not contain empty arrays", node.isEmpty());
+      node.forEach(this::assertNoEmptyArrays);
+    } else if (node.isObject()) {
+      node.fields().forEachRemaining(entry -> assertNoEmptyArrays(entry.getValue()));
+    }
+  }
+
+  private static final class TwoPhaseMockPublisher implements MessagePublisher {
+
+    private final Queue<MessageBundle> backlog;
+    private final Queue<MessageBundle> liveQueue;
+    private boolean active = true;
+
+    private TwoPhaseMockPublisher(Queue<MessageBundle> backlog, Queue<MessageBundle> liveQueue) {
+      this.backlog = backlog;
+      this.liveQueue = liveQueue;
+    }
+
+    @Override
+    public String publish(String deviceId, String topic, String data) {
+      return null;
+    }
+
+    @Override
+    public void close() {
+      active = false;
+    }
+
+    @Override
+    public String getSubscriptionId() {
+      return "projects/mock/subscriptions/mock-sub";
+    }
+
+    @Override
+    public void activate() {
+    }
+
+    @Override
+    public boolean isActive() {
+      return active;
+    }
+
+    @Override
+    public MessageBundle takeNextMessage(QuerySpeed querySpeed) {
+      if (querySpeed == QuerySpeed.QUICK) {
+        if (!backlog.isEmpty()) {
+          return backlog.poll();
+        }
+        try {
+          Thread.sleep(250);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+        return null;
+      }
+      if (!liveQueue.isEmpty()) {
+        return liveQueue.poll();
+      }
+      active = false;
+      return null;
+    }
   }
 }

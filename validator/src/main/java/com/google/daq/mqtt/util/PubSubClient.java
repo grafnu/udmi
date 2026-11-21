@@ -236,7 +236,12 @@ public class PubSubClient implements MessagePublisher, MessageHandler {
   @Override
   public Validator.MessageBundle takeNextMessage(QuerySpeed speed) {
     try {
-      PubsubMessage message = messages.take();
+      PubsubMessage message = speed == QuerySpeed.DYNAMIC
+          ? messages.take()
+          : messages.poll(speed.seconds(), TimeUnit.SECONDS);
+      if (message == null) {
+        return null;
+      }
       long seconds = message.getPublishTime().getSeconds();
       if (flushSubscription && seconds < startTimeSec) {
         System.err.printf("Flushing outdated message from %d seconds ago%n",
@@ -262,13 +267,20 @@ public class PubSubClient implements MessagePublisher, MessageHandler {
 
       HashMap<String, String> attributes = new HashMap<>(message.getAttributesMap());
       attributes.computeIfAbsent(PUBLISH_TIME_KEY,
-          key -> isoConvert(ofEpochSecond(message.getPublishTime().getSeconds())));
+          key -> isoConvert(ofEpochSecond(seconds)));
       attributes.put(WAS_BASE_64, "" + base64);
 
       MessageBundle bundle = new MessageBundle();
       bundle.message = asMap;
       bundle.attributes = attributes;
+      bundle.timestamp = ofEpochSecond(seconds, message.getPublishTime().getNanos()).toString();
       return bundle;
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      if (!isActive()) {
+        return null;
+      }
+      throw new RuntimeException("While taking next message", e);
     } catch (Exception e) {
       throw new RuntimeException("While taking next message", e);
     }

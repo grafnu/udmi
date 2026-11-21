@@ -1,0 +1,125 @@
+{
+  "$udmi_version": "1.5.7",
+  "title": "Discovery Scan Summary",
+  "description": "Summary of a single active [discovery](../docs/specs/discovery.md) scan generation, reporting unique identifiers and deviations from expected behavior",
+  "type": "object",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "scanner_device_id": {
+      "description": "Device ID of the scanner publishing the discovery scan",
+      "type": "string"
+    },
+    "family": {
+      "description": "Protocol address family scanned",
+      "type": "string"
+    },
+    "generation": {
+      "description": "Generational timestamp identifying the active discovery scan",
+      "type": "string",
+      "format": "date-time"
+    },
+    "active_count": {
+      "description": "Number of positive active discovery event items received for this scan",
+      "type": "integer",
+      "minimum": 0
+    },
+    "depth": {
+      "description": "Inferred enumeration depth from observed event fields; omitted when unknown",
+      "type": "string",
+      "existingJavaType": "udmi.schema.Enumerations.Depth",
+      "enum": [
+        "buckets",
+        "entries",
+        "parts",
+        "system",
+        "refs",
+        "details",
+        "trace"
+      ]
+    },
+    "status": {
+      "title": "Scan Status",
+      "description": "Scan validation outcome; omitted when the scan passed with no errors or warnings",
+      "type": "string",
+      "enum": [
+        "PASSED_WITH_WARNINGS",
+        "FAILED",
+        "INCOMPLETE",
+        "IN_PROGRESS"
+      ]
+    },
+    "missing_event_nos": {
+      "description": "Expected positive sequence numbers missing from the received event stream",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "duplicate_event_nos": {
+      "description": "Positive sequence numbers received more than once",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "duplicate_addrs": {
+      "description": "Family addresses reported multiple times within the same scan",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "duplicate_networks": {
+      "description": "Networks reported multiple times within the same buckets scan",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "missing_devices": {
+      "description": "Modeled site devices for this family that were not discovered",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "extra_addrs": {
+      "description": "Discovered family addresses not matching any modeled site device",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "errors": {
+      "description": "Validation errors recorded for this scan session",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "warnings": {
+      "description": "Validation warnings recorded for this scan session",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "scanner_device_id",
+    "family",
+    "generation",
+    "active_count"
+  ]
+}

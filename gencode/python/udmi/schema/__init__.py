@@ -1,5 +1,7 @@
 from ._base import *
 from .access_iot import *
+from .analysis_discovery import *
+from .analysis_discovery_scan import *
 from .ancillary_properties import *
 from .bucket import *
 from .building_config_entity import *

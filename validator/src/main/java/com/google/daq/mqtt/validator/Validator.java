@@ -176,6 +176,10 @@ public class Validator {
   private static final String STATE_SCHEMA = "state";
   private static final String DISCOVERY_KEY = "discovery";
   private long reportingDelaySec = DEFAULT_INTERVAL_SEC;
+  private int startupBufferSec = 0;
+  private IllegalArgumentException invalidStartupBufferArg;
+  private long startupBufferSeq = 0;
+  private final Map<StartupSortKey, MessageBundle> startupBuffer = new TreeMap<>();
   private final CommandLineProcessor commandLineProcessor = new CommandLineProcessor(this);
   private final Map<String, ReportingDevice> reportingDevices = new TreeMap<>();
   private final Set<String> extraDevices = new TreeSet<>();
@@ -351,6 +355,7 @@ public class Validator {
   private List<String> postProcessArgs(List<String> argList) {
     try {
       List<String> remainingArgs = commandLineProcessor.processArgs(argList);
+      ifNotNullThrow(invalidStartupBufferArg);
       return ofNullable(remainingArgs).orElse(ImmutableList.of());
     } finally {
       if (schemaMap == null) {
@@ -378,6 +383,25 @@ public class Validator {
   @CommandLineOption(short_form = "-d", arg_name = "delay", description = "Report delay (sec)")
   private void setReportDelay(String arg) {
     reportingDelaySec = Integer.parseInt(arg);
+  }
+
+  @CommandLineOption(short_form = "-b", arg_name = "buffer_sec",
+      description = "Startup buffer delay (sec)")
+  private void setStartupBufferDelay(String arg) {
+    final int delaySec;
+    try {
+      delaySec = Integer.parseInt(arg);
+    } catch (NumberFormatException e) {
+      invalidStartupBufferArg = new IllegalArgumentException(
+          "Invalid startup buffer delay: " + arg, e);
+      throw invalidStartupBufferArg;
+    }
+    if (delaySec < 0) {
+      invalidStartupBufferArg = new IllegalArgumentException(
+          "Startup buffer delay must be >= 0: " + delaySec);
+      throw invalidStartupBufferArg;
+    }
+    startupBufferSec = delaySec;
   }
 
   @CommandLineOption(short_form = "-c", description = "Validate current device messages")
@@ -624,20 +648,30 @@ public class Validator {
     if (client == null || client.getSubscriptionId() == null) {
       return;
     }
-    discoveryAnalyzer.configureRuntime(executor, simulatedMessages, this::graceCloseDiscoveryScan);
+    boolean useStartupBuffer = startupBufferSec > 0 && !simulatedMessages;
+    discoveryAnalyzer.configureRuntime(
+        executor, simulatedMessages || useStartupBuffer, this::graceCloseDiscoveryScan);
     sendInitializationQuery();
     outputLogger.info("Running udmi tools version " + UDMI_TOOLS);
     outputLogger.notice("Entering message loop on " + client.getSubscriptionId());
-    processValidationReport();
-    ScheduledFuture<?> reportSender =
-        simulatedMessages ? null : executor.scheduleAtFixedRate(this::processValidationReport,
-            reportingDelaySec, reportingDelaySec, TimeUnit.SECONDS);
+    ScheduledFuture<?> reportSender = null;
     Thread shutdownHook = simulatedMessages ? null
-        : new Thread(this::finalizeAllDiscoveryScans, "discovery-shutdown");
+        : new Thread(this::shutdownDiscoveryValidation, "discovery-shutdown");
     if (shutdownHook != null) {
       Runtime.getRuntime().addShutdownHook(shutdownHook);
     }
     try {
+      if (useStartupBuffer) {
+        collectStartupBuffer();
+        drainStartupBuffer();
+        discoveryAnalyzer.configureRuntime(executor, false, this::graceCloseDiscoveryScan);
+        discoveryAnalyzer.armPendingGraceTimers();
+      }
+      processValidationReport();
+      if (!simulatedMessages) {
+        reportSender = executor.scheduleAtFixedRate(this::processValidationReport,
+            reportingDelaySec, reportingDelaySec, TimeUnit.SECONDS);
+      }
       while (client.isActive()) {
         try {
           validateMessage(client.takeNextMessage(QuerySpeed.SHORT));
@@ -654,11 +688,78 @@ public class Validator {
         try {
           Runtime.getRuntime().removeShutdownHook(shutdownHook);
         } catch (IllegalStateException expected) {
-          // JVM shutdown already in progress; finalizeAllDiscoveryScans runs here or in hook.
+          // JVM shutdown already in progress; shutdownDiscoveryValidation runs here or in hook.
         }
       }
-      finalizeAllDiscoveryScans();
+      shutdownDiscoveryValidation();
     }
+  }
+
+  private void collectStartupBuffer() {
+    outputLogger.notice(format("Buffering startup messages for %ds...", startupBufferSec));
+    Instant deadline = Instant.now().plusSeconds(startupBufferSec);
+    while (client.isActive() && Instant.now().isBefore(deadline)) {
+      try {
+        MessageBundle bundle = client.takeNextMessage(QuerySpeed.QUICK);
+        if (bundle != null) {
+          bufferStartupMessage(bundle);
+        }
+      } catch (Exception e) {
+        e.printStackTrace();
+      }
+    }
+  }
+
+  private synchronized void bufferStartupMessage(MessageBundle bundle) {
+    Map<String, String> attributes = bundle.attributes;
+    if (traceDir == null && attributes != null
+        && !isSystemOrMetadataMessage(attributes)
+        && !shouldProcessMessage(attributes)) {
+      return;
+    }
+    Object object = ofNullable((Object) bundle.message).orElse(bundle.rawMessage);
+    Instant publishInstant = ofNullable(
+        catchToNull(() -> JsonUtil.getInstant(bundle.timestamp)))
+        .or(() -> ofNullable(attributes)
+            .map(attr -> catchToNull(() -> JsonUtil.getInstant(attr.get(PUBLISH_TIME_KEY)))))
+        .orElse(Instant.EPOCH);
+    Instant sortInstant = ofNullable(
+        attributes == null ? null : getInstant(object, attributes))
+        .orElse(publishInstant);
+    StartupSortKey key = new StartupSortKey(sortInstant, publishInstant, ++startupBufferSeq);
+    startupBuffer.put(key, bundle);
+  }
+
+  private boolean isSystemOrMetadataMessage(Map<String, String> attributes) {
+    String subFolderRaw = attributes.get(SUBFOLDER_PROPERTY_KEY);
+    String subTypeRaw = attributes.get(SUBTYPE_PROPERTY_KEY);
+    boolean isUdmiConfig =
+        SubFolder.UDMI.value().equals(subFolderRaw) && SubType.CONFIG.value().equals(subTypeRaw);
+    boolean isModelUpdate =
+        SubType.MODEL.value().equals(subTypeRaw) && SubFolder.UPDATE.value().equals(subFolderRaw);
+    return isUdmiConfig || isModelUpdate;
+  }
+
+  private synchronized void drainStartupBuffer() {
+    if (startupBuffer.isEmpty()) {
+      return;
+    }
+    outputLogger.notice(format("Draining %d buffered startup messages in timestamp order",
+        startupBuffer.size()));
+    List<MessageBundle> ordered = new ArrayList<>(startupBuffer.values());
+    startupBuffer.clear();
+    for (MessageBundle bundle : ordered) {
+      try {
+        validateMessage(bundle);
+      } catch (Exception e) {
+        e.printStackTrace();
+      }
+    }
+  }
+
+  private synchronized void shutdownDiscoveryValidation() {
+    drainStartupBuffer();
+    finalizeAllDiscoveryScans();
   }
 
   private synchronized void graceCloseDiscoveryScan(ScanKey key) {
@@ -1450,6 +1551,21 @@ public class Validator {
 
   public static boolean isReplySubtype(String subtype) {
     return SubType.REPLY.value().equals(subtype);
+  }
+
+  private record StartupSortKey(
+      Instant sortTime, Instant publishTime, long sequence)
+      implements Comparable<StartupSortKey> {
+
+    @Override
+    public int compareTo(StartupSortKey other) {
+      int cmp = sortTime.compareTo(other.sortTime);
+      if (cmp != 0) {
+        return cmp;
+      }
+      cmp = publishTime.compareTo(other.publishTime);
+      return cmp != 0 ? cmp : Long.compare(sequence, other.sequence);
+    }
   }
 
   /**

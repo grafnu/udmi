@@ -1,0 +1,39 @@
+{
+  "scans": [
+    {
+      "active_count": 2,
+      "depth": "entries",
+      "duplicate_addrs": [
+        "100.87.174.140"
+      ],
+      "duplicate_event_nos": [
+        1
+      ],
+      "errors": [
+        "Duplicate discovery event_no 1",
+        "Duplicate discovered addr 100.87.174.140",
+        "Missing discovery event_no values: [2]"
+      ],
+      "extra_addrs": [
+        "100.87.174.140"
+      ],
+      "family": "ipv4",
+      "generation": "2026-11-19T18:00:00Z",
+      "missing_devices": [
+        "CGW-1",
+        "SRV-2"
+      ],
+      "missing_event_nos": [
+        2
+      ],
+      "scanner_device_id": "DSN-1",
+      "status": "FAILED",
+      "warnings": [
+        "Site model devices not discovered for ipv4: CGW-1, SRV-2",
+        "Discovered ipv4 addrs not in site model: 100.87.174.140"
+      ]
+    }
+  ],
+  "timestamp": "2026-11-19T18:05:00Z",
+  "version": "1.5.7"
+}

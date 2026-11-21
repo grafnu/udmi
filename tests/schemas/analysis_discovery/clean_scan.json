@@ -1,0 +1,13 @@
+{
+  "scans": [
+    {
+      "active_count": 3,
+      "depth": "details",
+      "family": "bacnet",
+      "generation": "2026-11-18T21:00:00Z",
+      "scanner_device_id": "GAT-123"
+    }
+  ],
+  "timestamp": "2026-11-19T18:05:00Z",
+  "version": "1.5.7"
+}
