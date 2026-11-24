@@ -6,7 +6,6 @@
 # UDMI Schema 
 
 ## Messages
-* [**config**](config.html) - The config block controls a device's intended behavior. [Config Documentation](../../docs/messages/config.md)
 * [**events_alarmset**](events_alarmset.html) - A set of alarms reporting telemetry data. [Alarmset Events Documentation](../../docs/messages/alarmset.md#telemetry)
 * [**events_discovery**](events_discovery.html) - [Discovery result](../../docs/specs/discovery.md) with implicit discovery
 * [**events_pointset**](events_pointset.html) - A set of points reporting telemetry data. [Pointset Events Documentation](../../docs/messages/pointset.md#telemetry)
@@ -20,11 +19,8 @@
 * [**site_metadata**](site_metadata.html)
 
 ## Blobs
-* [**configuration_endpoint**](configuration_endpoint.html) - Parameters to define a message endpoint
 
 ## Other
-* [**building_config_entity**](building_config_entity.html)
-* [**commands_discovery**](commands_discovery.html) - [Discovery command](../../docs/specs/discovery.md) for provisioning
 * [**configuration_execution**](configuration_execution.html) - Parameters for configuring the execution run of a UDMI tool
 * [**configuration_pod**](configuration_pod.html) - Parameters for configuring the execution run of a UDMIS pod
 * [**configuration_pubber**](configuration_pubber.html) - Parameters to define a pubber runtime instance
